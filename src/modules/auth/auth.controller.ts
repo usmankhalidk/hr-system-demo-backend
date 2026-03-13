@@ -61,6 +61,8 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   }
 
   if (user.status === 'inactive') {
+    // Record attempt so inactive accounts can't be brute-forced
+    await recordLoginAttempt(email, ip);
     forbidden(res, 'Account disattivato. Contatta l\'amministratore.', 'ACCOUNT_INACTIVE');
     return;
   }
