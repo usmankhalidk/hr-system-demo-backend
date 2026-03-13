@@ -26,6 +26,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
   let stores: StoreRow[];
 
   if (role === 'admin' || role === 'hr') {
+    // Admin/HR see all stores (including inactive) to manage them
     stores = await query<StoreRow>(`
       SELECT s.*, (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
       FROM stores s WHERE s.company_id = $1 ORDER BY s.name
@@ -41,7 +42,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
   } else if (role === 'store_manager') {
     stores = await query<StoreRow>(`
       SELECT s.*, (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
-      FROM stores s WHERE s.id = $1 AND s.company_id = $2
+      FROM stores s WHERE s.id = $1 AND s.company_id = $2 AND s.is_active = true
     `, [storeId, companyId]);
   } else {
     stores = [];

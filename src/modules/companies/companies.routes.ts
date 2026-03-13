@@ -13,6 +13,6 @@ const updateCompanySchema = z.object({
 });
 
 router.get('/', authenticate, requireRole('admin'), listCompanies);
-router.put('/:id', authenticate, requireRole('admin'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
+router.put('/:id', authenticate, requireRole('admin'), validate(updateCompanySchema), auditLog('company'), updateCompany);
 
 export default router;
