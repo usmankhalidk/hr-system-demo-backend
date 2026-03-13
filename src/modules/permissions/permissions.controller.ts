@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { query, queryOne } from '../../config/database';
+import { query, queryOne, pool } from '../../config/database';
 import { ok, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
@@ -68,21 +68,34 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
       return;
     }
 
-    await query(
-      `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled, updated_by, updated_at)
-       VALUES ($1, $2, $3, $4, $5, NOW())
-       ON CONFLICT (company_id, role, module_name)
-       DO UPDATE SET is_enabled = $4, updated_by = $5, updated_at = NOW()`,
-      [companyId, update.role, update.module, update.enabled, userId]
-    );
   }
 
-  // Log to audit
-  await query(
-    `INSERT INTO audit_logs (company_id, user_id, action, entity_type, new_data, ip_address)
-     VALUES ($1, $2, 'UPDATE', 'permission', $3, $4)`,
-    [companyId, userId, JSON.stringify(updates), req.headers['x-forwarded-for'] || req.socket.remoteAddress]
-  );
+  // All upserts + audit log run in a single transaction for atomicity
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const update of updates) {
+      await client.query(
+        `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled, updated_by, updated_at)
+         VALUES ($1, $2, $3, $4, $5, NOW())
+         ON CONFLICT (company_id, role, module_name)
+         DO UPDATE SET is_enabled = $4, updated_by = $5, updated_at = NOW()`,
+        [companyId, update.role, update.module, update.enabled, userId]
+      );
+    }
+    const ip = req.headers['x-forwarded-for'] as string || req.socket.remoteAddress;
+    await client.query(
+      `INSERT INTO audit_logs (company_id, user_id, action, entity_type, new_data, ip_address)
+       VALUES ($1, $2, 'UPDATE', 'permission', $3, $4)`,
+      [companyId, userId, JSON.stringify(updates), ip]
+    );
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   ok(res, null, 'Permessi aggiornati con successo');
 });

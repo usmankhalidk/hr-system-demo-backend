@@ -28,7 +28,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
     }
 
     case 'hr': {
-      const [expiringContracts, newHires, pendingApprovals] = await Promise.all([
+      const [expiringContracts, newHires, totalEmployeesRes] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, contract_end_date FROM users
            WHERE company_id = $1 AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
@@ -46,7 +46,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           [companyId]
         ),
       ]);
-      ok(res, { expiringContracts, newHires, totalEmployees: parseInt(pendingApprovals?.count || '0', 10) });
+      ok(res, { expiringContracts, newHires, totalEmployees: parseInt(totalEmployeesRes?.count || '0', 10) });
       break;
     }
 
