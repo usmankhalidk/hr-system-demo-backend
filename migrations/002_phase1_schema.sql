@@ -27,6 +27,11 @@ BEGIN
 END;
 $$;
 
+-- NOTE: ALTER TYPE ADD VALUE cannot be run inside a transaction in PostgreSQL.
+-- These statements run outside BEGIN/COMMIT intentionally.
+-- IMPORTANT: PostgreSQL does not support ALTER TYPE DROP VALUE.
+-- Once these enum values are added they cannot be removed without
+-- dropping and recreating the type. Ensure this migration is intentional.
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'hr';
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'area_manager';
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'store_manager';
@@ -116,6 +121,20 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS marital_status    VARCHAR(50);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS status            VARCHAR(20) DEFAULT 'active'
   CHECK (status IN ('active', 'inactive'));
 
+CREATE INDEX IF NOT EXISTS idx_users_store_id ON users(store_id);
+CREATE INDEX IF NOT EXISTS idx_users_supervisor_id ON users(supervisor_id);
+
+-- WARNING: This splits 'name' on the FIRST space only.
+-- Names with more than 2 tokens (e.g. "Maria Grazia Russo") will have tokens 3+ discarded.
+-- Verify no such rows exist before running on production data:
+DO $$
+DECLARE v_count INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO v_count FROM users WHERE array_length(string_to_array(trim(name), ' '), 1) > 2 AND surname IS NULL;
+  IF v_count > 0 THEN
+    RAISE EXCEPTION 'Found % user(s) with more than 2 name tokens. Review manually before proceeding.', v_count;
+  END IF;
+END $$;
 -- Data migration: split name into name + surname
 UPDATE users
 SET
@@ -125,8 +144,15 @@ WHERE surname IS NULL
   AND name LIKE '% %';
 
 -- Unique constraint on (company_id, unique_id)
-ALTER TABLE users DROP CONSTRAINT IF EXISTS users_unique_id_company;
-ALTER TABLE users ADD CONSTRAINT users_unique_id_company UNIQUE (company_id, unique_id);
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.table_constraints
+    WHERE constraint_name = 'users_unique_id_company' AND table_name = 'users'
+  ) THEN
+    ALTER TABLE users ADD CONSTRAINT users_unique_id_company UNIQUE (company_id, unique_id);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 4. Create role_module_permissions table
