@@ -13,8 +13,8 @@ const router = Router();
 router.use(authenticate);
 
 router.get('/', asyncHandler(listEmployees));
-router.post('/', requireRole('admin', 'manager'), asyncHandler(createEmployee));
-router.put('/:id', requireRole('admin', 'manager'), asyncHandler(updateEmployee));
+router.post('/', requireRole('admin', 'store_manager'), asyncHandler(createEmployee));
+router.put('/:id', requireRole('admin', 'store_manager'), asyncHandler(updateEmployee));
 router.delete('/:id', requireRole('admin'), asyncHandler(deleteEmployee));
 
 export default router;

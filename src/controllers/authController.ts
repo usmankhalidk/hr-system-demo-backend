@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import { queryOne } from '../config/database';
-import { signAuthToken } from '../config/jwt';
+import { signAuthToken, UserRole } from '../config/jwt';
 
 interface UserRow {
   id: number;
@@ -9,7 +9,7 @@ interface UserRow {
   name: string;
   email: string;
   password_hash: string;
-  role: string;
+  role: UserRole;
 }
 
 export async function login(req: Request, res: Response) {
@@ -41,6 +41,8 @@ export async function login(req: Request, res: Response) {
     email: user.email,
     role: user.role,
     companyId: user.company_id,
+    storeId: null,
+    supervisorId: null,
   });
 
   res.json({
