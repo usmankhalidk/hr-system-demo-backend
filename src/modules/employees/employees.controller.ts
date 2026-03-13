@@ -141,13 +141,15 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
 
   // Access control: employee can only see themselves
   if (role === 'employee' && userId !== empId) {
-    forbidden(res, 'Accesso negato');
-    return;
+    forbidden(res, 'Accesso negato'); return;
   }
   // store_manager can only see employees in their store
   if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
-    forbidden(res, 'Accesso negato');
-    return;
+    forbidden(res, 'Accesso negato'); return;
+  }
+  // area_manager can only see their direct reports
+  if (role === 'area_manager' && employee.supervisor_id !== userId) {
+    forbidden(res, 'Accesso negato'); return;
   }
 
   ok(res, employee);
