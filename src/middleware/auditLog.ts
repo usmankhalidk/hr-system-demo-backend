@@ -27,8 +27,8 @@ export function auditLog(entityType: string) {
             action,
             entityType,
             entityId,
-            req.method === 'PUT' ? startBody : null,
-            req.method !== 'DELETE' ? startBody : null,
+            req.method === 'PUT' || req.method === 'PATCH' ? startBody : null,
+            req.method !== 'DELETE' ? (body?.data ?? startBody) : null,
             ip,
           ]
         ).catch((err) => console.error('Audit log failed:', err));
