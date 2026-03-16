@@ -341,6 +341,15 @@ const en = {
       impostazioni: 'Settings',
     },
   },
+  // ─── Profile ──────────────────────────────────────────────────────────────
+  profile: {
+    title: 'My Profile',
+    fullName: 'Full name',
+    email: 'Email',
+    role: 'Role',
+    accountSettings: 'Account settings',
+  },
+
   // ─── API Error Codes ──────────────────────────────────────────────────────
   errors: {
     // Auth
