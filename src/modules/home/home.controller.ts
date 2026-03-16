@@ -8,14 +8,35 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
   switch (role) {
     case 'admin': {
-      const [companiesRes, storesRes, employeesRes] = await Promise.all([
-        queryOne<{ count: string }>(`SELECT COUNT(*) AS count FROM companies`),
-        queryOne<{ count: string }>(`SELECT COUNT(*) AS count FROM stores WHERE is_active = true`),
-        queryOne<{ count: string }>(`SELECT COUNT(*) AS count FROM users WHERE status = 'active' AND role != 'store_terminal'`),
+      const [companiesRes, storesRes, employeesRes, roleBreakdown, storeBreakdown] = await Promise.all([
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM companies WHERE id = $1`,
+          [companyId]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM stores WHERE company_id = $1 AND is_active = true`,
+          [companyId]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM users WHERE company_id = $1 AND status = 'active' AND role != 'store_terminal'`,
+          [companyId]
+        ),
+        query<{ role: string; count: number }>(
+          `SELECT role, COUNT(*)::int AS count
+           FROM users
+           WHERE company_id = $1 AND status = 'active'
+           GROUP BY role ORDER BY count DESC`,
+          [companyId]
+        ),
+        query<{ name: string; count: number }>(
+          `SELECT s.name, COUNT(u.id)::int AS count
+           FROM stores s
+           LEFT JOIN users u ON u.store_id = s.id AND u.status = 'active'
+           WHERE s.company_id = $1 AND s.is_active = true
+           GROUP BY s.id, s.name ORDER BY count DESC LIMIT 10`,
+          [companyId]
+        ),
       ]);
-      const roleBreakdown = await query<{ role: string; count: string }>(
-        `SELECT role, COUNT(*)::int AS count FROM users WHERE status = 'active' GROUP BY role ORDER BY role`
-      );
       ok(res, {
         stats: {
           companies: parseInt(companiesRes?.count || '0', 10),
@@ -23,12 +44,13 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           activeEmployees: parseInt(employeesRes?.count || '0', 10),
         },
         roleBreakdown,
+        storeBreakdown,
       });
       break;
     }
 
     case 'hr': {
-      const [expiringContracts, newHires, totalEmployeesRes] = await Promise.all([
+      const [expiringContracts, newHires, totalEmployeesRes, monthlyHires, statusBreakdown] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, contract_end_date FROM users
            WHERE company_id = $1 AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
@@ -45,8 +67,26 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           `SELECT COUNT(*) AS count FROM users WHERE company_id = $1 AND status = 'active'`,
           [companyId]
         ),
+        query<{ month: string; count: number }>(
+          `SELECT TO_CHAR(DATE_TRUNC('month', hire_date), 'YYYY-MM') AS month, COUNT(*)::int AS count
+           FROM users
+           WHERE company_id = $1 AND hire_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '5 months'
+           GROUP BY DATE_TRUNC('month', hire_date)
+           ORDER BY 1`,
+          [companyId]
+        ),
+        query<{ status: string; count: number }>(
+          `SELECT status, COUNT(*)::int AS count FROM users WHERE company_id = $1 GROUP BY status`,
+          [companyId]
+        ),
       ]);
-      ok(res, { expiringContracts, newHires, totalEmployees: parseInt(totalEmployeesRes?.count || '0', 10) });
+      ok(res, {
+        expiringContracts,
+        newHires,
+        totalEmployees: parseInt(totalEmployeesRes?.count || '0', 10),
+        monthlyHires,
+        statusBreakdown,
+      });
       break;
     }
 
