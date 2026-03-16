@@ -96,7 +96,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
          FROM stores s
          INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = $2
-         WHERE s.is_active = true`,
+         WHERE s.is_active = true AND s.company_id = $2`,
         [userId, companyId]
       );
       ok(res, { assignedStores });
