@@ -89,7 +89,7 @@ export function CompanyList() {
       closeForm();
       showToast(t('companies.updatedSuccess'), 'success');
       await loadCompanies();
-    } catch (err) {
+    } catch (err: unknown) {
       setFormError(translateApiError(err, t, t('companies.errorSave')));
     } finally {
       setFormSaving(false);

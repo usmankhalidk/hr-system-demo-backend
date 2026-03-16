@@ -131,7 +131,7 @@ export function StoreList() {
       }
       closeForm();
       await loadStores();
-    } catch (err) {
+    } catch (err: unknown) {
       setFormError(translateApiError(err, t, t('stores.errorSave')));
     } finally {
       setFormSaving(false);
@@ -159,7 +159,7 @@ export function StoreList() {
       showToast(t('stores.deactivatedSuccess'), 'success');
       closeConfirm();
       await loadStores();
-    } catch (err) {
+    } catch (err: unknown) {
       setDeactivateError(translateApiError(err, t, t('stores.errorDeactivate')));
     } finally {
       setDeactivating(false);
