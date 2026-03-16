@@ -21,6 +21,11 @@ export function translateApiError(
     message?: string;
   };
 
+  // Silently swallow request cancellations (AbortController / Axios cancel)
+  if (axiosErr?.code === 'ERR_CANCELED') {
+    return '';
+  }
+
   // Network error — no response from server
   const isNetworkError =
     !axiosErr?.response &&
@@ -29,7 +34,7 @@ export function translateApiError(
       axiosErr?.message === 'Network Error');
 
   if (isNetworkError) {
-    return t('errors.NETWORK_ERROR' as never);
+    return (t as (key: string) => string)('errors.NETWORK_ERROR');
   }
 
   const code = axiosErr?.response?.data?.code;
@@ -44,5 +49,5 @@ export function translateApiError(
     if (translated) return translated;
   }
 
-  return fallback ?? (t('errors.DEFAULT' as never) as string);
+  return fallback ?? (t as (key: string) => string)('errors.DEFAULT');
 }
