@@ -10,11 +10,15 @@ import type { TFunction } from 'i18next';
  *     setError(translateApiError(err, t));
  *   }
  */
+/**
+ * Returns `null` for request cancellations (ERR_CANCELED) so callers can
+ * skip state updates entirely: `const msg = translateApiError(...); if (msg) setError(msg);`
+ */
 export function translateApiError(
   err: unknown,
   t: TFunction,
   fallback?: string,
-): string {
+): string | null {
   const axiosErr = err as {
     response?: { data?: { code?: string } };
     code?: string;
@@ -23,7 +27,7 @@ export function translateApiError(
 
   // Silently swallow request cancellations (AbortController / Axios cancel)
   if (axiosErr?.code === 'ERR_CANCELED') {
-    return '';
+    return null;
   }
 
   // Network error — no response from server
