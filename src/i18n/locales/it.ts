@@ -63,7 +63,7 @@ const it = {
   // ─── Navigation ───────────────────────────────────────────────────────────
   nav: {
     dashboard: 'Dashboard',
-    companies: 'Aziende',
+    companies: 'Azienda',
     stores: 'Negozi',
     employees: 'Dipendenti',
     permissions: 'Permessi',
@@ -124,8 +124,8 @@ const it = {
       manageEmployeesDesc: 'CRUD completo con tutti i campi',
       manageStores: 'Gestisci Negozi',
       manageStoresDesc: 'Negozi attivi e organizzazione',
-      manageCompanies: 'Gestisci Aziende',
-      manageCompaniesDesc: 'Multi-tenant isolamento dati',
+      manageCompanies: 'Impostazioni Azienda',
+      manageCompaniesDesc: 'Nome e dettagli organizzazione',
       numUsers: 'N° Utenti',
       employeesPerStore: 'Dipendenti per Negozio',
       employeesPerStoreDesc: 'Distribuzione del personale attivo nei negozi',
@@ -300,25 +300,19 @@ const it = {
 
   // ─── Companies ────────────────────────────────────────────────────────────
   companies: {
-    title: 'Aziende',
+    title: 'La mia azienda',
     editCompany: 'Modifica Azienda',
-    noCompanies: 'Nessuna azienda trovata',
-    errorLoad: 'Impossibile caricare le aziende. Riprova più tardi.',
+    errorLoad: 'Impossibile caricare i dati aziendali. Riprova più tardi.',
     errorSave: 'Errore durante il salvataggio. Riprova.',
-    colName: 'Nome',
-    colSlug: 'Slug',
-    colStores: 'Negozi',
-    colEmployees: 'Dipendenti',
-    colActions: 'Azioni',
-    fieldName: 'Nome *',
-    fieldSlug: 'Slug *',
+    fieldName: 'Nome azienda *',
     placeholderName: 'Es. Acme S.r.l.',
-    placeholderSlug: 'Es. acme-srl',
-    slugHint: 'Solo lettere minuscole, numeri e trattini',
     validationName: 'Il nome è obbligatorio',
-    validationSlug: 'Lo slug è obbligatorio',
-    validationSlugFormat: 'Lo slug può contenere solo lettere minuscole, numeri e trattini',
     updatedSuccess: 'Azienda aggiornata con successo',
+    statStores: 'Negozi attivi',
+    statEmployees: 'Dipendenti attivi',
+    detailsTitle: 'Dettagli organizzazione',
+    labelName: 'Nome azienda',
+    labelCreated: 'Attiva dal',
   },
 
   // ─── Permissions ──────────────────────────────────────────────────────────

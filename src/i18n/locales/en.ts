@@ -63,7 +63,7 @@ const en = {
   // ─── Navigation ───────────────────────────────────────────────────────────
   nav: {
     dashboard: 'Dashboard',
-    companies: 'Companies',
+    companies: 'Company',
     stores: 'Stores',
     employees: 'Employees',
     permissions: 'Permissions',
@@ -124,8 +124,8 @@ const en = {
       manageEmployeesDesc: 'Full CRUD with all fields',
       manageStores: 'Manage Stores',
       manageStoresDesc: 'Active stores and organization',
-      manageCompanies: 'Manage Companies',
-      manageCompaniesDesc: 'Multi-tenant data isolation',
+      manageCompanies: 'Company Settings',
+      manageCompaniesDesc: 'Name and organisation details',
       numUsers: 'Users',
       employeesPerStore: 'Employees per Store',
       employeesPerStoreDesc: 'Active staff distribution across stores',
@@ -300,25 +300,19 @@ const en = {
 
   // ─── Companies ────────────────────────────────────────────────────────────
   companies: {
-    title: 'Companies',
+    title: 'My Company',
     editCompany: 'Edit Company',
-    noCompanies: 'No companies found',
-    errorLoad: 'Unable to load companies. Please try again.',
+    errorLoad: 'Unable to load company data. Please try again.',
     errorSave: 'Error saving. Please try again.',
-    colName: 'Name',
-    colSlug: 'Slug',
-    colStores: 'Stores',
-    colEmployees: 'Employees',
-    colActions: 'Actions',
-    fieldName: 'Name *',
-    fieldSlug: 'Slug *',
+    fieldName: 'Company name *',
     placeholderName: 'E.g. Acme Ltd.',
-    placeholderSlug: 'E.g. acme-ltd',
-    slugHint: 'Lowercase letters, numbers and hyphens only',
     validationName: 'Name is required',
-    validationSlug: 'Slug is required',
-    validationSlugFormat: 'Slug can only contain lowercase letters, numbers and hyphens',
     updatedSuccess: 'Company updated successfully',
+    statStores: 'Active stores',
+    statEmployees: 'Active employees',
+    detailsTitle: 'Organisation details',
+    labelName: 'Company name',
+    labelCreated: 'Active since',
   },
 
   // ─── Permissions ──────────────────────────────────────────────────────────
