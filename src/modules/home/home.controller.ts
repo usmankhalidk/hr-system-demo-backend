@@ -109,8 +109,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         [storeId, companyId]
       );
       const employeeCount = await queryOne<{ count: string }>(
-        `SELECT COUNT(*) AS count FROM users WHERE store_id = $1 AND status = 'active'`,
-        [storeId]
+        `SELECT COUNT(*) AS count FROM users WHERE store_id = $1 AND company_id = $2 AND status = 'active'`,
+        [storeId, companyId]
       );
       ok(res, {
         store,
