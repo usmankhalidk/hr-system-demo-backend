@@ -121,8 +121,12 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
     case 'employee': {
       const profile = await queryOne(
-        `SELECT id, name, surname, role, department, store_id FROM users WHERE id = $1`,
-        [userId]
+        `SELECT u.id, u.name, u.surname, u.role, u.department,
+                s.name AS store_name
+         FROM users u
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE u.id = $1 AND u.company_id = $2`,
+        [userId, companyId]
       );
       ok(res, { profile });
       break;
