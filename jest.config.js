@@ -5,6 +5,7 @@ module.exports = {
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.test.ts', '**/*.test.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
+  maxWorkers: 1,
   collectCoverageFrom: ['src/**/*.ts', '!src/scripts/**', '!src/index.ts'],
   coverageThreshold: {
     global: { branches: 60, functions: 60, lines: 60, statements: 60 },

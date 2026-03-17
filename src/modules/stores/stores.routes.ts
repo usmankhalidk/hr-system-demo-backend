@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { listStores, getStore, createStore, updateStore, deactivateStore } from './stores.controller';
+import { listStores, getStore, createStore, updateStore, deactivateStore, activateStore } from './stores.controller';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
@@ -22,5 +22,6 @@ router.get('/:id', authenticate, requireRole(...allManagers), enforceCompany, ge
 router.post('/', authenticate, requireRole('admin'), enforceCompany, validate(storeSchema), auditLog('store'), createStore);
 router.put('/:id', authenticate, requireRole('admin'), enforceCompany, validate(storeSchema), auditLog('store'), updateStore);
 router.delete('/:id', authenticate, requireRole('admin'), enforceCompany, auditLog('store'), deactivateStore);
+router.patch('/:id/activate', authenticate, requireRole('admin'), enforceCompany, auditLog('store'), activateStore);
 
 export default router;

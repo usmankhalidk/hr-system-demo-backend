@@ -123,3 +123,16 @@ export const deactivateStore = asyncHandler(async (req: Request, res: Response) 
   if (!store) { notFound(res, 'Negozio non trovato'); return; }
   ok(res, store, 'Negozio disattivato');
 });
+
+// PATCH /api/stores/:id/activate — Admin only
+export const activateStore = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const storeId = parseInt(req.params.id, 10);
+
+  const store = await queryOne<StoreRow>(
+    `UPDATE stores SET is_active = true WHERE id = $1 AND company_id = $2 AND is_active = false RETURNING *`,
+    [storeId, companyId]
+  );
+  if (!store) { notFound(res, 'Negozio non trovato o già attivo'); return; }
+  ok(res, store, 'Negozio riattivato');
+});

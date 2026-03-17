@@ -6,6 +6,7 @@ import {
   createEmployee,
   updateEmployee,
   deactivateEmployee,
+  activateEmployee,
 } from './employees.controller';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
@@ -86,6 +87,15 @@ router.delete(
   enforceCompany,
   auditLog('employee'),
   deactivateEmployee,
+);
+
+router.patch(
+  '/:id/activate',
+  authenticate,
+  requireRole('admin'),
+  enforceCompany,
+  auditLog('employee'),
+  activateEmployee,
 );
 
 export default router;

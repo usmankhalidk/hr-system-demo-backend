@@ -4,6 +4,7 @@ import dotenv from 'dotenv';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
+import { seed } from './scripts/seed';
 import companiesRoutes from './modules/companies/companies.routes';
 import storesRoutes from './modules/stores/stores.routes';
 import employeesRoutes from './modules/employees/employees.routes';
@@ -20,7 +21,18 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(cors({ origin: process.env.CORS_ORIGIN || 'http://localhost:5173' }));
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+  .split(',')
+  .map(o => o.trim())
+  .filter(Boolean);
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (curl, mobile apps, server-to-server)
+    if (!origin) return cb(null, true);
+    if (allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin ${origin} not allowed`));
+  },
+}));
 app.use(express.json());
 
 // Health check
@@ -47,8 +59,20 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ success: false, error: 'Errore interno del server', code: 'SERVER_ERROR' });
 });
 
-app.listen(PORT, () => {
-  console.log(`HR System backend running on http://localhost:${PORT}`);
+async function start() {
+  if (process.env.FORCE_SEED === 'true') {
+    console.log('FORCE_SEED=true — seeding database before startup...');
+    await seed();
+  }
+
+  app.listen(PORT, () => {
+    console.log(`HR System backend running on http://localhost:${PORT}`);
+  });
+}
+
+start().catch((err) => {
+  console.error('Startup failed:', err);
+  process.exit(1);
 });
 
 export default app;

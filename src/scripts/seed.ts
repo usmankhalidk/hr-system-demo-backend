@@ -228,11 +228,18 @@ export async function seed() {
     throw err;
   } finally {
     client.release();
-    await pool.end();
+    // pool.end() is NOT called here — when invoked from the server the pool
+    // must stay open. The standalone script entry point closes it below.
   }
 }
 
-seed().catch((err) => {
-  console.error('Seed failed:', err);
-  process.exit(1);
-});
+// Only auto-run + close pool when executed directly (npm run seed / seed:prod).
+// When imported by the server, the caller drives the lifecycle.
+if (require.main === module) {
+  seed()
+    .then(() => pool.end())
+    .catch((err) => {
+      console.error('Seed failed:', err);
+      process.exit(1);
+    });
+}

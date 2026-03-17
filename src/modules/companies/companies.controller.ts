@@ -12,30 +12,54 @@ interface CompanyRow {
   created_at: string;
 }
 
-// GET /api/companies — Admin only, returns all companies with store+employee counts
-export const listCompanies = asyncHandler(async (_req: Request, res: Response) => {
+// GET /api/companies — Admin only, scoped to caller's own company
+export const listCompanies = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = req.user!.companyId;
   const companies = await query<CompanyRow>(`
     SELECT c.id, c.name, c.slug, c.created_at,
       (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
       (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
     FROM companies c
+    WHERE c.id = $1
     ORDER BY c.id
-  `);
+  `, [companyId]);
   ok(res, companies);
 });
 
-// PUT /api/companies/:id — Admin only, edit name/slug
+// PUT /api/companies/:id — Admin only, update name only; slug auto-derived
 export const updateCompany = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
-  const { name, slug } = req.body as { name: string; slug: string };
+  const companyId = req.user!.companyId;
 
-  // Check slug uniqueness
+  // Scope check — admin can only update their own company
+  if (Number(id) !== companyId) {
+    notFound(res, 'Azienda non trovata');
+    return;
+  }
+
+  const { name } = req.body as { name: string };
+
+  // Derive slug from name: lowercase, spaces → hyphens, strip non-alphanumeric
+  const slug = name.toLowerCase().trim()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9-]/g, '')
+    .replace(/-+/g, '-')
+    .replace(/^-|-$/g, '');
+
+  // Check slug uniqueness against other companies
   const existing = await queryOne<{ id: number }>(
     `SELECT id FROM companies WHERE slug = $1 AND id != $2`,
     [slug, id]
   );
   if (existing) {
-    conflict(res, 'Slug già in uso da un\'altra azienda', 'SLUG_CONFLICT');
+    // Append company id to make slug unique
+    const uniqueSlug = `${slug}-${id}`;
+    const company = await queryOne<CompanyRow>(
+      `UPDATE companies SET name = $1, slug = $2 WHERE id = $3 RETURNING id, name, slug, created_at`,
+      [name, uniqueSlug, id]
+    );
+    if (!company) { notFound(res, 'Azienda non trovata'); return; }
+    ok(res, company, 'Azienda aggiornata');
     return;
   }
 

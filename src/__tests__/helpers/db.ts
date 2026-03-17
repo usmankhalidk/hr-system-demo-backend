@@ -28,7 +28,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     [acme.id]
   );
 
-  const HASH = '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi'; // password123
+  const HASH = '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG'; // password123
 
   // Users
   const { rows: [admin] } = await testPool.query(
@@ -78,6 +78,10 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
   };
 }
 
+let poolClosed = false;
 export async function closeTestDb(): Promise<void> {
-  await testPool.end();
+  if (!poolClosed) {
+    poolClosed = true;
+    await testPool.end();
+  }
 }
