@@ -27,21 +27,23 @@ export async function seed() {
       }
     }
 
-    // ── Apply schema ─────────────────────────────────────────────────────────
-    // schema.sql uses CREATE TABLE IF NOT EXISTS / DO $$ blocks — safe to re-run.
+    // ── Drop everything and rebuild schema from scratch ──────────────────────
+    // This guarantees a clean slate regardless of what was previously deployed
+    // (e.g. old 4-table schema on an existing Railway DB).
+    await client.query(`
+      DROP TABLE IF EXISTS attendance, shifts, role_module_permissions,
+                           audit_logs, login_attempts, users, stores, companies
+      CASCADE
+    `);
+    await client.query(`DROP TYPE IF EXISTS user_role`);
+    console.log('✓ Old schema dropped');
+
     // Path from dist/scripts/seed.js: __dirname = /app/dist/scripts
     // Dockerfile copies database/ to /database → resolves to /database/schema.sql
     const schemaPath = path.join(__dirname, '../../../database/schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf8');
     await client.query(schema);
     console.log('✓ Schema applied');
-
-    // ── Wipe all data ─────────────────────────────────────────────────────────
-    await client.query(`
-      TRUNCATE login_attempts, audit_logs, role_module_permissions,
-               attendance, shifts, users, stores, companies
-      RESTART IDENTITY CASCADE
-    `);
     console.log('✓ Old data cleared');
 
     const HASH = '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG'; // password123
