@@ -170,7 +170,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       <NavLink
         to="/profilo"
         title={collapsed ? t('nav.myProfile') : undefined}
-        onClick={() => { if (window.innerWidth < 768 && onMobileClose) onMobileClose(); }}
+        onClick={() => { if (isMobileView && onMobileClose) onMobileClose(); }}
         style={({ isActive }) => ({
           padding: collapsed ? '12px 0' : '14px 16px',
           borderBottom: '1px solid rgba(255,255,255,0.07)',
@@ -212,7 +212,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
             end={item.path === '/'}
             className="sidebar-item"
             title={collapsed ? t(item.labelKey) : undefined}
-            onClick={() => { if (window.innerWidth < 768 && onMobileClose) onMobileClose(); }}
+            onClick={() => { if (isMobileView && onMobileClose) onMobileClose(); }}
             style={({ isActive }) => ({
               display: 'flex', alignItems: 'center',
               justifyContent: collapsed ? 'center' : 'flex-start',

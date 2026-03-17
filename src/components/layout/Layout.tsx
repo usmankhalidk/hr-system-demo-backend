@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import Sidebar from './Sidebar';
 import Header from './Header';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -8,6 +9,7 @@ interface LayoutProps {
 }
 
 const Layout: React.FC<LayoutProps> = ({ children, title = 'Dashboard' }) => {
+  const { isMobile } = useBreakpoint();
   const [collapsed, setCollapsed] = useState<boolean>(() => {
     return window.innerWidth < 1024;
   });
@@ -26,14 +28,10 @@ const Layout: React.FC<LayoutProps> = ({ children, title = 'Dashboard' }) => {
 
   useEffect(() => {
     const handleResize = () => {
-      if (window.innerWidth < 768) {
-        setCollapsed(true);
-        setMobileOpen(false);
-      } else if (window.innerWidth < 1024) {
+      if (window.innerWidth < 1024) {
         setCollapsed(true);
         setMobileOpen(false);
       } else {
-        // Desktop: restore sidebar and close any mobile overlay
         setCollapsed(false);
         setMobileOpen(false);
       }
@@ -43,7 +41,7 @@ const Layout: React.FC<LayoutProps> = ({ children, title = 'Dashboard' }) => {
   }, []);
 
   const toggleSidebar = () => {
-    if (window.innerWidth < 768) {
+    if (isMobile) {
       setMobileOpen((prev) => !prev);
     } else {
       setCollapsed((prev) => !prev);
