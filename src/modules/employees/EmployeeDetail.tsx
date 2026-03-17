@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
-import { getEmployee, deactivateEmployee } from '../../api/employees';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { getEmployee, deactivateEmployee, activateEmployee } from '../../api/employees';
 import { translateApiError } from '../../utils/apiErrors';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
@@ -31,11 +32,14 @@ function getAvatarColor(name: string): string {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
-function formatItalianDate(dateStr: string | null | undefined): string {
+function formatDate(dateStr: string | null | undefined, lang: string): string {
   if (!dateStr) return '—';
-  const parts = dateStr.split('T')[0].split('-');
-  if (parts.length !== 3) return dateStr;
-  return `${parts[2]}/${parts[1]}/${parts[0]}`;
+  try {
+    const locale = lang.startsWith('it') ? 'it-IT' : 'en-GB';
+    return new Date(dateStr.split('T')[0] + 'T00:00:00').toLocaleDateString(locale);
+  } catch {
+    return dateStr;
+  }
 }
 
 function maskIban(iban: string): string {
@@ -116,6 +120,11 @@ const IconOff = () => (
     <circle cx="12" cy="12" r="10"/><line x1="4.93" y1="4.93" x2="19.07" y2="19.07"/>
   </svg>
 );
+const IconOn = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="20 6 9 17 4 12"/>
+  </svg>
+);
 const IconBack = () => (
   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
     <polyline points="15 18 9 12 15 6"/>
@@ -127,7 +136,8 @@ export function EmployeeDetail() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { t } = useTranslation();
+  const { isMobile } = useBreakpoint();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToast();
 
   const [employee, setEmployee] = useState<Employee | null>(null);
@@ -137,6 +147,9 @@ export function EmployeeDetail() {
   const [showDeactivateModal, setShowDeactivateModal] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
+  const [showActivateModal, setShowActivateModal] = useState(false);
+  const [activating, setActivating] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
 
   const employeeId = id && !isNaN(parseInt(id, 10)) ? parseInt(id, 10) : undefined;
   const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
@@ -165,6 +178,22 @@ export function EmployeeDetail() {
     }
     loadEmployee();
   }, [employeeId]);
+
+  const handleActivate = async () => {
+    if (!employeeId) return;
+    setActivating(true);
+    setActivateError(null);
+    try {
+      await activateEmployee(employeeId);
+      setShowActivateModal(false);
+      showToast(t('employees.activatedSuccess'), 'success');
+      loadEmployee();
+    } catch (err: unknown) {
+      setActivateError(translateApiError(err, t, t('employees.errorActivate')));
+    } finally {
+      setActivating(false);
+    }
+  };
 
   const handleDeactivate = async () => {
     if (!employeeId) return;
@@ -319,12 +348,27 @@ export function EmployeeDetail() {
                 <IconOff /> {t('common.deactivate')}
               </button>
             )}
+            {isAdmin && employee.status === 'inactive' && (
+              <button
+                onClick={() => setShowActivateModal(true)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  padding: '8px 16px', borderRadius: 'var(--radius-sm)',
+                  border: '1px solid rgba(21,128,61,0.40)',
+                  background: 'rgba(21,128,61,0.15)',
+                  color: '#86EFAC', fontSize: '13px', fontWeight: 600,
+                  fontFamily: 'var(--font-body)', cursor: 'pointer',
+                }}
+              >
+                <IconOn /> {t('common.activate')}
+              </button>
+            )}
           </div>
         )}
       </div>
 
       {/* Detail cards */}
-      <div style={{ display: 'grid', gridTemplateColumns: canViewSensitive ? '1fr 1fr' : '1fr', gap: '20px' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: (canViewSensitive && !isMobile) ? '1fr 1fr' : '1fr', gap: '20px' }}>
 
         {/* General info */}
         <SectionPanel title={t('employees.generalInfo')} icon={<IconUser />}>
@@ -350,16 +394,16 @@ export function EmployeeDetail() {
         {/* Sensitive / contractual info */}
         {canViewSensitive && (
           <SectionPanel title={t('employees.contractualDetails')} icon={<IconFile />}>
-            <InfoRow label={t('employees.hireDateField')} value={formatItalianDate(employee.hireDate)} />
+            <InfoRow label={t('employees.hireDateField')} value={formatDate(employee.hireDate, i18n.language)} />
             <InfoRow label={t('employees.contractEndField')} value={
               employee.contractEndDate
-                ? <span style={{ color: 'var(--warning)', fontWeight: 600 }}>{formatItalianDate(employee.contractEndDate)}</span>
+                ? <span style={{ color: 'var(--warning)', fontWeight: 600 }}>{formatDate(employee.contractEndDate, i18n.language)}</span>
                 : '—'
             } />
             <InfoRow label={t('employees.workingTypeField')} value={workingTypeLabel} />
             <InfoRow label={t('employees.weeklyHoursField')} value={employee.weeklyHours != null ? `${employee.weeklyHours}h` : '—'} />
             <InfoRow label={t('employees.personalEmailField')} value={employee.personalEmail ?? '—'} />
-            <InfoRow label={t('employees.dateOfBirthField')} value={formatItalianDate(employee.dateOfBirth)} />
+            <InfoRow label={t('employees.dateOfBirthField')} value={formatDate(employee.dateOfBirth, i18n.language)} />
             <InfoRow label={t('employees.ibanField')} value={
               employee.iban
                 ? <span style={{ fontFamily: 'var(--font-display)', fontSize: '12px', letterSpacing: '0.06em' }}>{maskIban(employee.iban)}</span>
@@ -386,6 +430,32 @@ export function EmployeeDetail() {
           onCancel={() => setShowEditForm(false)}
         />
       )}
+
+      {/* Activate modal */}
+      <Modal
+        open={showActivateModal}
+        onClose={() => setShowActivateModal(false)}
+        title={t('employees.confirmActivate')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setShowActivateModal(false)} disabled={activating}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={handleActivate} loading={activating}>
+              {t('common.activate')}
+            </Button>
+          </>
+        }
+      >
+        {activateError && (
+          <div style={{ marginBottom: '12px' }}>
+            <Alert variant="danger" title={t('common.error')}>{activateError}</Alert>
+          </div>
+        )}
+        <p style={{ margin: 0, fontFamily: 'var(--font-body)', fontSize: '14px', color: 'var(--text-primary)' }}>
+          {t('employees.confirmActivateMsg', { name: fullName })}
+        </p>
+      </Modal>
 
       {/* Deactivate modal */}
       <Modal
