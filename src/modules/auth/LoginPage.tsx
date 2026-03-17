@@ -2,6 +2,7 @@ import React, { useState, useEffect, FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation, useTranslation as useI18n } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { Alert } from '../../components/ui/Alert';
 import { Spinner } from '../../components/ui/Spinner';
 import { translateApiError } from '../../utils/apiErrors';
@@ -148,6 +149,7 @@ const LoginPage: React.FC = () => {
   const { user, login, loading } = useAuth();
   const navigate = useNavigate();
   const { t } = useTranslation();
+  const { isMobile } = useBreakpoint();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -274,8 +276,8 @@ const LoginPage: React.FC = () => {
         </div>
 
         {/* Centered form */}
-        <div style={{ minHeight: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '80px 48px 60px' }}>
-          <div style={{ width: '100%', maxWidth: '400px', animation: 'fadeSlideUp 0.35s ease forwards' }}>
+        <div style={{ minHeight: '100%', display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center', padding: isMobile ? '40px 16px' : '80px 48px 60px' }}>
+          <div style={{ width: isMobile ? '100%' : '420px', maxWidth: '100%', padding: isMobile ? '28px 20px' : '40px 36px', animation: 'fadeSlideUp 0.35s ease forwards' }}>
 
             {/* Editorial number */}
             <div style={{ fontFamily: 'var(--font-display)', fontSize: '110px', fontWeight: 800, color: 'rgba(13,33,55,0.05)', lineHeight: 1, marginBottom: '-28px', marginLeft: '-5px', userSelect: 'none', letterSpacing: '-0.06em' }}>
