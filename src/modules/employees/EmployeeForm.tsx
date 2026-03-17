@@ -95,7 +95,9 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   const tRole = (roleKey: string) => (t as (k: string) => string)(`roles.${roleKey}`);
 
   useEffect(() => {
-    getStores().then(setStores).catch(() => {});
+    getStores().then(setStores).catch(() => {
+      setError(t('employees.errorLoadStores'));
+    });
   }, []);
 
   // Auto-generate uniqueId for new employees only
@@ -107,9 +109,11 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
 
   useEffect(() => {
     if (!isEditMode || !employeeId) return;
+    let mounted = true;
     setLoadingData(true);
     getEmployee(employeeId)
       .then((emp) => {
+        if (!mounted) return;
         setFormData({
           name: emp.name ?? '',
           surname: emp.surname ?? '',
@@ -134,8 +138,15 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
           maritalStatus: emp.maritalStatus ?? '',
         });
       })
-      .catch(() => setError(t('employees.errorLoadData')))
-      .finally(() => setLoadingData(false));
+      .catch(() => {
+        if (!mounted) return;
+        setError(t('employees.errorLoadData'));
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setLoadingData(false);
+      });
+    return () => { mounted = false; };
   }, [isEditMode, employeeId]);
 
   const set = (field: keyof FormData, value: string | boolean) => {
@@ -147,7 +158,11 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
     const errs: Partial<Record<keyof FormData, string>> = {};
     if (!formData.name.trim()) errs.name = t('employees.fieldRequired');
     if (!formData.surname.trim()) errs.surname = t('employees.fieldRequired');
-    if (!formData.email.trim()) errs.email = t('employees.fieldRequired');
+    if (!formData.email.trim()) {
+      errs.email = t('employees.fieldRequired');
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email)) {
+      errs.email = t('employees.emailInvalid');
+    }
     if (!formData.role) errs.role = t('employees.fieldRequired');
     setStep1Errors(errs);
     return Object.keys(errs).length === 0;
@@ -157,6 +172,14 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   const handleBack = () => setStep(1);
 
   const handleSubmit = async () => {
+    // Validate weekly hours if provided
+    if (formData.weeklyHours) {
+      const hours = parseFloat(formData.weeklyHours);
+      if (isNaN(hours) || hours < 0 || hours > 80) {
+        setError(t('employees.weeklyHoursInvalid'));
+        return;
+      }
+    }
     setLoading(true);
     setError(null);
     try {
