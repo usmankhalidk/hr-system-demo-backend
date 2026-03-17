@@ -194,7 +194,7 @@ const LoginPage: React.FC = () => {
       {/* ══ LEFT — brand panel ══ */}
       <div style={{
         width: '44%', flexShrink: 0,
-        display: 'flex', flexDirection: 'column',
+        display: isMobile ? 'none' : 'flex', flexDirection: 'column',
         background: '#0A1929',
         position: 'relative', overflow: 'hidden',
       }}>
