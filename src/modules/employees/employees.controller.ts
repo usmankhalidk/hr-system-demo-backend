@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -182,7 +183,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const tempPassword: string = body.password ?? 'TempPassword123!';
+  const tempPassword: string = body.password ?? crypto.randomBytes(12).toString('base64url');
   const passwordHash = await bcrypt.hash(tempPassword, 12);
 
   const employee = await queryOne(
@@ -193,7 +194,9 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       gender, iban, address, cap, first_aid_flag, marital_status, status
     ) VALUES (
       $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
-    ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department, hire_date, status`,
+    ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
+        hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
+        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status`,
     [
       companyId,
       body.store_id ?? null,
@@ -252,7 +255,9 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       gender = $15, iban = $16, address = $17, cap = $18,
       first_aid_flag = $19, marital_status = $20, updated_at = NOW()
     WHERE id = $21 AND company_id = $22
-    RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department, hire_date, status`,
+    RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
+        hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
+        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status`,
     [
       body.store_id ?? null,
       body.supervisor_id ?? null,
@@ -303,4 +308,23 @@ export const deactivateEmployee = asyncHandler(async (req: Request, res: Respons
     return;
   }
   ok(res, employee, 'Dipendente disattivato');
+});
+
+// PATCH /api/employees/:id/activate — Admin only
+export const activateEmployee = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const empId = parseInt(req.params.id, 10);
+
+  const employee = await queryOne(
+    `UPDATE users SET status = 'active', termination_date = NULL, updated_at = NOW()
+     WHERE id = $1 AND company_id = $2 AND status = 'inactive'
+     RETURNING id, name, surname, email, role, status, termination_date`,
+    [empId, companyId],
+  );
+
+  if (!employee) {
+    notFound(res, 'Dipendente non trovato o già attivo');
+    return;
+  }
+  ok(res, employee, 'Dipendente riattivato');
 });
