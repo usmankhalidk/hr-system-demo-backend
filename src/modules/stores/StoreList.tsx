@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { useToast } from '../../context/ToastContext';
-import { getStores, createStore, updateStore, deactivateStore } from '../../api/stores';
+import { getStores, createStore, updateStore, deactivateStore, activateStore } from '../../api/stores';
 import { translateApiError } from '../../utils/apiErrors';
 import { Store } from '../../types';
 import { Table, Column } from '../../components/ui/Table';
@@ -37,6 +38,7 @@ export function StoreList() {
   const { user } = useAuth();
   const { t } = useTranslation();
   const { showToast } = useToast();
+  const { isMobile } = useBreakpoint();
   const isAdmin = user?.role === 'admin';
 
   const [stores, setStores] = useState<Store[]>([]);
@@ -54,6 +56,11 @@ export function StoreList() {
   const [deactivatingStore, setDeactivatingStore] = useState<Store | null>(null);
   const [deactivating, setDeactivating] = useState(false);
   const [deactivateError, setDeactivateError] = useState<string | null>(null);
+
+  const [activateOpen, setActivateOpen] = useState(false);
+  const [activatingStore, setActivatingStore] = useState<Store | null>(null);
+  const [activating, setActivating] = useState(false);
+  const [activateError, setActivateError] = useState<string | null>(null);
 
   const loadStores = async () => {
     setLoading(true);
@@ -138,6 +145,34 @@ export function StoreList() {
     }
   };
 
+  const openActivate = (store: Store) => {
+    setActivatingStore(store);
+    setActivateError(null);
+    setActivateOpen(true);
+  };
+
+  const closeActivate = () => {
+    setActivateOpen(false);
+    setActivatingStore(null);
+    setActivateError(null);
+  };
+
+  const handleActivate = async () => {
+    if (!activatingStore) return;
+    setActivating(true);
+    setActivateError(null);
+    try {
+      await activateStore(activatingStore.id);
+      showToast(t('stores.activatedSuccess'), 'success');
+      closeActivate();
+      await loadStores();
+    } catch (err: unknown) {
+      setActivateError(translateApiError(err, t, t('stores.errorActivate')));
+    } finally {
+      setActivating(false);
+    }
+  };
+
   const openConfirm = (store: Store) => {
     setDeactivatingStore(store);
     setDeactivateError(null);
@@ -198,6 +233,11 @@ export function StoreList() {
               {t('common.deactivate')}
             </Button>
           )}
+          {isAdmin && !row.isActive && (
+            <Button size="sm" variant="success" onClick={() => openActivate(row)}>
+              {t('common.activate')}
+            </Button>
+          )}
         </div>
       ),
     },
@@ -207,19 +247,31 @@ export function StoreList() {
     <div style={{ padding: '24px', maxWidth: '1200px', margin: '0 auto' }}>
       <div style={{
         display: 'flex',
-        alignItems: 'center',
+        alignItems: isMobile ? 'flex-start' : 'center',
         justifyContent: 'space-between',
         marginBottom: '24px',
+        gap: '12px',
+        flexWrap: 'wrap',
       }}>
-        <h1 style={{
-          fontSize: '24px',
-          fontWeight: 700,
-          color: 'var(--text-primary)',
-          fontFamily: 'var(--font-display)',
-          margin: 0,
-        }}>
-          {t('stores.title')}
-        </h1>
+        <div>
+          <h1 style={{
+            fontSize: '22px',
+            fontWeight: 700,
+            color: 'var(--text-primary)',
+            fontFamily: 'var(--font-display)',
+            margin: '0 0 3px',
+            letterSpacing: '-0.02em',
+          }}>
+            {t('stores.title')}
+          </h1>
+          {!loading && (
+            <p style={{ fontSize: '13px', color: 'var(--text-muted)', margin: 0 }}>
+              {stores.length > 0
+                ? t('common.showingResults', { from: 1, to: stores.length, total: stores.length })
+                : t('common.noData')}
+            </p>
+          )}
+        </div>
         {isAdmin && (
           <Button onClick={openNewForm}>{t('stores.newStore')}</Button>
         )}
@@ -323,6 +375,34 @@ export function StoreList() {
           )}
           <p style={{ margin: 0, color: 'var(--text-primary)' }}>
             {t('stores.confirmDeactivateMsg', { name: deactivatingStore?.name ?? '' })}
+          </p>
+        </div>
+      </Modal>
+
+      {/* Activate Modal */}
+      <Modal
+        open={activateOpen}
+        onClose={closeActivate}
+        title={t('stores.confirmActivate')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={closeActivate} disabled={activating}>
+              {t('common.cancel')}
+            </Button>
+            <Button onClick={handleActivate} loading={activating}>
+              {t('common.activate')}
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+          {activateError && (
+            <Alert variant="danger" onClose={() => setActivateError(null)}>
+              {activateError}
+            </Alert>
+          )}
+          <p style={{ margin: 0, color: 'var(--text-primary)' }}>
+            {t('stores.confirmActivateMsg', { name: activatingStore?.name ?? '' })}
           </p>
         </div>
       </Modal>
