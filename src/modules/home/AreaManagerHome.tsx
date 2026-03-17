@@ -1,6 +1,7 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
   ResponsiveContainer, Cell,
@@ -43,6 +44,7 @@ export const AreaManagerHome: React.FC<AreaManagerHomeProps> = ({ data }) => {
   const navigate = useNavigate();
   const { assignedStores } = data;
   const { t } = useTranslation();
+  const { isMobile } = useBreakpoint();
 
   const barData = assignedStores.map((s) => ({ name: s.name, value: s.employeeCount, id: s.id }));
   const totalEmployees = assignedStores.reduce((sum, s) => sum + s.employeeCount, 0);
@@ -75,7 +77,7 @@ export const AreaManagerHome: React.FC<AreaManagerHomeProps> = ({ data }) => {
     <div className="page-enter" style={{ display: 'flex', flexDirection: 'column', gap: '24px' }}>
 
       {/* Header banner */}
-      <div style={{
+      <div className="banner-inner" style={{
         background: 'linear-gradient(135deg, #15803D 0%, #166534 100%)',
         borderRadius: 'var(--radius-lg)', padding: '22px 28px',
         display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px',
@@ -100,7 +102,7 @@ export const AreaManagerHome: React.FC<AreaManagerHomeProps> = ({ data }) => {
       </div>
 
       {barData.length > 0 && (
-        <div style={{ display: 'grid', gridTemplateColumns: barData.length > 1 ? '1fr 1fr' : '1fr', gap: '16px', alignItems: 'start' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : (barData.length > 1 ? '1fr 1fr' : '1fr'), gap: '16px', alignItems: 'start' }}>
 
           {/* Bar chart */}
           <div style={{
@@ -179,7 +181,7 @@ export const AreaManagerHome: React.FC<AreaManagerHomeProps> = ({ data }) => {
             {t('home.areaManager.myStores')}
           </h3>
         </div>
-        <Table<AssignedStore> columns={storeColumns} data={assignedStores} emptyText={t('home.areaManager.noStores')} />
+        <Table<AssignedStore> flush columns={storeColumns} data={assignedStores} emptyText={t('home.areaManager.noStores')} />
       </div>
     </div>
   );
