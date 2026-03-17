@@ -4,7 +4,7 @@
 -- Run AFTER schema.sql AND 002_phase1_schema.sql.
 -- This file is idempotent: truncates all data and re-inserts from scratch.
 -- All demo passwords are 'password123'.
--- Hash: $2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi
+-- Hash: $2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG
 -- =============================================================================
 
 -- ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ TRUNCATE login_attempts, audit_logs, role_module_permissions, attendance, shifts
 -- 2. Companies
 -- ---------------------------------------------------------------------------
 INSERT INTO companies (name, slug) VALUES
-  ('Acme Corp', 'acme'),
+  ('FUSARO UOMO', 'fusaro-uomo'),
   ('Beta Industries', 'beta');
 
 -- ---------------------------------------------------------------------------
@@ -28,32 +28,166 @@ INSERT INTO stores (company_id, name, code, address, cap, max_staff) VALUES
   (2, 'Negozio Napoli',       'NAP-01', 'Via Toledo 50',                 '80134',  8);
 
 -- ---------------------------------------------------------------------------
--- 4. Users - Acme Corp (company_id = 1)
+-- 4. Users - FUSARO UOMO (company_id = 1)
 -- Use explicit IDs to allow supervisor_id forward/self references
+-- All personal data uses realistic Italian demo values.
 -- ---------------------------------------------------------------------------
-INSERT INTO users (id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, department, hire_date, working_type, weekly_hours, status, unique_id) VALUES
-  (1,  1, 'Marco',     'Rossi',    'admin@acme.com',           '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'admin',          NULL, NULL, NULL,        '2020-01-01', NULL,        NULL, 'active', NULL),
-  (2,  1, 'Laura',     'Bianchi',  'hr@acme.com',              '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'hr',             NULL, NULL, NULL,        '2020-03-15', NULL,        NULL, 'active', NULL),
-  (3,  1, 'Giuseppe',  'Ferrari',  'areamanager@acme.com',     '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'area_manager',   NULL, NULL, NULL,        '2019-06-01', NULL,        NULL, 'active', NULL),
-  (4,  1, 'Sofia',     'Esposito', 'manager.roma@acme.com',    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'store_manager',  1,    3,    NULL,        '2021-02-10', NULL,        NULL, 'active', NULL),
-  (5,  1, 'Luca',      'Ricci',    'manager.milano@acme.com',  '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'store_manager',  2,    3,    NULL,        '2021-04-20', NULL,        NULL, 'active', NULL),
-  (6,  1, 'Anna',      'Conti',    'dipendente1@acme.com',     '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'employee',       1,    4,    'Cassa',     '2023-01-15', 'full_time', 40,   'active', 'ACME-001'),
-  (7,  1, 'Roberto',   'Mancini',  'dipendente2@acme.com',     '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'employee',       1,    4,    'Magazzino', '2022-06-01', 'part_time', 20,   'active', 'ACME-002'),
-  (8,  1, 'Chiara',    'Lombardi', 'dipendente3@acme.com',     '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'employee',       2,    5,    'Cassa',     '2023-03-10', 'full_time', 40,   'active', 'ACME-003'),
-  (9,  1, 'Terminale', 'Roma',     'terminal.roma@acme.com',   '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'store_terminal', 1,    NULL, NULL,        '2024-01-01', NULL,        NULL, 'active', NULL);
+INSERT INTO users (
+  id, company_id, name, surname, email, password_hash,
+  role, store_id, supervisor_id,
+  department, hire_date, contract_end_date, working_type, weekly_hours,
+  status, unique_id,
+  personal_email, date_of_birth, nationality, gender,
+  iban, address, cap,
+  first_aid_flag, marital_status
+) VALUES
+  -- Admin
+  (1, 1, 'Marco', 'Rossi', 'admin@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'admin', NULL, NULL,
+   'Direzione', '2020-01-01', NULL, NULL, NULL,
+   'active', NULL,
+   'marco.rossi.privato@gmail.com', '1975-03-15', 'Italiana', 'M',
+   'IT60X0542811101000000112233', 'Via della Conciliazione 45', '00193',
+   true, 'Coniugato'),
 
--- Beta Industries (company_id = 2)
-INSERT INTO users (id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, department, hire_date, working_type, weekly_hours, status, unique_id) VALUES
-  (10, 2, 'Giulia',   'De Luca', 'hr@beta.com',      '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'hr',            NULL, NULL, NULL,      '2021-01-10', NULL,        NULL, 'active', NULL),
-  (11, 2, 'Antonio',  'Marino',  'manager@beta.com',  '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'store_manager', 3,    NULL, NULL,      '2020-09-15', NULL,        NULL, 'active', NULL),
-  (12, 2, 'Carol',    'Russo',   'carol@beta.com',    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'employee',      3,    11,   'Vendite', '2023-05-20', 'full_time', 40,   'active', 'BETA-001'),
-  (13, 2, 'Marco',    'Bruno',   'marco@beta.com',    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi', 'employee',      3,    11,   'Cassa',   '2024-01-08', 'part_time', 24,   'active', 'BETA-002');
+  -- HR
+  (2, 1, 'Laura', 'Bianchi', 'hr@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'hr', NULL, NULL,
+   'Risorse Umane', '2020-03-15', NULL, NULL, NULL,
+   'active', NULL,
+   'laura.bianchi.hr@gmail.com', '1982-07-22', 'Italiana', 'F',
+   'IT60X0542811101000000223344', 'Via Nazionale 12', '00184',
+   false, 'Nubile'),
+
+  -- Area Manager
+  (3, 1, 'Giuseppe', 'Ferrari', 'areamanager@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'area_manager', NULL, NULL,
+   'Operations', '2019-06-01', NULL, NULL, NULL,
+   'active', NULL,
+   'g.ferrari.privato@libero.it', '1978-11-05', 'Italiana', 'M',
+   'IT60X0542811101000000334455', 'Piazza Venezia 3', '00186',
+   true, 'Coniugato'),
+
+  -- Store Manager - Roma
+  (4, 1, 'Sofia', 'Esposito', 'manager.roma@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'store_manager', 1, 3,
+   'Gestione Negozio', '2021-02-10', NULL, NULL, NULL,
+   'active', NULL,
+   'sofia.esposito@gmail.com', '1985-04-18', 'Italiana', 'F',
+   'IT60X0542811101000000445566', 'Via del Corso 88', '00186',
+   false, 'Nubile'),
+
+  -- Store Manager - Milano
+  (5, 1, 'Luca', 'Ricci', 'manager.milano@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'store_manager', 2, 3,
+   'Gestione Negozio', '2021-04-20', NULL, NULL, NULL,
+   'active', NULL,
+   'luca.ricci.mi@gmail.com', '1983-09-30', 'Italiana', 'M',
+   'IT60X0542811101000000556677', 'Via Montenapoleone 5', '20121',
+   true, 'Coniugato'),
+
+  -- Employee 1 - Roma Cassa, full_time
+  (6, 1, 'Anna', 'Conti', 'dipendente1@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'employee', 1, 4,
+   'Cassa', '2023-01-15', NULL, 'full_time', 40,
+   'active', 'ACME-001',
+   'anna.conti.privata@gmail.com', '1995-02-14', 'Italiana', 'F',
+   'IT60X0542811101000000667788', 'Via Tiburtina 200', '00162',
+   true, 'Nubile'),
+
+  -- Employee 2 - Roma Magazzino, part_time, fixed-term
+  (7, 1, 'Roberto', 'Mancini', 'dipendente2@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'employee', 1, 4,
+   'Magazzino', '2022-06-01', '2025-12-31', 'part_time', 20,
+   'active', 'ACME-002',
+   'roberto.mancini99@gmail.com', '1998-08-20', 'Italiana', 'M',
+   'IT60X0542811101000000778899', 'Via Prenestina 55', '00176',
+   false, 'Celibe'),
+
+  -- Employee 3 - Milano Cassa, full_time
+  (8, 1, 'Chiara', 'Lombardi', 'dipendente3@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'employee', 2, 5,
+   'Cassa', '2023-03-10', NULL, 'full_time', 40,
+   'active', 'ACME-003',
+   'chiara.lombardi.mi@gmail.com', '1996-05-07', 'Italiana', 'F',
+   'IT60X0542811101000000889900', 'Corso Buenos Aires 60', '20124',
+   false, 'Nubile'),
+
+  -- Store Terminal - Roma (kiosk account, no personal data)
+  (9, 1, 'Terminale', 'Roma', 'terminal.roma@fusarouomo.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'store_terminal', 1, NULL,
+   NULL, '2024-01-01', NULL, NULL, NULL,
+   'active', NULL,
+   NULL, NULL, NULL, NULL,
+   NULL, NULL, NULL,
+   false, NULL);
+
+-- ---------------------------------------------------------------------------
+-- 5. Users - Beta Industries (company_id = 2)
+-- ---------------------------------------------------------------------------
+INSERT INTO users (
+  id, company_id, name, surname, email, password_hash,
+  role, store_id, supervisor_id,
+  department, hire_date, contract_end_date, working_type, weekly_hours,
+  status, unique_id,
+  personal_email, date_of_birth, nationality, gender,
+  iban, address, cap,
+  first_aid_flag, marital_status
+) VALUES
+  -- HR - Beta
+  (10, 2, 'Giulia', 'De Luca', 'hr@beta.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'hr', NULL, NULL,
+   'Risorse Umane', '2021-01-10', NULL, NULL, NULL,
+   'active', NULL,
+   'giulia.deluca.privata@gmail.com', '1980-12-03', 'Italiana', 'F',
+   'IT60X0542811101000000990011', 'Via Toledo 30', '80134',
+   false, 'Coniugata'),
+
+  -- Store Manager - Napoli
+  (11, 2, 'Antonio', 'Marino', 'manager@beta.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'store_manager', 3, NULL,
+   'Gestione Negozio', '2020-09-15', NULL, NULL, NULL,
+   'active', NULL,
+   'antonio.marino.na@libero.it', '1977-06-25', 'Italiana', 'M',
+   'IT60X0542811101000001001122', 'Via Caracciolo 14', '80122',
+   true, 'Coniugato'),
+
+  -- Employee - Beta Vendite, full_time
+  (12, 2, 'Carol', 'Russo', 'carol@beta.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'employee', 3, 11,
+   'Vendite', '2023-05-20', NULL, 'full_time', 40,
+   'active', 'BETA-001',
+   'carol.russo.privata@gmail.com', '1992-10-11', 'Italiana', 'F',
+   'IT60X0542811101000001112233', 'Via Chiaia 55', '80121',
+   false, 'Nubile'),
+
+  -- Employee - Beta Cassa, part_time, fixed-term
+  (13, 2, 'Marco', 'Bruno', 'marco@beta.com',
+   '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+   'employee', 3, 11,
+   'Cassa', '2024-01-08', '2025-06-30', 'part_time', 24,
+   'active', 'BETA-002',
+   'marco.bruno2000@gmail.com', '2000-01-30', 'Italiana', 'M',
+   'IT60X0542811101000001223344', 'Via Mergellina 8', '80122',
+   false, 'Celibe');
 
 -- Reset sequences to avoid conflicts with future inserts
 SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));
 
 -- ---------------------------------------------------------------------------
--- 5. role_module_permissions
+-- 6. role_module_permissions
 -- 6 roles × 8 modules × 2 companies = 96 rows
 --
 -- Phase 1 active modules: dipendenti, impostazioni
@@ -65,7 +199,7 @@ SELECT setval('users_id_seq', (SELECT MAX(id) FROM users));
 -- ---------------------------------------------------------------------------
 INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled) VALUES
 
-  -- ======= ACME CORP (company_id = 1) =======
+  -- ======= FUSARO UOMO (company_id = 1) =======
 
   -- dipendenti
   (1, 'admin',          'dipendenti', true),
