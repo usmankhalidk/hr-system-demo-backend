@@ -11,7 +11,7 @@ const updateCompanySchema = z.object({
   name: z.string().min(1, 'Nome azienda obbligatorio').max(255),
 });
 
-router.get('/', authenticate, requireRole('admin'), listCompanies);
-router.put('/:id', authenticate, requireRole('admin'), validate(updateCompanySchema), auditLog('company'), updateCompany);
+router.get('/', authenticate, requireRole('admin'), enforceCompany, listCompanies);
+router.put('/:id', authenticate, requireRole('admin'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
 
 export default router;

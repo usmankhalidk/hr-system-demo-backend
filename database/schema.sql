@@ -50,8 +50,8 @@ CREATE INDEX IF NOT EXISTS idx_stores_company ON stores(company_id);
 CREATE TABLE IF NOT EXISTS users (
   id                SERIAL PRIMARY KEY,
   company_id        INTEGER REFERENCES companies(id) ON DELETE CASCADE,
-  store_id          INTEGER REFERENCES stores(id),
-  supervisor_id     INTEGER REFERENCES users(id),
+  store_id          INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+  supervisor_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
   name              VARCHAR(255) NOT NULL,
   surname           VARCHAR(100),
   email             VARCHAR(255) UNIQUE NOT NULL,
