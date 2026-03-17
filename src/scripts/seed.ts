@@ -1,4 +1,3 @@
-import bcrypt from 'bcryptjs';
 import { pool } from '../config/database';
 import dotenv from 'dotenv';
 import fs from 'fs';
@@ -6,35 +5,11 @@ import path from 'path';
 
 dotenv.config();
 
-/** Format a Date as YYYY-MM-DD using UTC components (avoids timezone shift). */
-function ds(d: Date): string {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(d.getUTCDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-function addDays(d: Date, n: number): Date {
-  const r = new Date(d);
-  r.setUTCDate(r.getUTCDate() + n);
-  return r;
-}
-
-/** Returns UTC Monday 00:00:00 of the week containing d. */
-function getUTCMonday(d: Date): Date {
-  const day = d.getUTCDay(); // 0=Sun
-  const diff = day === 0 ? -6 : 1 - day;
-  const monday = new Date(d);
-  monday.setUTCDate(d.getUTCDate() + diff);
-  monday.setUTCHours(0, 0, 0, 0);
-  return monday;
-}
-
 export async function seed() {
   const client = await pool.connect();
   try {
-    // ── Guard: skip if already seeded (Railway restart safety) ──────────────
-    // Set FORCE_SEED=true to wipe and re-seed (useful for demo resets).
+    // ── Guard: skip if already seeded ───────────────────────────────────────
+    // Set FORCE_SEED=true to wipe and re-seed (demo resets / Railway deploys).
     if (process.env.FORCE_SEED !== 'true') {
       try {
         const { rows } = await client.query(
@@ -52,189 +27,132 @@ export async function seed() {
       }
     }
 
-    await client.query('BEGIN');
-
-    // ── Apply schema (CREATE TABLE IF NOT EXISTS — safe to re-run) ──────────
+    // ── Apply schema ─────────────────────────────────────────────────────────
+    // schema.sql uses CREATE TABLE IF NOT EXISTS / DO $$ blocks — safe to re-run.
+    // Path from dist/scripts/seed.js: __dirname = /app/dist/scripts
+    // Dockerfile copies database/ to /database → resolves to /database/schema.sql
     const schemaPath = path.join(__dirname, '../../../database/schema.sql');
     const schema = fs.readFileSync(schemaPath, 'utf8');
     await client.query(schema);
     console.log('✓ Schema applied');
 
-    // ── Clear old data so re-running the seed is idempotent ─────────────────
-    await client.query('TRUNCATE TABLE attendance, shifts, users, companies RESTART IDENTITY CASCADE');
+    // ── Wipe all data ─────────────────────────────────────────────────────────
+    await client.query(`
+      TRUNCATE login_attempts, audit_logs, role_module_permissions,
+               attendance, shifts, users, stores, companies
+      RESTART IDENTITY CASCADE
+    `);
     console.log('✓ Old data cleared');
 
-    // ── Companies ────────────────────────────────────────────────────────────
+    const HASH = '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG'; // password123
+
+    // ── Companies ─────────────────────────────────────────────────────────────
     await client.query(`
       INSERT INTO companies (name, slug) VALUES
-        ('Acme Corp',        'acme-corp'),
-        ('Beta Industries',  'beta-industries')
+        ('FUSARO UOMO',     'fusaro-uomo'),
+        ('Beta Industries', 'beta')
     `);
-    const { rows: [acme] } = await client.query("SELECT id FROM companies WHERE slug='acme-corp'");
-    const { rows: [beta] } = await client.query("SELECT id FROM companies WHERE slug='beta-industries'");
     console.log('✓ Companies seeded');
 
-    // ── Users ────────────────────────────────────────────────────────────────
-    const hash = await bcrypt.hash('password123', 10);
+    // ── Stores ────────────────────────────────────────────────────────────────
+    await client.query(`
+      INSERT INTO stores (company_id, name, code, address, cap, max_staff) VALUES
+        (1, 'Negozio Roma Centro',  'ROM-01', 'Via del Corso 100',           '00186', 15),
+        (1, 'Negozio Milano Duomo', 'MIL-01', 'Corso Vittorio Emanuele 10', '20122', 12),
+        (2, 'Negozio Napoli',       'NAP-01', 'Via Toledo 50',               '80134',  8)
+    `);
+    console.log('✓ Stores seeded');
 
-    const userDefs = [
-      // Acme Corp
-      { cid: acme.id, name: 'Alice Admin',   email: 'admin@acme.com',    role: 'admin'    },
-      { cid: acme.id, name: 'Mike Manager',  email: 'manager@acme.com',  role: 'manager'  },
-      { cid: acme.id, name: 'Emma Day',      email: 'emma@acme.com',     role: 'employee' },
-      { cid: acme.id, name: 'Evan Day',      email: 'evan@acme.com',     role: 'employee' },
-      { cid: acme.id, name: 'Sara Evening',  email: 'sara@acme.com',     role: 'employee' },
-      { cid: acme.id, name: 'Nina Night',    email: 'nina@acme.com',     role: 'employee' },
-      { cid: acme.id, name: 'Sam Night',     email: 'sam@acme.com',      role: 'employee' },
-      // Beta Industries
-      { cid: beta.id, name: 'Bob Manager',   email: 'manager@beta.com',  role: 'manager'  },
-      { cid: beta.id, name: 'Carol Beta',    email: 'carol@beta.com',    role: 'employee' },
-      { cid: beta.id, name: 'Dave Beta',     email: 'dave@beta.com',     role: 'employee' },
-      { cid: beta.id, name: 'Mark Beta',     email: 'mark@beta.com',     role: 'employee' },
-    ];
+    // ── Users — FUSARO UOMO (company_id = 1) ─────────────────────────────────
+    await client.query(`
+      INSERT INTO users (
+        id, company_id, name, surname, email, password_hash,
+        role, store_id, supervisor_id,
+        department, hire_date, contract_end_date, working_type, weekly_hours,
+        status, unique_id,
+        personal_email, date_of_birth, nationality, gender,
+        iban, address, cap, first_aid_flag, marital_status
+      ) VALUES
+        (1, 1, 'Marco',     'Rossi',    'admin@fusarouomo.com',         $1, 'admin',         NULL, NULL, 'Direzione',         '2020-01-01', NULL,         NULL,         NULL, 'active', NULL,      'marco.rossi.privato@gmail.com',    '1975-03-15', 'Italiana', 'M', 'IT60X0542811101000000112233', 'Via della Conciliazione 45', '00193', true,  'Coniugato'),
+        (2, 1, 'Laura',     'Bianchi',  'hr@fusarouomo.com',            $1, 'hr',             NULL, NULL, 'Risorse Umane',     '2020-03-15', NULL,         NULL,         NULL, 'active', NULL,      'laura.bianchi.hr@gmail.com',       '1982-07-22', 'Italiana', 'F', 'IT60X0542811101000000223344', 'Via Nazionale 12',           '00184', false, 'Nubile'),
+        (3, 1, 'Giuseppe',  'Ferrari',  'areamanager@fusarouomo.com',   $1, 'area_manager',  NULL, NULL, 'Operations',        '2019-06-01', NULL,         NULL,         NULL, 'active', NULL,      'g.ferrari.privato@libero.it',      '1978-11-05', 'Italiana', 'M', 'IT60X0542811101000000334455', 'Piazza Venezia 3',           '00186', true,  'Coniugato'),
+        (4, 1, 'Sofia',     'Esposito', 'manager.roma@fusarouomo.com',  $1, 'store_manager', 1,    3,    'Gestione Negozio',  '2021-02-10', NULL,         NULL,         NULL, 'active', NULL,      'sofia.esposito@gmail.com',         '1985-04-18', 'Italiana', 'F', 'IT60X0542811101000000445566', 'Via del Corso 88',           '00186', false, 'Nubile'),
+        (5, 1, 'Luca',      'Ricci',    'manager.milano@fusarouomo.com',$1, 'store_manager', 2,    3,    'Gestione Negozio',  '2021-04-20', NULL,         NULL,         NULL, 'active', NULL,      'luca.ricci.mi@gmail.com',          '1983-09-30', 'Italiana', 'M', 'IT60X0542811101000000556677', 'Via Montenapoleone 5',       '20121', true,  'Coniugato'),
+        (6, 1, 'Anna',      'Conti',    'dipendente1@fusarouomo.com',   $1, 'employee',      1,    4,    'Cassa',             '2026-03-05', NULL,         'full_time',  40,   'active', 'ACME-001','anna.conti.privata@gmail.com',     '1995-02-14', 'Italiana', 'F', 'IT60X0542811101000000667788', 'Via Tiburtina 200',          '00162', true,  'Nubile'),
+        (7, 1, 'Roberto',   'Mancini',  'dipendente2@fusarouomo.com',   $1, 'employee',      1,    4,    'Magazzino',         '2026-01-15', '2026-12-31', 'part_time',  20,   'active', 'ACME-002','roberto.mancini99@gmail.com',      '1998-08-20', 'Italiana', 'M', 'IT60X0542811101000000778899', 'Via Prenestina 55',          '00176', false, 'Celibe'),
+        (8, 1, 'Chiara',    'Lombardi', 'dipendente3@fusarouomo.com',   $1, 'employee',      2,    5,    'Cassa',             '2025-11-20', NULL,         'full_time',  40,   'active', 'ACME-003','chiara.lombardi.mi@gmail.com',     '1996-05-07', 'Italiana', 'F', 'IT60X0542811101000000889900', 'Corso Buenos Aires 60',      '20124', false, 'Nubile'),
+        (9, 1, 'Terminale', 'Roma',     'terminal.roma@fusarouomo.com', $1, 'store_terminal',1,    NULL, NULL,                '2024-01-01', NULL,         NULL,         NULL, 'active', NULL,      NULL,                               NULL,         NULL,       NULL,NULL,                         NULL,                         NULL,    false, NULL)
+    `, [HASH]);
 
-    for (const u of userDefs) {
-      await client.query(
-        `INSERT INTO users (company_id, name, email, password_hash, role)
-         VALUES ($1, $2, $3, $4, $5)`,
-        [u.cid, u.name, u.email, hash, u.role]
-      );
-    }
-    console.log(`✓ Users seeded (${userDefs.length} users)`);
+    // ── Users — Beta Industries (company_id = 2) ──────────────────────────────
+    await client.query(`
+      INSERT INTO users (
+        id, company_id, name, surname, email, password_hash,
+        role, store_id, supervisor_id,
+        department, hire_date, contract_end_date, working_type, weekly_hours,
+        status, unique_id,
+        personal_email, date_of_birth, nationality, gender,
+        iban, address, cap, first_aid_flag, marital_status
+      ) VALUES
+        (10, 2, 'Giulia',   'De Luca', 'hr@beta.com',      $1, 'hr',             NULL, NULL, 'Risorse Umane',    '2021-01-10', NULL,         NULL,        NULL, 'active', NULL,      'giulia.deluca.privata@gmail.com',   '1980-12-03', 'Italiana', 'F', 'IT60X0542811101000000990011', 'Via Toledo 30',      '80134', false, 'Coniugata'),
+        (11, 2, 'Antonio',  'Marino',  'manager@beta.com', $1, 'store_manager',  3,    NULL, 'Gestione Negozio', '2020-09-15', NULL,         NULL,        NULL, 'active', NULL,      'antonio.marino.na@libero.it',       '1977-06-25', 'Italiana', 'M', 'IT60X0542811101000001001122', 'Via Caracciolo 14',  '80122', true,  'Coniugato'),
+        (12, 2, 'Carol',    'Russo',   'carol@beta.com',   $1, 'employee',       3,    11,   'Vendite',          '2026-03-10', NULL,         'full_time', 40,   'active', 'BETA-001','carol.russo.privata@gmail.com',     '1992-10-11', 'Italiana', 'F', 'IT60X0542811101000001112233', 'Via Chiaia 55',      '80121', false, 'Nubile'),
+        (13, 2, 'Marco',    'Bruno',   'marco@beta.com',   $1, 'employee',       3,    11,   'Cassa',            '2025-12-05', '2026-09-30', 'part_time', 24,   'active', 'BETA-002','marco.bruno2000@gmail.com',         '2000-01-30', 'Italiana', 'M', 'IT60X0542811101000001223344', 'Via Mergellina 8',   '80122', false, 'Celibe')
+    `, [HASH]);
 
-    // ── Resolve user IDs ─────────────────────────────────────────────────────
-    const uid = async (email: string) => {
-      const { rows: [u] } = await client.query('SELECT id FROM users WHERE email=$1', [email]);
-      return u.id as number;
-    };
+    await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
+    console.log('✓ Users seeded (13 users)');
 
-    const acmeMgrId = await uid('manager@acme.com');
-    const emmaId    = await uid('emma@acme.com');
-    const evanId    = await uid('evan@acme.com');
-    const saraId    = await uid('sara@acme.com');
-    const ninaId    = await uid('nina@acme.com');
-    const samId     = await uid('sam@acme.com');
+    // ── role_module_permissions ───────────────────────────────────────────────
+    const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
+    const roles   = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
+    const companies = [1, 2];
 
-    const betaMgrId = await uid('manager@beta.com');
-    const carolId   = await uid('carol@beta.com');
-    const daveId    = await uid('dave@beta.com');
-    const markId    = await uid('mark@beta.com');
-
-    // ── Shifts: 3 weeks (prev + current + next), all 7 days ─────────────────
-    // We use UTC date math. Seeding 3 weeks means today's local date is always
-    // inside the seeded range regardless of timezone offset (max ±14h).
-    const thisMonday = getUTCMonday(new Date());
-
-    // shift definitions per company
-    const acmeShifts = [
-      { empId: emmaId,  start: '07:00', end: '15:00', notes: 'Day shift'     },
-      { empId: evanId,  start: '07:00', end: '15:00', notes: 'Day shift'     },
-      { empId: saraId,  start: '15:00', end: '23:00', notes: 'Evening shift' },
-      { empId: ninaId,  start: '23:00', end: '07:00', notes: 'Night shift'   },
-      { empId: samId,   start: '23:00', end: '07:00', notes: 'Night shift'   },
-    ];
-    const betaShifts = [
-      { empId: carolId, start: '08:00', end: '16:00', notes: 'Day shift'     },
-      { empId: daveId,  start: '16:00', end: '00:00', notes: 'Evening shift' },
-      { empId: markId,  start: '00:00', end: '08:00', notes: 'Night shift'   },
-    ];
-
-    let shiftCount = 0;
-    for (let weekOffset = -1; weekOffset <= 1; weekOffset++) {
-      const weekStart = addDays(thisMonday, weekOffset * 7);
-      for (let dayOffset = 0; dayOffset < 7; dayOffset++) {
-        const dateStr = ds(addDays(weekStart, dayOffset));
-
-        for (const sh of acmeShifts) {
+    for (const cid of companies) {
+      for (const role of roles) {
+        for (const mod of modules) {
+          const enabled =
+            (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
+            (mod === 'impostazioni' && role === 'admin');
           await client.query(
-            `INSERT INTO shifts (company_id, employee_id, date, start_time, end_time, notes, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [acme.id, sh.empId, dateStr, sh.start, sh.end, sh.notes, acmeMgrId]
+            `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
+             VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
+            [cid, role, mod, enabled]
           );
-          shiftCount++;
-        }
-        for (const sh of betaShifts) {
-          await client.query(
-            `INSERT INTO shifts (company_id, employee_id, date, start_time, end_time, notes, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-            [beta.id, sh.empId, dateStr, sh.start, sh.end, sh.notes, betaMgrId]
-          );
-          shiftCount++;
         }
       }
     }
-    console.log(`✓ Shifts seeded (${shiftCount} shifts — 3 weeks, day/evening/night)`);
-
-    // ── Attendance: seed realistic records for the previous week ─────────────
-    const lastMonday = addDays(thisMonday, -7);
-    const lastSunday = addDays(thisMonday, -1);
-
-    // Fetch last week's day + evening shifts for Acme (not night — complex cross-day logic)
-    const { rows: lastWeekShifts } = await client.query<{
-      id: number; employee_id: number; date: string; start_time: string;
-    }>(
-      `SELECT id, employee_id, date::text, start_time::text
-       FROM shifts
-       WHERE company_id = $1
-         AND date >= $2 AND date <= $3
-         AND start_time IN ('07:00:00', '15:00:00', '08:00:00', '16:00:00')
-       ORDER BY date, start_time`,
-      [acme.id, ds(lastMonday), ds(lastSunday)]
-    );
-
-    let attendanceCount = 0;
-    for (const shift of lastWeekShifts) {
-      // ~85% attendance rate
-      if (Math.random() < 0.15) continue;
-
-      const [h, m] = shift.start_time.split(':').map(Number);
-      const lateMin = Math.floor(Math.random() * 18); // 0–17 min late
-      const overMin = Math.floor(Math.random() * 20); // 0–19 min overtime
-
-      // Build timestamps using the shift date string (avoids any tz issues)
-      const checkIn  = new Date(`${shift.date}T${String(h).padStart(2,'0')}:${String(m + lateMin).padStart(2,'0')}:00Z`);
-      const checkOut = new Date(checkIn.getTime() + (8 * 60 + overMin) * 60 * 1000);
-
-      const status = lateMin >= 10 ? 'late' : 'present';
-
-      await client.query(
-        `INSERT INTO attendance (company_id, employee_id, shift_id, check_in_time, check_out_time, status)
-         VALUES ($1, $2, $3, $4, $5, $6)`,
-        [acme.id, shift.employee_id, shift.id, checkIn.toISOString(), checkOut.toISOString(), status]
-      );
-      attendanceCount++;
-    }
-    console.log(`✓ Attendance seeded (${attendanceCount} records from last week)`);
-
-    await client.query('COMMIT');
+    console.log('✓ Permissions seeded');
 
     console.log('\n✅ Seed complete! All passwords: password123\n');
-    console.log('  Acme Corp');
-    console.log('    admin@acme.com      Admin');
-    console.log('    manager@acme.com    Manager');
-    console.log('    emma@acme.com       Employee — Day     07:00–15:00');
-    console.log('    evan@acme.com       Employee — Day     07:00–15:00');
-    console.log('    sara@acme.com       Employee — Evening 15:00–23:00');
-    console.log('    nina@acme.com       Employee — Night   23:00–07:00');
-    console.log('    sam@acme.com        Employee — Night   23:00–07:00');
+    console.log('  FUSARO UOMO');
+    console.log('    admin@fusarouomo.com          Admin');
+    console.log('    hr@fusarouomo.com             HR');
+    console.log('    areamanager@fusarouomo.com    Area Manager');
+    console.log('    manager.roma@fusarouomo.com   Store Manager (Roma)');
+    console.log('    manager.milano@fusarouomo.com Store Manager (Milano)');
+    console.log('    dipendente1@fusarouomo.com    Employee — Roma Cassa');
+    console.log('    dipendente2@fusarouomo.com    Employee — Roma Magazzino');
+    console.log('    dipendente3@fusarouomo.com    Employee — Milano Cassa');
+    console.log('    terminal.roma@fusarouomo.com  Store Terminal — Roma');
     console.log('');
     console.log('  Beta Industries');
-    console.log('    manager@beta.com    Manager');
-    console.log('    carol@beta.com      Employee — Day     08:00–16:00');
-    console.log('    dave@beta.com       Employee — Evening 16:00–00:00');
-    console.log('    mark@beta.com       Employee — Night   00:00–08:00');
+    console.log('    hr@beta.com                   HR');
+    console.log('    manager@beta.com              Store Manager (Napoli)');
+    console.log('    carol@beta.com                Employee — Napoli Vendite');
+    console.log('    marco@beta.com                Employee — Napoli Cassa');
+
   } catch (err) {
-    await client.query('ROLLBACK');
+    await client.query('ROLLBACK').catch(() => {});
     throw err;
   } finally {
     client.release();
-    // pool.end() is NOT called here — when invoked from the server the pool
-    // must stay open. The standalone script entry point closes it below.
+    // pool.end() is NOT called here — caller is responsible.
+    // When run standalone (npm run seed), the entry point below closes the pool.
   }
 }
 
 // Only auto-run + close pool when executed directly (npm run seed / seed:prod).
-// When imported by the server, the caller drives the lifecycle.
 if (require.main === module) {
   seed()
     .then(() => pool.end())
