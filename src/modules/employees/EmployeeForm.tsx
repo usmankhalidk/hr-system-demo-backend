@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
+import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { getEmployee, createEmployee, updateEmployee } from '../../api/employees';
 import { translateApiError } from '../../utils/apiErrors';
 import { getStores } from '../../api/stores';
@@ -50,6 +51,13 @@ const initialFormData: FormData = {
   iban: '', address: '', cap: '', firstAidFlag: false, maritalStatus: '',
 };
 
+function generateUniqueId(): string {
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let id = 'EMP-';
+  for (let i = 0; i < 6; i++) id += chars[Math.floor(Math.random() * chars.length)];
+  return id;
+}
+
 function SectionDivider({ label }: { label: string }) {
   return (
     <div style={{
@@ -68,13 +76,14 @@ function SectionDivider({ label }: { label: string }) {
   );
 }
 
-const row2: React.CSSProperties = {
-  display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '14px',
-};
-
 export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormProps) {
   const isEditMode = employeeId !== undefined;
   const { t } = useTranslation();
+  const { isMobile } = useBreakpoint();
+
+  const row2: React.CSSProperties = {
+    display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '14px', marginBottom: '14px',
+  };
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [stores, setStores] = useState<Store[]>([]);
@@ -88,6 +97,13 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   useEffect(() => {
     getStores().then(setStores).catch(() => {});
   }, []);
+
+  // Auto-generate uniqueId for new employees only
+  useEffect(() => {
+    if (!isEditMode) {
+      setFormData((prev) => ({ ...prev, uniqueId: generateUniqueId() }));
+    }
+  }, [isEditMode]);
 
   useEffect(() => {
     if (!isEditMode || !employeeId) return;
@@ -293,7 +309,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
         </div>
 
         {/* Scrollable body */}
-        <div style={{ flex: 1, overflowY: 'auto', padding: '24px' }}>
+        <div style={{ flex: 1, overflowY: 'auto', padding: isMobile ? '16px' : '24px' }}>
           {loadingData ? (
             <div style={{ display: 'flex', justifyContent: 'center', padding: '56px' }}>
               <Spinner size="md" />
@@ -332,11 +348,27 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       onChange={(e) => set('email', e.target.value)}
                       error={step1Errors.email}
                     />
-                    <Input
-                      label={t('employees.colUniqueId')}
-                      value={formData.uniqueId}
-                      onChange={(e) => set('uniqueId', e.target.value)}
-                    />
+                    <div>
+                      <Input
+                        label={t('employees.colUniqueId')}
+                        value={formData.uniqueId}
+                        onChange={(e) => set('uniqueId', e.target.value)}
+                      />
+                      {!isEditMode && (
+                        <button
+                          type="button"
+                          onClick={() => set('uniqueId', generateUniqueId())}
+                          style={{
+                            marginTop: '5px', background: 'none', border: 'none',
+                            cursor: 'pointer', fontSize: '11px', color: 'var(--accent)',
+                            fontFamily: 'var(--font-body)', fontWeight: 500,
+                            padding: '2px 0', display: 'flex', alignItems: 'center', gap: '4px',
+                          }}
+                        >
+                          ↻ {t('employees.regenerateId')}
+                        </button>
+                      )}
+                    </div>
                   </div>
                   <div style={{ marginBottom: '14px' }}>
                     <Select
@@ -414,7 +446,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                     <Input
                       label={t('employees.weeklyHoursField')}
                       type="number"
-                      min="0" max="168" step="0.5"
+                      min="0" max="80" step="0.5"
                       value={formData.weeklyHours}
                       onChange={(e) => set('weeklyHours', e.target.value)}
                     />
@@ -432,6 +464,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       label={t('employees.dateOfBirthField')}
                       value={formData.dateOfBirth}
                       onChange={(v) => set('dateOfBirth', v)}
+                      initialViewYear={new Date().getFullYear() - 30}
                     />
                   </div>
                   <div style={row2}>
