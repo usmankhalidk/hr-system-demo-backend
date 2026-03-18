@@ -441,6 +441,37 @@ const en = {
     },
   },
 
+  // ─── Attendance ───────────────────────────────────────────────────────────
+  attendance: {
+    title: 'Attendance',
+    logTitle: 'Attendance Log',
+    checkin: 'Check-In',
+    checkout: 'Check-Out',
+    breakStart: 'Break Start',
+    breakEnd: 'Break End',
+    dateFrom: 'From',
+    dateTo: 'To',
+    exportCsv: 'Export CSV',
+    eventType: 'Event type',
+    source: 'Source',
+    successMessage: 'Attendance recorded successfully',
+    found: 'found',
+    showing: 'showing',
+  },
+
+  // ─── Terminal ─────────────────────────────────────────────────────────────
+  terminal: {
+    title: 'Attendance Terminal',
+    checkin: 'CHECK-IN',
+    checkout: 'CHECK-OUT',
+    breakStart: 'BREAK START',
+    breakEnd: 'BREAK END',
+    employeeId: 'Employee ID',
+    scanInstruction: 'QR Token',
+    tokenPlaceholder: 'Paste QR token here...',
+    submit: 'RECORD',
+  },
+
   // ─── Leave ────────────────────────────────────────────────────────────────
   leave: {
     page_title: 'Leave & Holidays',

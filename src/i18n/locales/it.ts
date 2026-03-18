@@ -441,6 +441,37 @@ const it = {
     },
   },
 
+  // ─── Attendance ───────────────────────────────────────────────────────────
+  attendance: {
+    title: 'Presenze',
+    logTitle: 'Registro Presenze',
+    checkin: 'Entrata',
+    checkout: 'Uscita',
+    breakStart: 'Inizio Pausa',
+    breakEnd: 'Fine Pausa',
+    dateFrom: 'Dal',
+    dateTo: 'Al',
+    exportCsv: 'Esporta CSV',
+    eventType: 'Tipo evento',
+    source: 'Origine',
+    successMessage: 'Presenza registrata con successo',
+    found: 'trovate',
+    showing: 'mostrando',
+  },
+
+  // ─── Terminal ─────────────────────────────────────────────────────────────
+  terminal: {
+    title: 'Terminale Presenze',
+    checkin: 'ENTRATA',
+    checkout: 'USCITA',
+    breakStart: 'INIZIO PAUSA',
+    breakEnd: 'FINE PAUSA',
+    employeeId: 'ID Dipendente',
+    scanInstruction: 'Token QR',
+    tokenPlaceholder: 'Incolla il token QR qui...',
+    submit: 'REGISTRA',
+  },
+
   // ─── Leave ────────────────────────────────────────────────────────────────
   leave: {
     page_title: 'Permessi e Ferie',
