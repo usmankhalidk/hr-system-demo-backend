@@ -31,7 +31,10 @@ export async function seed() {
     // This guarantees a clean slate regardless of what was previously deployed
     // (e.g. old 4-table schema on an existing Railway DB).
     await client.query(`
-      DROP TABLE IF EXISTS attendance, shifts, role_module_permissions,
+      DROP TABLE IF EXISTS store_affluence, shift_templates,
+                           leave_balances, leave_approvals, leave_requests,
+                           attendance_events, qr_tokens,
+                           attendance, shifts, role_module_permissions,
                            audit_logs, login_attempts, users, stores, companies
       CASCADE
     `);
@@ -39,10 +42,14 @@ export async function seed() {
     console.log('✓ Old schema dropped');
 
     // Path from dist/scripts/seed.js: __dirname = /app/dist/scripts
-    // Dockerfile copies database/ to /database → resolves to /database/schema.sql
-    const schemaPath = path.join(__dirname, '../../../database/schema.sql');
-    const schema = fs.readFileSync(schemaPath, 'utf8');
-    await client.query(schema);
+    // Dockerfile copies database/ to /database → resolves to /database/migrations/
+    const migrationsDir = path.join(__dirname, '../../../database/migrations');
+    // Apply base schema (001) then Phase 2 migrations (003, 004, 005)
+    // 002 is for upgrading legacy deployments — not needed on a fresh seed
+    for (const file of ['001_initial_schema.sql', '003_phase2_shifts.sql', '004_phase2_attendance.sql', '005_phase2_leave.sql']) {
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      await client.query(sql);
+    }
     console.log('✓ Schema applied');
     console.log('✓ Old data cleared');
 
@@ -125,6 +132,71 @@ export async function seed() {
       }
     }
     console.log('✓ Permissions seeded');
+
+    // Enable Phase 2 modules for all companies
+    for (const cid of companies) {
+      await client.query(`
+        INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
+        VALUES
+          ($1, 'admin',         'turni',    true),
+          ($1, 'hr',            'turni',    true),
+          ($1, 'area_manager',  'turni',    true),
+          ($1, 'store_manager', 'turni',    true),
+          ($1, 'admin',         'presenze', true),
+          ($1, 'hr',            'presenze', true),
+          ($1, 'area_manager',  'presenze', true),
+          ($1, 'store_manager', 'presenze', true),
+          ($1, 'store_terminal','presenze', true),
+          ($1, 'admin',         'permessi', true),
+          ($1, 'hr',            'permessi', true),
+          ($1, 'area_manager',  'permessi', true),
+          ($1, 'store_manager', 'permessi', true),
+          ($1, 'employee',      'permessi', true)
+        ON CONFLICT (company_id, role, module_name) DO UPDATE SET is_enabled = true
+      `, [cid]);
+    }
+    console.log('✓ Phase 2 permissions enabled');
+
+    // Seed leave balances for all employees
+    for (const cid of companies) {
+      await client.query(`
+        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+        SELECT company_id, id, EXTRACT(YEAR FROM NOW())::int, 'vacation', 25, 0
+        FROM users
+        WHERE company_id = $1 AND role = 'employee' AND status = 'active'
+        ON CONFLICT (company_id, user_id, year, leave_type) DO NOTHING
+      `, [cid]);
+
+      await client.query(`
+        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+        SELECT company_id, id, EXTRACT(YEAR FROM NOW())::int, 'sick', 10, 0
+        FROM users
+        WHERE company_id = $1 AND role = 'employee' AND status = 'active'
+        ON CONFLICT (company_id, user_id, year, leave_type) DO NOTHING
+      `, [cid]);
+    }
+    console.log('✓ Leave balances seeded');
+
+    // Seed store affluence (default patterns for all stores)
+    const { rows: storeRows } = await client.query(
+      `SELECT id, company_id FROM stores WHERE is_active = true`
+    );
+    for (const store of storeRows) {
+      await client.query(`DELETE FROM store_affluence WHERE store_id = $1`, [store.id]);
+      await client.query(`
+        INSERT INTO store_affluence (company_id, store_id, iso_week, day_of_week, time_slot, level, required_staff)
+        SELECT $1, $2, NULL, dow, slot,
+          CASE WHEN dow IN (6,7) THEN 'high'
+               WHEN slot IN ('12:00-15:00', '15:00-18:00') THEN 'medium'
+               ELSE 'low' END,
+          CASE WHEN dow IN (6,7) THEN 3
+               WHEN slot IN ('12:00-15:00', '15:00-18:00') THEN 2
+               ELSE 1 END
+        FROM (VALUES (1),(2),(3),(4),(5),(6),(7)) AS days(dow)
+        CROSS JOIN (VALUES ('09:00-12:00'),('12:00-15:00'),('15:00-18:00'),('18:00-21:00')) AS slots(slot)
+      `, [store.company_id, store.id]);
+    }
+    console.log('✓ Store affluence seeded');
 
     console.log('\n✅ Seed complete! All passwords: password123\n');
     console.log('  FUSARO UOMO');

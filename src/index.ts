@@ -11,10 +11,11 @@ import employeesRoutes from './modules/employees/employees.routes';
 import permissionsRoutes from './modules/permissions/permissions.routes';
 import homeRoutes from './modules/home/home.routes';
 
-// Legacy routes (Phase 2+) — kept for continuity, not linked from Phase 1 nav
-import shiftRoutes from './routes/shifts';
-import qrRoutes from './routes/qr';
-import attendanceRoutes from './routes/attendance';
+// Phase 2 modules
+import shiftsRoutes from './modules/shifts/shifts.routes';
+import attendanceRoutes from './modules/attendance/attendance.routes';
+import qrRoutes from './modules/attendance/qr.routes';
+import leaveRoutes from './modules/leave/leave.routes';
 
 dotenv.config();
 
@@ -48,10 +49,11 @@ app.use('/api/employees', employeesRoutes);
 app.use('/api/permissions', permissionsRoutes);
 app.use('/api/home', homeRoutes);
 
-// Legacy routes (Phase 2+)
-app.use('/api/shifts', shiftRoutes);
-app.use('/api/qr', qrRoutes);
+// Phase 2 API Routes
+app.use('/api/shifts', shiftsRoutes);
 app.use('/api/attendance', attendanceRoutes);
+app.use('/api/qr', qrRoutes);
+app.use('/api/leave', leaveRoutes);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
