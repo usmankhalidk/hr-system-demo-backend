@@ -68,23 +68,28 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
       {/* Backdrop */}
       <div
         onClick={handleClose}
+        className="drawer-backdrop"
         style={{
           position: 'fixed', inset: 0,
-          background: 'rgba(0,0,0,0.35)',
+          background: 'rgba(13,33,55,0.48)',
+          backdropFilter: 'blur(3px)',
           zIndex: 1000,
         }}
       />
       {/* Drawer panel */}
       <div
+        className="drawer-panel"
         style={{
           position: 'fixed', top: 0, right: 0, bottom: 0,
-          width: 420, maxWidth: '95vw',
+          width: 'min(460px, 100vw)',
           background: 'var(--surface)',
           boxShadow: '-4px 0 24px rgba(0,0,0,0.15)',
           zIndex: 1001,
           display: 'flex', flexDirection: 'column',
         }}
       >
+        {/* Gold accent stripe */}
+        <div style={{ height: 3, background: 'linear-gradient(90deg, var(--accent) 0%, var(--primary) 100%)', flexShrink: 0 }} />
         {/* Header */}
         <div style={{
           padding: '20px 24px',
@@ -136,6 +141,8 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
                     background: leaveType === type ? 'var(--primary)' : 'transparent',
                     color: leaveType === type ? '#fff' : 'var(--text-secondary)',
                     border: `1.5px solid ${leaveType === type ? 'var(--primary)' : 'var(--border)'}`,
+                    boxShadow: leaveType === type ? '0 2px 8px rgba(13,33,55,0.2)' : 'none',
+                    transform: leaveType === type ? 'translateY(-1px)' : 'none',
                   }}
                 >
                   {t(`leave.type_${type}`)}

@@ -77,15 +77,20 @@ export default function TerminalPage() {
     }}>
       {/* Header */}
       <div style={{ textAlign: 'center', marginBottom: 40 }}>
-        <div style={{ fontSize: 48, fontWeight: 800, letterSpacing: -1, fontFamily: 'var(--font-display)' }}>
+        <div style={{ fontSize: 48, fontWeight: 800, letterSpacing: -2, fontFamily: 'var(--font-display)' }}>
           {timeStr}
         </div>
         <div style={{ fontSize: 16, opacity: 0.7, marginTop: 4, textTransform: 'capitalize' }}>
           {dateStr}
         </div>
         {user?.storeId != null && (
-          <div style={{ fontSize: 18, fontWeight: 600, marginTop: 8, opacity: 0.9 }}>
-            {t('common.store')} #{user.storeId}
+          <div style={{ marginTop: 8 }}>
+            <span style={{
+              background: 'rgba(201,151,58,0.15)', borderRadius: 20, padding: '3px 12px',
+              display: 'inline-block', fontSize: 16, fontWeight: 600, opacity: 0.9,
+            }}>
+              {t('common.store')} #{user.storeId}
+            </span>
           </div>
         )}
       </div>
@@ -97,6 +102,7 @@ export default function TerminalPage() {
         width: '100%', maxWidth: 480,
         backdropFilter: 'blur(8px)',
         border: '1px solid rgba(255,255,255,0.15)',
+        borderTop: '3px solid var(--accent)',
       }}>
         <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.6, marginBottom: 8, letterSpacing: 1, textTransform: 'uppercase' }}>
           {t('terminal.employeeId')}
@@ -146,7 +152,8 @@ export default function TerminalPage() {
                 color: '#fff', fontWeight: 800, fontSize: 13,
                 cursor: 'pointer', letterSpacing: 0.5,
                 boxShadow: selectedType === type ? `0 4px 14px ${color}55` : 'none',
-                transition: 'all 0.15s',
+                transition: 'all 0.2s',
+                transform: selectedType === type ? 'scale(1.02)' : 'scale(1)',
               }}
             >
               {t(labelKey)}
@@ -163,8 +170,9 @@ export default function TerminalPage() {
             borderRadius: 12, border: 'none',
             background: loading ? 'rgba(255,255,255,0.2)' : 'var(--accent)',
             color: '#fff', fontWeight: 800, fontSize: 17,
-            cursor: loading ? 'not-allowed' : 'pointer',
+            cursor: loading || !token.trim() || !userId.trim() ? 'not-allowed' : 'pointer',
             letterSpacing: 0.5, transition: 'all 0.15s',
+            boxShadow: !loading && token.trim() && userId.trim() ? '0 4px 20px rgba(201,151,58,0.35)' : 'none',
           }}
         >
           {loading ? t('common.saving') : t('terminal.submit')}

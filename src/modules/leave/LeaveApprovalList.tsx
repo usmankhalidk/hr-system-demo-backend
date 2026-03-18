@@ -86,7 +86,7 @@ function ApprovalStepper({ currentApprover, status }: { currentApprover: string 
               <div style={{
                 flex: 1, height: 2, marginBottom: 20,
                 background: lineBackground,
-                transition: 'background 0.2s',
+                transition: 'background 0.3s',
               }} />
             )}
           </React.Fragment>
@@ -112,6 +112,11 @@ function RejectModal({
   const [notes, setNotes] = useState('');
   const [error, setError] = useState('');
 
+  // Reset state every time the modal opens (prevent stale notes from a prior rejection)
+  React.useEffect(() => {
+    if (open) { setNotes(''); setError(''); }
+  }, [open]);
+
   function handleConfirm() {
     if (!notes.trim()) { setError(t('leave.reject_notes_required')); return; }
     setError('');
@@ -121,12 +126,15 @@ function RejectModal({
   if (!open) return null;
   return (
     <div style={{ position: 'fixed', inset: 0, zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.4)' }} />
+      <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(13,33,55,0.48)', backdropFilter: 'blur(3px)' }} />
       <div style={{
         position: 'relative', background: 'var(--surface)', borderRadius: 12,
-        padding: 24, width: 360, maxWidth: '90vw',
-        boxShadow: '0 8px 32px rgba(0,0,0,0.18)',
+        width: 360, maxWidth: '90vw', overflow: 'hidden',
+        boxShadow: 'var(--shadow-lg)',
       }}>
+        {/* Gold accent stripe */}
+        <div style={{ height: 3, background: 'linear-gradient(90deg, var(--accent) 0%, var(--primary) 100%)' }} />
+        <div style={{ padding: 24 }}>
         <div style={{ fontSize: 17, fontWeight: 700, marginBottom: 12, color: 'var(--text-primary)' }}>
           {t('leave.reject_title')}
         </div>
@@ -142,7 +150,7 @@ function RejectModal({
             boxSizing: 'border-box', resize: 'vertical',
           }}
         />
-        {error && <div style={{ color: '#ef4444', fontSize: 12, marginTop: 4 }}>{error}</div>}
+        {error && <div style={{ color: 'var(--danger)', fontSize: 12, marginTop: 4 }}>{error}</div>}
         <div style={{ display: 'flex', gap: 8, marginTop: 16, justifyContent: 'flex-end' }}>
           <button
             onClick={onClose}
@@ -160,12 +168,13 @@ function RejectModal({
             disabled={loading}
             style={{
               padding: '8px 16px', borderRadius: 8, border: 'none',
-              background: '#ef4444', color: '#fff', fontWeight: 700,
+              background: 'var(--danger)', color: '#fff', fontWeight: 700,
               cursor: 'pointer', fontSize: 13,
             }}
           >
             {loading ? t('common.saving') : t('leave.reject_confirm')}
           </button>
+        </div>
         </div>
       </div>
     </div>
@@ -248,11 +257,14 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
         {requests.map((req) => (
           <div
             key={req.id}
+            className="card-lift"
             style={{
               background: 'var(--surface)',
               border: '1px solid var(--border)',
               borderRadius: 12,
               padding: '16px 20px',
+              boxShadow: 'var(--shadow-xs)',
+              transition: 'box-shadow 0.15s',
             }}
           >
             {/* Top row: name + type badge + status badge */}
@@ -296,26 +308,16 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
             {showActions && req.status !== 'hr_approved' && req.status !== 'rejected' && (
               <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
                 <button
+                  className="btn btn-primary"
                   onClick={() => handleApprove(req.id)}
                   disabled={actionLoading}
-                  style={{
-                    padding: '8px 20px', borderRadius: 8, border: 'none',
-                    background: 'var(--primary)', color: '#fff',
-                    fontWeight: 700, fontSize: 13,
-                    cursor: actionLoading ? 'not-allowed' : 'pointer',
-                  }}
                 >
                   {t('leave.action_approve')}
                 </button>
                 <button
+                  className="btn btn-danger"
                   onClick={() => setRejectTarget(req.id)}
                   disabled={actionLoading}
-                  style={{
-                    padding: '8px 20px', borderRadius: 8,
-                    border: `1.5px solid var(--danger)`, background: 'transparent',
-                    color: 'var(--danger)', fontWeight: 700, fontSize: 13,
-                    cursor: actionLoading ? 'not-allowed' : 'pointer',
-                  }}
                 >
                   {t('leave.action_reject')}
                 </button>

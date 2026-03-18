@@ -2,10 +2,10 @@ import React, { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
-import { getEmployee, createEmployee, updateEmployee } from '../../api/employees';
+import { getEmployee, createEmployee, updateEmployee, getEmployees } from '../../api/employees';
 import { translateApiError } from '../../utils/apiErrors';
 import { getStores } from '../../api/stores';
-import { Store, UserRole } from '../../types';
+import { Employee, Store, UserRole } from '../../types';
 import { Button } from '../../components/ui/Button';
 import { Input } from '../../components/ui/Input';
 import { Select } from '../../components/ui/Select';
@@ -87,6 +87,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   const [step, setStep] = useState(1);
   const [formData, setFormData] = useState<FormData>(initialFormData);
   const [stores, setStores] = useState<Store[]>([]);
+  const [supervisors, setSupervisors] = useState<Employee[]>([]);
+  const [loadingSupervisors, setLoadingSupervisors] = useState(false);
   const [loading, setLoading] = useState(false);
   const [loadingData, setLoadingData] = useState(isEditMode);
   const [error, setError] = useState<string | null>(null);
@@ -99,6 +101,31 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
       setError(t('employees.errorLoadStores'));
     });
   }, []);
+
+  // Load supervisor options (same company, filtered client-side)
+  useEffect(() => {
+    let mounted = true;
+    setLoadingSupervisors(true);
+    getEmployees({ limit: 500 })
+      .then((res) => {
+        if (!mounted) return;
+        const eligibleRoles: UserRole[] = ['admin', 'hr', 'area_manager', 'store_manager'];
+        const list = (res?.employees ?? [])
+          .filter((e) => eligibleRoles.includes(e.role))
+          .filter((e) => (employeeId ? e.id !== employeeId : true));
+        setSupervisors(list);
+      })
+      .catch(() => {
+        // Non-blocking: user can still save without supervisor
+        if (!mounted) return;
+        setSupervisors([]);
+      })
+      .finally(() => {
+        if (!mounted) return;
+        setLoadingSupervisors(false);
+      });
+    return () => { mounted = false; };
+  }, [employeeId]);
 
   // Auto-generate uniqueId for new employees only
   useEffect(() => {
@@ -164,6 +191,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
       errs.email = t('employees.emailInvalid');
     }
     if (!formData.role) errs.role = t('employees.fieldRequired');
+    if (!isEditMode && !formData.uniqueId.trim()) errs.uniqueId = t('employees.fieldRequired');
     setStep1Errors(errs);
     return Object.keys(errs).length === 0;
   };
@@ -373,9 +401,10 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                     />
                     <div>
                       <Input
-                        label={t('employees.colUniqueId')}
+                        label={isEditMode ? t('employees.colUniqueId') : `${t('employees.colUniqueId')} *`}
                         value={formData.uniqueId}
                         onChange={(e) => set('uniqueId', e.target.value)}
+                        error={step1Errors.uniqueId}
                       />
                       {!isEditMode && (
                         <button
@@ -422,13 +451,19 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                         <option key={s.id} value={String(s.id)}>{s.name}</option>
                       ))}
                     </Select>
-                    <Input
-                      label={t('employees.supervisorIdField')}
-                      type="number"
-                      value={formData.supervisorId}
-                      onChange={(e) => set('supervisorId', e.target.value)}
-                      placeholder={t('employees.supervisorIdPlaceholder')}
-                    />
+                  <Select
+                    label={t('employees.supervisorField')}
+                    value={formData.supervisorId}
+                    onChange={(e) => set('supervisorId', e.target.value)}
+                    disabled={loadingSupervisors}
+                  >
+                    <option value="">{t('employees.noSupervisor')}</option>
+                    {supervisors.map((s) => (
+                      <option key={s.id} value={String(s.id)}>
+                        {s.name} {s.surname} ({tRole(s.role)}){s.storeName ? ` — ${s.storeName}` : ''}
+                      </option>
+                    ))}
+                  </Select>
                   </div>
                   <div>
                     <Input

@@ -8,14 +8,24 @@ interface MonthlyCalendarProps {
   onDayClick: (date: string) => void;
 }
 
-const DAY_LABELS_IT = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'];
-
 function formatDate(date: Date): string {
-  return date.toISOString().split('T')[0];
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: MonthlyCalendarProps) {
   const { t } = useTranslation();
+  const DAY_LABELS = [
+    t('shifts.dayMon', 'Lun'),
+    t('shifts.dayTue', 'Mar'),
+    t('shifts.dayWed', 'Mer'),
+    t('shifts.dayThu', 'Gio'),
+    t('shifts.dayFri', 'Ven'),
+    t('shifts.daySat', 'Sab'),
+    t('shifts.daySun', 'Dom'),
+  ];
 
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
@@ -24,7 +34,8 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
   const countMap = new Map<string, number>();
   for (const shift of shifts) {
     if (shift.status !== 'cancelled') {
-      countMap.set(shift.date, (countMap.get(shift.date) ?? 0) + 1);
+      const dateKey = shift.date.split('T')[0];
+      countMap.set(dateKey, (countMap.get(dateKey) ?? 0) + 1);
     }
   }
 
@@ -46,7 +57,7 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
     <div style={{ padding: 16 }}>
       {/* Day headers */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 4, marginBottom: 8 }}>
-        {DAY_LABELS_IT.map((label) => (
+        {DAY_LABELS.map((label) => (
           <div key={label} style={{
             textAlign: 'center', fontWeight: 600,
             fontFamily: 'var(--font-display)', color: 'var(--primary)',
@@ -79,8 +90,9 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
                 cursor: 'pointer',
                 background: isToday ? 'rgba(201, 151, 58, 0.05)' : 'var(--surface)',
                 transition: 'background 0.15s',
+                boxShadow: count > 0 ? 'var(--shadow-xs)' : undefined,
               }}
-              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--bg)')}
+              onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--background)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = isToday ? 'rgba(201, 151, 58, 0.05)' : 'var(--surface)')}
             >
               <div style={{
@@ -90,7 +102,15 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
                 marginBottom: 4,
                 fontSize: '0.9rem',
               }}>
-                {date.getDate()}
+                {isToday ? (
+                  <span style={{
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    width: 26, height: 26, borderRadius: '50%',
+                    background: 'var(--accent)', color: '#fff', fontWeight: 700,
+                  }}>
+                    {date.getDate()}
+                  </span>
+                ) : date.getDate()}
               </div>
               {count > 0 && (
                 <div style={{
@@ -99,9 +119,11 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
                   borderRadius: 10,
                   padding: '2px 6px',
                   fontSize: '0.75rem',
+                  fontWeight: 700,
+                  letterSpacing: 0.3,
                   display: 'inline-block',
                 }}>
-                  {count} {t('shifts.shiftCount', count === 1 ? 'turno' : 'turni')}
+                  {count} {count === 1 ? t('shifts.shiftCount', 'turno') : t('shifts.shiftCountPlural', 'turni')}
                 </div>
               )}
             </div>

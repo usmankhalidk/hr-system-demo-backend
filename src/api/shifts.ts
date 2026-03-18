@@ -6,36 +6,36 @@ import client from './client';
 
 export interface Shift {
   id: number;
-  company_id: number;
-  store_id: number;
-  user_id: number;
-  date: string;          // 'YYYY-MM-DD'
-  start_time: string;    // 'HH:MM'
-  end_time: string;      // 'HH:MM'
-  break_start: string | null;
-  break_end: string | null;
-  is_split: boolean;
-  split_start2: string | null;
-  split_end2: string | null;
+  companyId: number;
+  storeId: number;
+  userId: number;
+  date: string;          // may be 'YYYY-MM-DD' or full ISO — use .split('T')[0] to normalize
+  startTime: string;     // 'HH:MM:SS'
+  endTime: string;       // 'HH:MM:SS'
+  breakStart: string | null;
+  breakEnd: string | null;
+  isSplit: boolean;
+  splitStart2: string | null;
+  splitEnd2: string | null;
   status: 'scheduled' | 'confirmed' | 'cancelled';
   notes: string | null;
-  created_by: number | null;
-  created_at: string;
-  updated_at: string;
-  store_name: string;
-  user_name: string;
-  user_surname: string;
-  shift_hours: number;
+  createdBy: number | null;
+  createdAt: string;
+  updatedAt: string;
+  storeName: string;
+  userName: string;
+  userSurname: string;
+  shiftHours: string | number | null;
 }
 
 export interface ShiftTemplate {
   id: number;
-  company_id: number;
-  store_id: number;
+  companyId: number;
+  storeId: number;
   name: string;
-  template_data: Record<string, unknown>;
-  created_by: number | null;
-  created_at: string;
+  templateData: Record<string, unknown>;
+  createdBy: number | null;
+  createdAt: string;
 }
 
 export interface StoreAffluence {
@@ -121,12 +121,34 @@ export async function deleteTemplate(id: number): Promise<void> {
   await client.delete(`/shifts/templates/${id}`);
 }
 
-export async function exportShifts(params: { store_id?: number; week?: string }): Promise<Blob> {
+export async function exportShifts(params: { store_id?: number; week?: string; format?: 'csv' | 'xlsx' }): Promise<Blob> {
   const res = await client.get('/shifts/export', {
     params,
     responseType: 'blob',
   });
   return res.data as Blob;
+}
+
+export async function downloadImportTemplate(): Promise<Blob> {
+  const res = await client.get('/shifts/import-template', { responseType: 'blob' });
+  return res.data as Blob;
+}
+
+export interface ImportResult {
+  imported: number;
+  skipped: number;
+  failed: number;
+  errors: string[];
+  total: number;
+}
+
+export async function importShifts(file: File): Promise<ImportResult> {
+  const form = new FormData();
+  form.append('file', file);
+  const res = await client.post('/shifts/import', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return res.data.data as ImportResult;
 }
 
 export async function getAffluence(params: {

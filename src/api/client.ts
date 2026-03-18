@@ -38,7 +38,12 @@ export function snakeKeys(obj: any): any {
   if (Array.isArray(obj)) {
     return obj.map(snakeKeys);
   }
-  if (obj !== null && typeof obj === 'object' && !(obj instanceof File) && !(obj instanceof Blob)) {
+  if (
+    obj !== null && typeof obj === 'object' &&
+    !(obj instanceof File) &&
+    !(obj instanceof Blob) &&
+    !(obj instanceof FormData)
+  ) {
     return Object.fromEntries(
       Object.entries(obj).map(([k, v]) => [toSnake(k), snakeKeys(v)])
     );
@@ -50,10 +55,13 @@ export function snakeKeys(obj: any): any {
 
 const client = axios.create({ baseURL: BASE_URL });
 
-// Request: convert camelCase body → snake_case
+// Request: convert camelCase body + params → snake_case
 client.interceptors.request.use((config) => {
   if (config.data !== undefined && config.data !== null) {
     config.data = snakeKeys(config.data);
+  }
+  if (config.params !== undefined && config.params !== null) {
+    config.params = snakeKeys(config.params);
   }
   return config;
 });

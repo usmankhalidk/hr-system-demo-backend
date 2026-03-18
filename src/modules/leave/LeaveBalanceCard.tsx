@@ -23,12 +23,13 @@ function BalancePill({ balance }: { balance: LeaveBalance }) {
         padding: '12px 16px',
         minWidth: 140,
         flex: '1 1 140px',
+        boxShadow: 'var(--shadow-xs)',
       }}
     >
       <div style={{ fontSize: 11, fontWeight: 600, color, textTransform: 'uppercase', letterSpacing: 1, marginBottom: 4 }}>
         {t(`leave.type_${balance.leaveType}`)}
       </div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1 }}>
+      <div style={{ fontSize: 28, fontWeight: 700, color: 'var(--text-primary)', lineHeight: 1 }}>
         {balance.remainingDays}
         <span style={{ fontSize: 13, fontWeight: 400, color: 'var(--text-secondary)', marginLeft: 4 }}>
           {t('leave.days_remaining')}
@@ -38,11 +39,11 @@ function BalancePill({ balance }: { balance: LeaveBalance }) {
         {t('leave.balance_used_of', { used: balance.usedDays, total: balance.totalDays })}
       </div>
       {/* Progress bar */}
-      <div style={{ marginTop: 8, height: 4, borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>
+      <div style={{ marginTop: 8, height: 6, borderRadius: 3, background: 'rgba(0,0,0,0.06)' }}>
         <div
           style={{
             width: `${usedPct}%`, height: '100%',
-            background: color, borderRadius: 2,
+            background: color, borderRadius: 3,
             transition: 'width 0.4s ease',
           }}
         />
@@ -62,6 +63,7 @@ export function LeaveBalanceCard({ balances, loading }: Props) {
         borderRadius: 12,
         padding: '16px 20px',
         marginBottom: 20,
+        boxShadow: 'var(--shadow-sm)',
       }}
     >
       <div style={{

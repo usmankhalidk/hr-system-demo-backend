@@ -147,30 +147,56 @@ input, select, textarea {
 
 /* ── Buttons ── */
 .btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  font-family: var(--font-body);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  border: none;
+  text-decoration: none;
   transition: background 0.15s ease, box-shadow 0.15s ease, transform 0.12s ease, color 0.15s ease, border-color 0.15s ease;
 }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; pointer-events: none; }
+.btn-primary { background: var(--primary); color: #fff; border: none; }
 .btn-primary:hover:not(:disabled) {
   background: var(--primary-hover) !important;
   box-shadow: 0 4px 14px rgba(13,33,55,0.28) !important;
   transform: translateY(-1px);
 }
 .btn-primary:active:not(:disabled) { transform: translateY(0) !important; }
+.btn-accent { background: var(--accent); color: #fff; border: none; }
 .btn-accent:hover:not(:disabled) {
   background: var(--accent-hover) !important;
   box-shadow: var(--shadow-accent) !important;
   transform: translateY(-1px);
 }
+.btn-secondary { background: transparent; color: var(--text-primary); border: 1.5px solid var(--border); }
 .btn-secondary:hover:not(:disabled) {
   border-color: var(--primary) !important;
   background: rgba(13,33,55,0.04) !important;
 }
+.btn-danger { background: var(--danger); color: #fff; border: none; }
 .btn-danger:hover:not(:disabled) {
   opacity: 0.88 !important;
   box-shadow: 0 4px 12px rgba(220,38,38,0.25) !important;
   transform: translateY(-1px);
 }
+.btn-ghost { background: transparent; color: var(--text-secondary); border: none; }
 .btn-ghost:hover:not(:disabled) {
-  background: rgba(0,0,0,0.04) !important;
+  background: rgba(0,0,0,0.06) !important;
+  color: var(--text-primary) !important;
+}
+/* Ghost button on dark/colored backgrounds — white text stays light on hover */
+.btn-ghost-light:hover:not(:disabled) {
+  background: rgba(255,255,255,0.12) !important;
+  color: #fff !important;
 }
 
 /* ── Sidebar nav items ── */
@@ -334,6 +360,45 @@ input, select, textarea {
     max-height: 100dvh !important;
     border-radius: 0 !important;
     margin: 0 !important;
+  }
+}
+
+/* ── Shifts: Import/Guide modal responsiveness ─────────────────────── */
+.shifts-import-modal {
+  display: flex;
+  flex-direction: column;
+  max-height: min(90dvh, 720px);
+}
+.shifts-import-modal-header,
+.shifts-import-modal-footer {
+  flex: 0 0 auto;
+}
+.shifts-import-modal-body {
+  flex: 1 1 auto;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+@media (max-width: 600px) {
+  .shifts-import-overlay {
+    padding: 16px !important;
+  }
+  .shifts-import-modal-header {
+    padding: 14px 16px !important;
+  }
+  .shifts-import-modal-body {
+    padding: 14px 16px !important;
+  }
+  .shifts-import-modal-footer {
+    padding: 12px 16px 16px !important;
+  }
+  .shifts-import-guide table {
+    font-size: 10px !important;
+  }
+  .shifts-import-guide th,
+  .shifts-import-guide td {
+    padding-left: 8px !important;
+    padding-right: 8px !important;
   }
 }
 
