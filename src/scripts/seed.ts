@@ -12,7 +12,7 @@ dotenv.config();
 export async function migrate() {
   const client = await pool.connect();
   try {
-    const migrationsDir = path.join(__dirname, '../../../database/migrations');
+    const migrationsDir = path.join(__dirname, '../../../database');
     for (const file of ['001_initial_schema.sql', '003_phase2_shifts.sql', '004_phase2_attendance.sql', '005_phase2_leave.sql']) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
