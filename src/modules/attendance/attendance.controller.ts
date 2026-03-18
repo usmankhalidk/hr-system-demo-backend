@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
-import { query, queryOne } from '../../config/database';
-import { ok, created, badRequest, conflict } from '../../utils/response';
+import { pool, query, queryOne } from '../../config/database';
+import { ok, created, badRequest, conflict, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 
@@ -15,6 +15,22 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
 
   if (!storeId || isNaN(storeId)) {
     badRequest(res, 'store_id obbligatorio', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Verify store belongs to this company
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [storeId, companyId],
+  );
+  if (!store) {
+    badRequest(res, 'Negozio non trovato', 'NOT_FOUND');
+    return;
+  }
+
+  // store_manager can only generate QR for their own store
+  if (req.user!.role === 'store_manager' && storeId !== req.user!.storeId) {
+    forbidden(res, 'Puoi generare QR solo per il tuo negozio');
     return;
   }
 
@@ -84,6 +100,16 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Verify user_id belongs to this company
+  const targetUser = await queryOne<{ id: number }>(
+    `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+    [user_id, companyId],
+  );
+  if (!targetUser) {
+    badRequest(res, 'Dipendente non trovato in questa azienda', 'NOT_FOUND');
+    return;
+  }
+
   // 4. Find active shift for this user (optional — link if found)
   const today = new Date().toISOString().split('T')[0];
   const currentShift = await queryOne<{ id: number }>(
@@ -94,28 +120,38 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     [companyId, user_id, today, payload.storeId],
   );
 
-  // 5. Mark nonce as used
-  await query(
-    `UPDATE qr_tokens SET used_at = NOW() WHERE id = $1`,
-    [qrToken.id],
-  );
-
-  // 6. Record attendance event
-  const event = await queryOne(
-    `INSERT INTO attendance_events
-       (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes)
-     VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7)
-     RETURNING *`,
-    [
-      companyId,
-      payload.storeId,
-      user_id,
-      event_type,
-      qrToken.id,
-      currentShift?.id ?? null,
-      notes ?? null,
-    ],
-  );
+  // 5 & 6: Use transaction — mark nonce used AND insert event atomically
+  const client = await pool.connect();
+  let event: any;
+  try {
+    await client.query('BEGIN');
+    await client.query(
+      `UPDATE qr_tokens SET used_at = NOW() WHERE id = $1`,
+      [qrToken.id],
+    );
+    const result = await client.query(
+      `INSERT INTO attendance_events
+         (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes)
+       VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7)
+       RETURNING *`,
+      [
+        companyId,
+        payload.storeId,
+        user_id,
+        event_type,
+        qrToken.id,
+        currentShift?.id ?? null,
+        notes ?? null,
+      ],
+    );
+    await client.query('COMMIT');
+    event = result.rows[0];
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 
   created(res, event, 'Evento registrato');
 });
@@ -158,6 +194,14 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     idx++;
   }
 
+  // Get total count first (same WHERE, no LIMIT)
+  const countResult = await query<{ count: string }>(
+    `SELECT COUNT(*) as count FROM attendance_events ae WHERE ae.company_id = $1${extraWhere}`,
+    params,
+  );
+  const total = parseInt(countResult[0].count, 10);
+
+  // Get page of results
   const events = await query(
     `SELECT
        ae.id, ae.company_id, ae.store_id, ae.user_id,
@@ -174,5 +218,5 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     params,
   );
 
-  ok(res, { events, total: events.length });
+  ok(res, { events, total, has_more: total > events.length });
 });
