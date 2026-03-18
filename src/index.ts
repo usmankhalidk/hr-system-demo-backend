@@ -62,10 +62,10 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 async function start() {
-  if (process.env.FORCE_SEED === 'true') {
-    console.log('FORCE_SEED=true — seeding database before startup...');
-    await seed();
-  }
+  // Always run seed on startup — seed() is idempotent: it skips if the DB
+  // is already populated, and only applies schema + data on a fresh database.
+  // Set FORCE_SEED=true to wipe and re-seed (useful for Railway demo resets).
+  await seed();
 
   app.listen(PORT, () => {
     console.log(`HR System backend running on http://localhost:${PORT}`);
