@@ -5,6 +5,24 @@ import path from 'path';
 
 dotenv.config();
 
+// ---------------------------------------------------------------------------
+// migrate() — apply all SQL migration files (idempotent, safe on every boot)
+// Does NOT wipe data. Safe to call on every startup.
+// ---------------------------------------------------------------------------
+export async function migrate() {
+  const client = await pool.connect();
+  try {
+    const migrationsDir = path.join(__dirname, '../../../database/migrations');
+    for (const file of ['001_initial_schema.sql', '003_phase2_shifts.sql', '004_phase2_attendance.sql', '005_phase2_leave.sql']) {
+      const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+      await client.query(sql);
+    }
+    console.log('✓ Migrations applied (schema up to date)');
+  } finally {
+    client.release();
+  }
+}
+
 export async function seed() {
   const client = await pool.connect();
   try {

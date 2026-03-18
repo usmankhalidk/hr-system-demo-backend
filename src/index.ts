@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
-import { seed } from './scripts/seed';
+import { seed, migrate } from './scripts/seed';
 import companiesRoutes from './modules/companies/companies.routes';
 import storesRoutes from './modules/stores/stores.routes';
 import employeesRoutes from './modules/employees/employees.routes';
@@ -62,10 +62,15 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 });
 
 async function start() {
-  // Always run seed on startup — seed() is idempotent: it skips if the DB
-  // is already populated, and only applies schema + data on a fresh database.
-  // Set FORCE_SEED=true to wipe and re-seed (useful for Railway demo resets).
-  await seed();
+  // Always apply migrations so the schema exists on fresh databases.
+  // This is idempotent (CREATE TABLE IF NOT EXISTS) and safe every boot.
+  await migrate();
+
+  // Seed demo data only when explicitly requested.
+  if (process.env.FORCE_SEED === 'true') {
+    console.log('FORCE_SEED=true — seeding database...');
+    await seed();
+  }
 
   app.listen(PORT, () => {
     console.log(`HR System backend running on http://localhost:${PORT}`);
