@@ -198,6 +198,328 @@ export async function seed() {
     }
     console.log('✓ Store affluence seeded');
 
+    // ── Shifts — 3 weeks of realistic data ──────────────────────────────────
+    // W11 (2026-03-09 to 2026-03-15) — confirmed (past)
+    // W12 (2026-03-16 to 2026-03-22) — mix confirmed/scheduled (current)
+    // W13 (2026-03-23 to 2026-03-29) — scheduled (future)
+    await client.query(`
+      INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, break_start, break_end, is_split, status, notes, created_by)
+      VALUES
+        -- W11 Roma (store 1): Sofia (4), Anna (6), Roberto (7)
+        (1,1,4,'2026-03-09','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-09','08:00','14:00','12:00','12:30',false,'confirmed',NULL,1),
+        (1,1,7,'2026-03-09','09:00','14:00',NULL,NULL,false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-10','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-10','14:00','20:00','17:00','17:30',false,'confirmed',NULL,1),
+        (1,1,7,'2026-03-10','09:00','14:00',NULL,NULL,false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-11','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-11','08:00','14:00','12:00','12:30',false,'confirmed',NULL,1),
+        (1,1,7,'2026-03-11','09:00','14:00',NULL,NULL,false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-12','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-12','14:00','20:00','17:00','17:30',false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-13','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-13','08:00','14:00','12:00','12:30',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-15','10:00','18:00','13:00','14:00',false,'confirmed','Weekend rinforzo',1),
+
+        -- W11 Milano (store 2): Luca (5), Chiara (8)
+        (1,2,5,'2026-03-09','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-09','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-10','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-10','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-11','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-11','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-12','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-12','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-13','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-13','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+
+        -- W12 Roma (current week) — mix of confirmed + scheduled
+        (1,1,4,'2026-03-16','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-16','08:00','14:00','12:00','12:30',false,'confirmed',NULL,1),
+        (1,1,7,'2026-03-16','09:00','14:00',NULL,NULL,false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-17','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,1,6,'2026-03-17','14:00','20:00','17:00','17:30',false,'confirmed',NULL,1),
+        (1,1,7,'2026-03-17','09:00','14:00',NULL,NULL,false,'confirmed',NULL,1),
+        (1,1,4,'2026-03-18','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-18','08:00','14:00','12:00','12:30',false,'scheduled',NULL,1),
+        (1,1,7,'2026-03-18','09:00','14:00',NULL,NULL,false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-19','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-19','14:00','20:00','17:00','17:30',false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-20','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-20','08:00','14:00','12:00','12:30',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-21','10:00','18:00','13:00','14:00',false,'scheduled','Sabato rinforzo',1),
+        (1,1,7,'2026-03-21','10:00','15:00',NULL,NULL,false,'scheduled',NULL,1),
+
+        -- W12 Milano (current week)
+        (1,2,5,'2026-03-16','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-16','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-17','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,8,'2026-03-17','09:00','18:00','13:00','14:00',false,'confirmed',NULL,1),
+        (1,2,5,'2026-03-18','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-18','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-19','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-19','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-20','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-20','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+
+        -- W13 Roma (next week) — all scheduled
+        (1,1,4,'2026-03-23','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-23','08:00','14:00','12:00','12:30',false,'scheduled',NULL,1),
+        (1,1,7,'2026-03-23','09:00','14:00',NULL,NULL,false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-24','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-24','14:00','20:00','17:00','17:30',false,'scheduled',NULL,1),
+        (1,1,7,'2026-03-24','09:00','14:00',NULL,NULL,false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-25','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-25','08:00','14:00','12:00','12:30',false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-26','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-26','14:00','20:00','17:00','17:30',false,'scheduled',NULL,1),
+        (1,1,7,'2026-03-26','09:00','14:00',NULL,NULL,false,'scheduled',NULL,1),
+        (1,1,4,'2026-03-27','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,1,6,'2026-03-27','08:00','14:00','12:00','12:30',false,'scheduled',NULL,1),
+
+        -- W13 Milano (next week)
+        (1,2,5,'2026-03-23','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-23','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-24','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-24','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-25','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-25','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-26','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-26','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,5,'2026-03-27','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+        (1,2,8,'2026-03-27','09:00','18:00','13:00','14:00',false,'scheduled',NULL,1),
+
+        -- Beta Industries Napoli (store 3): Carol (12), Marco (13)
+        (2,3,11,'2026-03-16','09:00','18:00','13:00','14:00',false,'confirmed',NULL,10),
+        (2,3,12,'2026-03-16','09:00','18:00','13:00','14:00',false,'confirmed',NULL,10),
+        (2,3,13,'2026-03-16','09:00','14:00',NULL,NULL,false,'confirmed',NULL,10),
+        (2,3,11,'2026-03-17','09:00','18:00','13:00','14:00',false,'confirmed',NULL,10),
+        (2,3,12,'2026-03-17','14:00','20:00','17:00','17:30',false,'confirmed',NULL,10),
+        (2,3,13,'2026-03-17','09:00','14:00',NULL,NULL,false,'scheduled',NULL,10),
+        (2,3,11,'2026-03-18','09:00','18:00','13:00','14:00',false,'scheduled',NULL,10),
+        (2,3,12,'2026-03-18','09:00','18:00','13:00','14:00',false,'scheduled',NULL,10),
+        (2,3,11,'2026-03-19','09:00','18:00','13:00','14:00',false,'scheduled',NULL,10),
+        (2,3,12,'2026-03-19','14:00','20:00','17:00','17:30',false,'scheduled',NULL,10),
+        (2,3,13,'2026-03-19','09:00','14:00',NULL,NULL,false,'scheduled',NULL,10),
+        (2,3,11,'2026-03-20','09:00','18:00','13:00','14:00',false,'scheduled',NULL,10),
+        (2,3,12,'2026-03-20','09:00','18:00','13:00','14:00',false,'scheduled',NULL,10)
+    `);
+    console.log('✓ Shifts seeded (3 weeks)');
+
+    // ── Attendance events — realistic check-in/out for W11 + W12 confirmed ──
+    // Source: 'manual' (no QR tokens needed for seed). shift_id=NULL for simplicity.
+    await client.query(`
+      INSERT INTO attendance_events (company_id, store_id, user_id, event_type, event_time, source)
+      VALUES
+        -- 2026-03-09 Monday — Roma: Sofia(4) full day, Anna(6) morning, Roberto(7) morning
+        (1,1,4,'checkin',    '2026-03-09 09:02:00+00','manual'),
+        (1,1,4,'break_start','2026-03-09 13:01:00+00','manual'),
+        (1,1,4,'break_end',  '2026-03-09 14:03:00+00','manual'),
+        (1,1,4,'checkout',   '2026-03-09 18:05:00+00','manual'),
+        (1,1,6,'checkin',    '2026-03-09 08:01:00+00','manual'),
+        (1,1,6,'break_start','2026-03-09 12:00:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-09 12:32:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-09 14:02:00+00','manual'),
+        (1,1,7,'checkin',    '2026-03-09 09:08:00+00','manual'),
+        (1,1,7,'checkout',   '2026-03-09 14:04:00+00','manual'),
+        -- 2026-03-09 Monday — Milano: Luca(5), Chiara(8)
+        (1,2,5,'checkin',    '2026-03-09 09:00:00+00','manual'),
+        (1,2,5,'break_start','2026-03-09 13:00:00+00','manual'),
+        (1,2,5,'break_end',  '2026-03-09 14:01:00+00','manual'),
+        (1,2,5,'checkout',   '2026-03-09 18:02:00+00','manual'),
+        (1,2,8,'checkin',    '2026-03-09 09:05:00+00','manual'),
+        (1,2,8,'break_start','2026-03-09 13:02:00+00','manual'),
+        (1,2,8,'break_end',  '2026-03-09 14:00:00+00','manual'),
+        (1,2,8,'checkout',   '2026-03-09 17:58:00+00','manual'),
+
+        -- 2026-03-10 Tuesday — Roma
+        (1,1,4,'checkin',    '2026-03-10 09:01:00+00','manual'),
+        (1,1,4,'break_start','2026-03-10 13:00:00+00','manual'),
+        (1,1,4,'break_end',  '2026-03-10 14:00:00+00','manual'),
+        (1,1,4,'checkout',   '2026-03-10 18:03:00+00','manual'),
+        (1,1,6,'checkin',    '2026-03-10 14:02:00+00','manual'),
+        (1,1,6,'break_start','2026-03-10 17:01:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-10 17:32:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-10 20:01:00+00','manual'),
+        (1,1,7,'checkin',    '2026-03-10 09:00:00+00','manual'),
+        (1,1,7,'checkout',   '2026-03-10 14:02:00+00','manual'),
+        -- Milano
+        (1,2,5,'checkin',    '2026-03-10 09:02:00+00','manual'),
+        (1,2,5,'break_start','2026-03-10 13:00:00+00','manual'),
+        (1,2,5,'break_end',  '2026-03-10 14:00:00+00','manual'),
+        (1,2,5,'checkout',   '2026-03-10 18:01:00+00','manual'),
+        (1,2,8,'checkin',    '2026-03-10 09:04:00+00','manual'),
+        (1,2,8,'break_start','2026-03-10 13:01:00+00','manual'),
+        (1,2,8,'break_end',  '2026-03-10 14:02:00+00','manual'),
+        (1,2,8,'checkout',   '2026-03-10 18:00:00+00','manual'),
+
+        -- 2026-03-11 Wednesday — Roma
+        (1,1,4,'checkin',    '2026-03-11 09:00:00+00','manual'),
+        (1,1,4,'break_start','2026-03-11 13:00:00+00','manual'),
+        (1,1,4,'break_end',  '2026-03-11 14:00:00+00','manual'),
+        (1,1,4,'checkout',   '2026-03-11 18:02:00+00','manual'),
+        (1,1,6,'checkin',    '2026-03-11 08:03:00+00','manual'),
+        (1,1,6,'break_start','2026-03-11 12:01:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-11 12:30:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-11 14:01:00+00','manual'),
+        (1,1,7,'checkin',    '2026-03-11 09:02:00+00','manual'),
+        (1,1,7,'checkout',   '2026-03-11 13:59:00+00','manual'),
+        -- Milano
+        (1,2,5,'checkin',    '2026-03-11 09:01:00+00','manual'),
+        (1,2,5,'break_start','2026-03-11 13:00:00+00','manual'),
+        (1,2,5,'break_end',  '2026-03-11 14:00:00+00','manual'),
+        (1,2,5,'checkout',   '2026-03-11 18:00:00+00','manual'),
+        (1,2,8,'checkin',    '2026-03-11 09:03:00+00','manual'),
+        (1,2,8,'break_start','2026-03-11 13:01:00+00','manual'),
+        (1,2,8,'break_end',  '2026-03-11 14:01:00+00','manual'),
+        (1,2,8,'checkout',   '2026-03-11 18:03:00+00','manual'),
+
+        -- 2026-03-12 Thursday — Roma
+        (1,1,4,'checkin',    '2026-03-12 09:05:00+00','manual'),
+        (1,1,4,'break_start','2026-03-12 13:02:00+00','manual'),
+        (1,1,4,'break_end',  '2026-03-12 14:00:00+00','manual'),
+        (1,1,4,'checkout',   '2026-03-12 18:01:00+00','manual'),
+        (1,1,6,'checkin',    '2026-03-12 14:01:00+00','manual'),
+        (1,1,6,'break_start','2026-03-12 17:00:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-12 17:31:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-12 20:00:00+00','manual'),
+        -- Milano
+        (1,2,5,'checkin',    '2026-03-12 09:00:00+00','manual'),
+        (1,2,5,'break_start','2026-03-12 13:00:00+00','manual'),
+        (1,2,5,'break_end',  '2026-03-12 14:00:00+00','manual'),
+        (1,2,5,'checkout',   '2026-03-12 18:02:00+00','manual'),
+        (1,2,8,'checkin',    '2026-03-12 09:02:00+00','manual'),
+        (1,2,8,'break_start','2026-03-12 13:00:00+00','manual'),
+        (1,2,8,'break_end',  '2026-03-12 14:00:00+00','manual'),
+        (1,2,8,'checkout',   '2026-03-12 18:01:00+00','manual'),
+
+        -- 2026-03-13 Friday — Roma (no Roberto)
+        (1,1,4,'checkin',    '2026-03-13 09:03:00+00','manual'),
+        (1,1,4,'break_start','2026-03-13 13:00:00+00','manual'),
+        (1,1,4,'break_end',  '2026-03-13 14:00:00+00','manual'),
+        (1,1,4,'checkout',   '2026-03-13 18:04:00+00','manual'),
+        (1,1,6,'checkin',    '2026-03-13 08:01:00+00','manual'),
+        (1,1,6,'break_start','2026-03-13 12:00:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-13 12:31:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-13 14:03:00+00','manual'),
+        -- Milano
+        (1,2,5,'checkin',    '2026-03-13 09:01:00+00','manual'),
+        (1,2,5,'break_start','2026-03-13 13:00:00+00','manual'),
+        (1,2,5,'break_end',  '2026-03-13 14:01:00+00','manual'),
+        (1,2,5,'checkout',   '2026-03-13 18:00:00+00','manual'),
+        (1,2,8,'checkin',    '2026-03-13 09:04:00+00','manual'),
+        (1,2,8,'break_start','2026-03-13 13:01:00+00','manual'),
+        (1,2,8,'break_end',  '2026-03-13 13:59:00+00','manual'),
+        (1,2,8,'checkout',   '2026-03-13 18:02:00+00','manual'),
+
+        -- 2026-03-15 Saturday — Roma: Anna(6) rinforzo
+        (1,1,6,'checkin',    '2026-03-15 10:01:00+00','manual'),
+        (1,1,6,'break_start','2026-03-15 13:02:00+00','manual'),
+        (1,1,6,'break_end',  '2026-03-15 14:01:00+00','manual'),
+        (1,1,6,'checkout',   '2026-03-15 18:00:00+00','manual'),
+
+        -- W12 confirmed: 2026-03-16 Monday — Roma + Milano
+        (1,1,4,'checkin',    '2026-03-16 09:02:00+00','qr'),
+        (1,1,4,'break_start','2026-03-16 13:00:00+00','qr'),
+        (1,1,4,'break_end',  '2026-03-16 14:01:00+00','qr'),
+        (1,1,4,'checkout',   '2026-03-16 18:03:00+00','qr'),
+        (1,1,6,'checkin',    '2026-03-16 08:00:00+00','qr'),
+        (1,1,6,'break_start','2026-03-16 12:01:00+00','qr'),
+        (1,1,6,'break_end',  '2026-03-16 12:30:00+00','qr'),
+        (1,1,6,'checkout',   '2026-03-16 14:02:00+00','qr'),
+        (1,1,7,'checkin',    '2026-03-16 09:01:00+00','qr'),
+        (1,1,7,'checkout',   '2026-03-16 14:00:00+00','qr'),
+        (1,2,5,'checkin',    '2026-03-16 09:03:00+00','qr'),
+        (1,2,5,'break_start','2026-03-16 13:00:00+00','qr'),
+        (1,2,5,'break_end',  '2026-03-16 14:00:00+00','qr'),
+        (1,2,5,'checkout',   '2026-03-16 18:01:00+00','qr'),
+        (1,2,8,'checkin',    '2026-03-16 09:02:00+00','qr'),
+        (1,2,8,'break_start','2026-03-16 13:01:00+00','qr'),
+        (1,2,8,'break_end',  '2026-03-16 14:00:00+00','qr'),
+        (1,2,8,'checkout',   '2026-03-16 18:00:00+00','qr'),
+
+        -- W12 confirmed: 2026-03-17 Tuesday — Roma + Milano
+        (1,1,4,'checkin',    '2026-03-17 09:04:00+00','qr'),
+        (1,1,4,'break_start','2026-03-17 13:01:00+00','qr'),
+        (1,1,4,'break_end',  '2026-03-17 14:00:00+00','qr'),
+        (1,1,4,'checkout',   '2026-03-17 18:02:00+00','qr'),
+        (1,1,6,'checkin',    '2026-03-17 14:01:00+00','qr'),
+        (1,1,6,'break_start','2026-03-17 17:00:00+00','qr'),
+        (1,1,6,'break_end',  '2026-03-17 17:30:00+00','qr'),
+        (1,1,6,'checkout',   '2026-03-17 20:02:00+00','qr'),
+        (1,1,7,'checkin',    '2026-03-17 09:00:00+00','qr'),
+        (1,1,7,'checkout',   '2026-03-17 14:03:00+00','qr'),
+        (1,2,5,'checkin',    '2026-03-17 09:01:00+00','qr'),
+        (1,2,5,'break_start','2026-03-17 13:00:00+00','qr'),
+        (1,2,5,'break_end',  '2026-03-17 14:02:00+00','qr'),
+        (1,2,5,'checkout',   '2026-03-17 18:01:00+00','qr'),
+        (1,2,8,'checkin',    '2026-03-17 09:03:00+00','qr'),
+        (1,2,8,'break_start','2026-03-17 13:00:00+00','qr'),
+        (1,2,8,'break_end',  '2026-03-17 14:01:00+00','qr'),
+        (1,2,8,'checkout',   '2026-03-17 18:00:00+00','qr'),
+
+        -- Beta Industries Napoli W12 confirmed: 2026-03-16
+        (2,3,11,'checkin',    '2026-03-16 09:01:00+00','manual'),
+        (2,3,11,'break_start','2026-03-16 13:00:00+00','manual'),
+        (2,3,11,'break_end',  '2026-03-16 14:00:00+00','manual'),
+        (2,3,11,'checkout',   '2026-03-16 18:02:00+00','manual'),
+        (2,3,12,'checkin',    '2026-03-16 09:03:00+00','manual'),
+        (2,3,12,'break_start','2026-03-16 13:01:00+00','manual'),
+        (2,3,12,'break_end',  '2026-03-16 14:00:00+00','manual'),
+        (2,3,12,'checkout',   '2026-03-16 18:01:00+00','manual'),
+        (2,3,13,'checkin',    '2026-03-16 09:02:00+00','manual'),
+        (2,3,13,'checkout',   '2026-03-16 14:00:00+00','manual'),
+        -- 2026-03-17
+        (2,3,11,'checkin',    '2026-03-17 09:00:00+00','manual'),
+        (2,3,11,'break_start','2026-03-17 13:00:00+00','manual'),
+        (2,3,11,'break_end',  '2026-03-17 14:01:00+00','manual'),
+        (2,3,11,'checkout',   '2026-03-17 18:00:00+00','manual'),
+        (2,3,12,'checkin',    '2026-03-17 14:02:00+00','manual'),
+        (2,3,12,'break_start','2026-03-17 17:01:00+00','manual'),
+        (2,3,12,'break_end',  '2026-03-17 17:30:00+00','manual'),
+        (2,3,12,'checkout',   '2026-03-17 20:00:00+00','manual'),
+        (2,3,13,'checkin',    '2026-03-17 09:01:00+00','manual'),
+        (2,3,13,'checkout',   '2026-03-17 14:01:00+00','manual')
+    `);
+    console.log('✓ Attendance events seeded');
+
+    // ── Shift templates ──────────────────────────────────────────────────────
+    // Templates for FUSARO UOMO stores (store_id 1=Roma, 2=Milano)
+    const tmplAdminId = 2; // HR user id
+    await client.query(`
+      INSERT INTO shift_templates (company_id, store_id, name, template_data, created_by) VALUES
+      (1, 1, 'Settimana Standard Roma',
+       '{"shifts":[
+         {"dayOfWeek":0,"startTime":"09:00","endTime":"18:00","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":1,"startTime":"09:00","endTime":"18:00","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":2,"startTime":"09:00","endTime":"18:00","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":3,"startTime":"09:00","endTime":"18:00","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":4,"startTime":"09:00","endTime":"18:00","breakStart":"13:00","breakEnd":"14:00"}
+       ]}'::jsonb, $1),
+      (1, 1, 'Weekend Roma (Sab+Dom)',
+       '{"shifts":[
+         {"dayOfWeek":5,"startTime":"09:00","endTime":"20:00","breakStart":"14:00","breakEnd":"15:00"},
+         {"dayOfWeek":6,"startTime":"10:00","endTime":"19:00","breakStart":"14:00","breakEnd":"15:00"}
+       ]}'::jsonb, $1),
+      (1, 2, 'Settimana Standard Milano',
+       '{"shifts":[
+         {"dayOfWeek":0,"startTime":"09:30","endTime":"18:30","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":1,"startTime":"09:30","endTime":"18:30","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":2,"startTime":"09:30","endTime":"18:30","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":3,"startTime":"09:30","endTime":"18:30","breakStart":"13:00","breakEnd":"14:00"},
+         {"dayOfWeek":4,"startTime":"09:30","endTime":"18:30","breakStart":"13:00","breakEnd":"14:00"}
+       ]}'::jsonb, $1),
+      (1, 2, 'Turni Sera Milano',
+       '{"shifts":[
+         {"dayOfWeek":0,"startTime":"14:00","endTime":"21:00","breakStart":"17:30","breakEnd":"18:00"},
+         {"dayOfWeek":1,"startTime":"14:00","endTime":"21:00","breakStart":"17:30","breakEnd":"18:00"},
+         {"dayOfWeek":2,"startTime":"14:00","endTime":"21:00","breakStart":"17:30","breakEnd":"18:00"},
+         {"dayOfWeek":3,"startTime":"14:00","endTime":"21:00","breakStart":"17:30","breakEnd":"18:00"},
+         {"dayOfWeek":4,"startTime":"14:00","endTime":"21:00","breakStart":"17:30","breakEnd":"18:00"}
+       ]}'::jsonb, $1)
+    `, [tmplAdminId]);
+    console.log('✓ Shift templates seeded (4 templates)');
+
     console.log('\n✅ Seed complete! All passwords: password123\n');
     console.log('  FUSARO UOMO');
     console.log('    admin@fusarouomo.com          Admin');

@@ -196,7 +196,7 @@ describe('Overlap detection', () => {
     await testPool.query('DELETE FROM shifts WHERE date = $1 AND user_id = $2', ['2026-03-25', seeds.employee1Id]);
   });
 
-  it('returns 409 SHIFT_OVERLAP when creating overlapping shift same user+date', async () => {
+  it('returns 409 OVERLAP_CONFLICT when creating overlapping shift same user+date', async () => {
     const token = await login('admin@acme-test.com');
     const res = await request
       .post('/api/shifts')
@@ -209,7 +209,7 @@ describe('Overlap detection', () => {
         end_time: '20:00',
       });
     expect(res.status).toBe(409);
-    expect(res.body.code).toBe('SHIFT_OVERLAP');
+    expect(res.body.code).toBe('OVERLAP_CONFLICT');
     expect(res.body.error).toBe('Turno sovrapposto per questo dipendente in questa data');
   });
 
@@ -230,7 +230,7 @@ describe('Overlap detection', () => {
     await testPool.query('DELETE FROM shifts WHERE id = $1', [res.body.data.id]);
   });
 
-  it('returns 409 SHIFT_OVERLAP when updating to create overlap', async () => {
+  it('returns 409 OVERLAP_CONFLICT when updating to create overlap', async () => {
     // Create a second non-overlapping shift first
     const tokenA = await login('admin@acme-test.com');
     const r = await request
@@ -251,7 +251,7 @@ describe('Overlap detection', () => {
       .set('Authorization', `Bearer ${tokenA}`)
       .send({ start_time: '08:00', end_time: '15:00' });
     expect(res.status).toBe(409);
-    expect(res.body.code).toBe('SHIFT_OVERLAP');
+    expect(res.body.code).toBe('OVERLAP_CONFLICT');
 
     await testPool.query('DELETE FROM shifts WHERE id = $1', [secondId]);
   });

@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import * as XLSX from 'xlsx';
 import { pool, query, queryOne } from '../../config/database';
 import { ok, created, badRequest, conflict, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -194,14 +195,64 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     idx++;
   }
 
-  // Get total count first (same WHERE, no LIMIT)
+  const format = req.query.format as string | undefined;
+
+  // Export path: run uncapped query, skip pagination
+  if (format === 'csv' || format === 'xlsx') {
+    const exportEvents = await query(
+      `SELECT
+         ae.id, ae.company_id, ae.store_id, ae.user_id,
+         ae.event_type, ae.event_time, ae.source,
+         ae.qr_token_id, ae.shift_id, ae.notes, ae.created_at,
+         u.name AS user_name, u.surname AS user_surname,
+         st.name AS store_name
+       FROM attendance_events ae
+       LEFT JOIN users u  ON u.id  = ae.user_id
+       LEFT JOIN stores st ON st.id = ae.store_id
+       WHERE ae.company_id = $1${extraWhere}
+       ORDER BY ae.event_time DESC`,
+      params,
+    );
+    const HEADERS = ['Data/Ora', 'Cognome', 'Nome', 'Negozio', 'Tipo Evento', 'Origine', 'Note'];
+    const EVENT_LABELS: Record<string, string> = {
+      checkin: 'Entrata', checkout: 'Uscita', break_start: 'Inizio Pausa', break_end: 'Fine Pausa',
+    };
+    const rowData = exportEvents.map((e: any) => [
+      new Date(e.event_time).toLocaleString('it-IT', { day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit' }),
+      e.user_surname ?? '', e.user_name ?? '',
+      e.store_name ?? '',
+      EVENT_LABELS[e.event_type] ?? e.event_type,
+      e.source ?? '',
+      e.notes ?? '',
+    ]);
+
+    const filename = `presenze-${date_from ?? 'export'}`;
+
+    if (format === 'xlsx') {
+      const ws = XLSX.utils.aoa_to_sheet([HEADERS, ...rowData]);
+      ws['!cols'] = HEADERS.map(() => ({ wch: 18 }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Presenze');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      res.send(buf);
+    } else {
+      const csvRows = rowData.map((r) => r.map((v) => `"${String(v).replace(/"/g,'""')}"`).join(','));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+      res.send(HEADERS.map(h => `"${h}"`).join(',') + '\n' + csvRows.join('\n'));
+    }
+    return;
+  }
+
+  // Pagination path (normal UI listing)
   const countResult = await query<{ count: string }>(
     `SELECT COUNT(*) as count FROM attendance_events ae WHERE ae.company_id = $1${extraWhere}`,
     params,
   );
   const total = parseInt(countResult[0].count, 10);
 
-  // Get page of results
   const events = await query(
     `SELECT
        ae.id, ae.company_id, ae.store_id, ae.user_id,
