@@ -1,19 +1,22 @@
 import { Pool } from 'pg';
 
 const TEST_DB_URL = process.env.TEST_DATABASE_URL ||
-  'postgresql://postgres:password@localhost:5432/hr_system_test';
+  'postgresql://postgres:postgres@localhost:5432/hr_system_test';
 
 export const testPool = new Pool({ connectionString: TEST_DB_URL, options: '-c timezone=UTC' });
 
 export async function clearTestData(): Promise<void> {
   await testPool.query(`
     TRUNCATE login_attempts, audit_logs, role_module_permissions,
-             attendance, shifts, users, stores, companies
+             qr_tokens, attendance_events,
+             leave_approvals, leave_balances, leave_requests,
+             store_affluence, shift_templates, shifts,
+             attendance, users, stores, companies
     RESTART IDENTITY CASCADE
   `);
 }
 
-export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; romaStoreId: number }> {
+export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; romaStoreId: number; shiftId: number }> {
   // Companies
   const { rows: [acme] } = await testPool.query(
     `INSERT INTO companies (name, slug) VALUES ('Acme Test', 'acme-test') RETURNING id`
@@ -52,6 +55,13 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     [acme.id, HASH, romaStore.id, romaManager.id]
   );
 
+  const { rows: [terminal] } = await testPool.query(
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, status)
+     VALUES ($1, 'Terminal', 'Roma', 'terminal@acme-test.com', $2, 'store_terminal', $3, 'active')
+     RETURNING id`,
+    [acme.id, HASH, romaStore.id]
+  );
+
   // Seed module permissions for acme
   const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
@@ -66,6 +76,13 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     }
   }
 
+  // Seed one shift for employee1 in romaStore (2026-03-10 = week 11)
+  const { rows: [shift1] } = await testPool.query(
+    `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, status, created_by)
+     VALUES ($1, $2, $3, '2026-03-10', '09:00', '17:00', 'scheduled', $4) RETURNING id`,
+    [acme.id, romaStore.id, employee1.id, admin.id]
+  );
+
   return {
     acmeId: acme.id,
     betaId: beta.id,
@@ -74,7 +91,9 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     areaManagerId: areaManager.id,
     romaManagerId: romaManager.id,
     employee1Id: employee1.id,
+    terminalId: terminal.id,
     romaStoreId: romaStore.id,
+    shiftId: shift1.id,
   };
 }
 

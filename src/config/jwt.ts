@@ -42,3 +42,23 @@ export function signQrToken(companyId: number, shiftId: number): string {
 export function verifyQrToken(token: string): QrPayload {
   return jwt.verify(token, QR_SECRET) as QrPayload;
 }
+
+// ---------------------------------------------------------------------------
+// Phase 2: store-level QR tokens (companyId + storeId + nonce)
+// ---------------------------------------------------------------------------
+
+export interface QrTokenPayload {
+  companyId: number;
+  storeId: number;
+  nonce: string;
+  iat: number;
+  exp: number;
+}
+
+export function signQrToken2(companyId: number, storeId: number, nonce: string): string {
+  return jwt.sign({ companyId, storeId, nonce }, QR_SECRET, { expiresIn: QR_TOKEN_TTL });
+}
+
+export function verifyQrToken2(token: string): QrTokenPayload {
+  return jwt.verify(token, QR_SECRET) as QrTokenPayload;
+}

@@ -16,17 +16,9 @@ const request = supertest(app);
 
 let seeds: Awaited<ReturnType<typeof seedTestData>>;
 
-const HASH = '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG'; // password123
-
 beforeAll(async () => {
   seeds = await seedTestData();
-
-  // Create a store_terminal user for testing
-  await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, status)
-     VALUES ($1, 'Terminal', 'Test', 'terminal@acme-test.com', $2, 'store_terminal', $3, 'active') RETURNING id`,
-    [seeds.acmeId, HASH, seeds.romaStoreId]
-  );
+  // store_terminal user 'terminal@acme-test.com' is now created by seedTestData()
 });
 
 afterAll(async () => {
