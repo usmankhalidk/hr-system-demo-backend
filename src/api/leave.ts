@@ -28,6 +28,7 @@ export interface LeaveRequest {
   updatedAt: string;
   userName?: string;
   userSurname?: string;
+  medicalCertificateName?: string | null;
 }
 
 export interface LeaveBalance {
@@ -47,6 +48,7 @@ export interface SubmitLeavePayload {
   startDate: string;
   endDate: string;
   notes?: string;
+  certificate?: File;   // optional medical certificate (sick leave only)
 }
 
 export interface LeaveListParams {
@@ -74,7 +76,24 @@ export interface BalanceResponse {
 
 /** Submit a new leave request. */
 export async function submitLeaveRequest(payload: SubmitLeavePayload): Promise<LeaveRequest> {
-  const { data } = await apiClient.post('/leave', payload);
+  if (payload.certificate) {
+    const form = new FormData();
+    form.append('leave_type', payload.leaveType);
+    form.append('start_date', payload.startDate);
+    form.append('end_date', payload.endDate);
+    if (payload.notes) form.append('notes', payload.notes);
+    form.append('certificate', payload.certificate);
+    const { data } = await apiClient.post('/leave', form, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return data.data as LeaveRequest;
+  }
+  const { data } = await apiClient.post('/leave', {
+    leave_type: payload.leaveType,
+    start_date: payload.startDate,
+    end_date: payload.endDate,
+    notes: payload.notes,
+  });
   return data.data as LeaveRequest;
 }
 
@@ -106,4 +125,10 @@ export async function rejectLeaveRequest(id: number, notes: string): Promise<Lea
 export async function getLeaveBalance(params?: { userId?: number; year?: number }): Promise<BalanceResponse> {
   const { data } = await apiClient.get('/leave/balance', { params });
   return data.data as BalanceResponse;
+}
+
+/** Download a medical certificate for a sick leave request. */
+export async function downloadCertificate(leaveId: number): Promise<Blob> {
+  const { data } = await apiClient.get(`/leave/${leaveId}/certificate`, { responseType: 'blob' });
+  return data as Blob;
 }

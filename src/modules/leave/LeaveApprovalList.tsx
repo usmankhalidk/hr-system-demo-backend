@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { LeaveRequest, LeaveStatus, approveLeaveRequest, rejectLeaveRequest } from '../../api/leave';
+import { LeaveRequest, LeaveStatus, approveLeaveRequest, rejectLeaveRequest, downloadCertificate } from '../../api/leave';
 import { useToast } from '../../context/ToastContext';
 
 // ---------------------------------------------------------------------------
@@ -200,6 +200,20 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
   const [rejectTarget, setRejectTarget] = useState<number | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
 
+  async function handleDownloadCertificate(req: LeaveRequest) {
+    try {
+      const blob = await downloadCertificate(req.id);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = req.medicalCertificateName ?? 'certificato-medico';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      showToast('Impossibile scaricare il certificato', 'error');
+    }
+  }
+
   async function handleApprove(id: number) {
     setActionLoading(true);
     try {
@@ -298,6 +312,23 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
             {req.notes && (
               <div style={{ fontSize: 13, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 8 }}>
                 "{req.notes}"
+              </div>
+            )}
+
+            {/* Certificate download button */}
+            {req.medicalCertificateName && (
+              <div style={{ marginBottom: 8 }}>
+                <button
+                  onClick={() => handleDownloadCertificate(req)}
+                  style={{
+                    display: 'inline-flex', alignItems: 'center', gap: 5,
+                    padding: '3px 10px', borderRadius: 6,
+                    background: 'rgba(3,105,161,0.08)', border: '1px solid rgba(3,105,161,0.25)',
+                    color: '#0369a1', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                  }}
+                >
+                  📎 Certificato
+                </button>
               </div>
             )}
 

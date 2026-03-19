@@ -18,6 +18,7 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [notes, setNotes] = useState('');
+  const [certificate, setCertificate] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -26,6 +27,7 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
     setStartDate('');
     setEndDate('');
     setNotes('');
+    setCertificate(null);
     setError(null);
   }
 
@@ -49,7 +51,13 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
 
     setLoading(true);
     try {
-      await submitLeaveRequest({ leaveType, startDate, endDate, notes: notes || undefined });
+      await submitLeaveRequest({
+        leaveType,
+        startDate,
+        endDate,
+        notes: notes || undefined,
+        certificate: leaveType === 'sick' && certificate ? certificate : undefined,
+      });
       showToast(t('leave.submitted_success'), 'success');
       reset();
       onSubmitted();
@@ -207,6 +215,53 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
               }}
             />
           </div>
+
+          {/* Certificate upload (sick leave only) */}
+          {leaveType === 'sick' && (
+            <div style={{ marginBottom: 16 }}>
+              <label style={{
+                display: 'block', marginBottom: 6,
+                fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)',
+              }}>
+                Certificato medico{' '}
+                <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
+                  (opzionale, PDF/JPEG/PNG, max 5MB)
+                </span>
+              </label>
+              <label style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                padding: '10px 14px', borderRadius: 8, cursor: 'pointer',
+                border: `2px dashed ${certificate ? '#22c55e' : 'var(--border)'}`,
+                background: certificate ? 'rgba(34,197,94,0.06)' : 'var(--background)',
+                transition: 'border-color 0.15s, background 0.15s',
+              }}>
+                <input
+                  type="file"
+                  accept=".pdf,.jpg,.jpeg,.png"
+                  style={{ display: 'none' }}
+                  onChange={(e) => { const f = e.target.files?.[0]; setCertificate(f ?? null); }}
+                />
+                <span style={{ fontSize: 20 }}>{certificate ? '✅' : '📎'}</span>
+                <span style={{
+                  fontSize: 13,
+                  color: certificate ? '#16a34a' : 'var(--text-muted)',
+                  fontWeight: certificate ? 700 : 400,
+                  flex: 1,
+                }}>
+                  {certificate ? certificate.name : 'Allega certificato medico'}
+                </span>
+                {certificate && (
+                  <button
+                    type="button"
+                    onClick={(e) => { e.preventDefault(); setCertificate(null); }}
+                    style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)', fontSize: 18, lineHeight: 1 }}
+                  >
+                    ×
+                  </button>
+                )}
+              </label>
+            </div>
+          )}
 
           {/* Submit */}
           <button
