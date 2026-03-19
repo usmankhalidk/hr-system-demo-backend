@@ -39,7 +39,7 @@ const syncSchema = z.object({
   events: z.array(z.object({
     event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
     user_id:    z.number().int().positive(),
-    event_time: z.string().min(1),
+    event_time: z.string().datetime(),
     notes:      z.string().max(500).optional(),
   })).min(1).max(500),
 });

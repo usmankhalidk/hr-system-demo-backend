@@ -303,6 +303,15 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
   let failed = 0;
   const errors: string[] = [];
 
+  // Pre-fetch all unique user IDs in one query (avoids N+1)
+  const uniqueUserIds = [...new Set(events.map((e) => e.user_id))];
+  const validUserRows = await query<{ id: number }>(
+    `SELECT id FROM users
+     WHERE id = ANY($1::int[]) AND company_id = $2 AND status = 'active'`,
+    [uniqueUserIds, companyId],
+  );
+  const validUserSet = new Set(validUserRows.map((r) => r.id));
+
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     const rowNum = i + 1;
@@ -320,11 +329,15 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    const targetUser = await queryOne<{ id: number }>(
-      `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
-      [ev.user_id, companyId],
-    );
-    if (!targetUser) {
+    // Reject timestamps more than 5 minutes in the future
+    const FIVE_MIN_MS = 5 * 60 * 1000;
+    if (ts.getTime() > Date.now() + FIVE_MIN_MS) {
+      errors.push(`Evento ${rowNum}: data/ora non può essere nel futuro`);
+      failed++;
+      continue;
+    }
+
+    if (!validUserSet.has(ev.user_id)) {
       errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
       failed++;
       continue;
