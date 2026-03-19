@@ -45,6 +45,8 @@ export async function seed() {
       }
     }
 
+    await client.query('BEGIN');
+
     // ── Drop everything and rebuild schema from scratch ──────────────────────
     // This guarantees a clean slate regardless of what was previously deployed
     // (e.g. old 4-table schema on an existing Railway DB).
@@ -556,6 +558,7 @@ export async function seed() {
     console.log('    carol@beta.com                Employee — Napoli Vendite');
     console.log('    marco@beta.com                Employee — Napoli Cassa');
 
+    await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     throw err;
