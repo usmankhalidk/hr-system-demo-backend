@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { checkin, listAttendanceEvents, syncEvents } from './attendance.controller';
+import { checkin, listAttendanceEvents, syncEvents, getAnomalies } from './attendance.controller';
 
 const router = Router();
 
@@ -52,6 +52,15 @@ router.post(
   enforceCompany,
   validate(syncSchema),
   syncEvents,
+);
+
+// GET /api/attendance/anomalies — management roles only
+router.get(
+  '/anomalies',
+  authenticate,
+  requireRole(...managementRoles),
+  enforceCompany,
+  getAnomalies,
 );
 
 export default router;

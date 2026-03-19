@@ -369,3 +369,184 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
 
   ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length });
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/attendance/anomalies
+// Query params: store_id?, date_from?, date_to?
+// Only analyses PAST shifts (date < today, or date = today with end_time passed).
+// Anomaly types: late_arrival, no_show, long_break, early_exit
+// ---------------------------------------------------------------------------
+export const getAnomalies = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, role, userId, storeId: callerStoreId } = req.user!;
+  const { store_id, date_from, date_to } = req.query as Record<string, string>;
+
+  const today = new Date().toISOString().split('T')[0];
+  const from = date_from || today;
+  const to   = date_to   || today;
+
+  // Resolve managed store IDs once (used for both shifts and events scoping)
+  let managedStoreIds: number[] | null = null;
+  if (role === 'area_manager') {
+    const rows = await query<{ store_id: number }>(
+      `SELECT DISTINCT store_id FROM users
+       WHERE role = 'store_manager' AND supervisor_id = $1
+         AND status = 'active' AND store_id IS NOT NULL`,
+      [userId],
+    );
+    managedStoreIds = rows.map((r) => r.store_id);
+    if (managedStoreIds.length === 0) {
+      ok(res, { anomalies: [], total: 0 });
+      return;
+    }
+  }
+
+  // Build store-scope WHERE clause
+  function buildStoreWhere(alias: string, startIdx: number): { clause: string; params: any[]; nextIdx: number } {
+    if (role === 'store_manager') {
+      return { clause: ` AND ${alias}.store_id = $${startIdx}`, params: [callerStoreId], nextIdx: startIdx + 1 };
+    }
+    if (role === 'area_manager' && managedStoreIds) {
+      const ph = managedStoreIds.map((_, i) => `$${startIdx + i}`).join(',');
+      return { clause: ` AND ${alias}.store_id IN (${ph})`, params: managedStoreIds, nextIdx: startIdx + managedStoreIds.length };
+    }
+    if (store_id) {
+      return { clause: ` AND ${alias}.store_id = $${startIdx}`, params: [parseInt(store_id, 10)], nextIdx: startIdx + 1 };
+    }
+    return { clause: '', params: [], nextIdx: startIdx };
+  }
+
+  // Fetch past non-cancelled shifts in date range
+  const shiftScope = buildStoreWhere('s', 4);
+  const shifts = await query<{
+    id: number; user_id: number; store_id: number; date: string;
+    start_time: string; end_time: string;
+    break_start: string | null; break_end: string | null;
+    user_name: string; user_surname: string; store_name: string;
+  }>(
+    `SELECT s.id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+            s.start_time, s.end_time, s.break_start, s.break_end,
+            u.name AS user_name, u.surname AS user_surname,
+            st.name AS store_name
+     FROM shifts s
+     LEFT JOIN users u  ON u.id  = s.user_id
+     LEFT JOIN stores st ON st.id = s.store_id
+     WHERE s.company_id = $1
+       AND s.date BETWEEN $2 AND $3
+       AND s.status != 'cancelled'
+       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < LOCALTIME))
+       ${shiftScope.clause}
+     ORDER BY s.date, s.user_id`,
+    [companyId, from, to, ...shiftScope.params],
+  );
+
+  if (shifts.length === 0) {
+    ok(res, { anomalies: [], total: 0 });
+    return;
+  }
+
+  // Fetch attendance events for the same period + scope
+  const evScope = buildStoreWhere('ae', 4);
+  const events = await query<{
+    user_id: number; event_type: string; event_time: string;
+  }>(
+    `SELECT ae.user_id, ae.event_type, ae.event_time
+     FROM attendance_events ae
+     WHERE ae.company_id = $1
+       AND ae.event_time::DATE BETWEEN $2 AND $3
+       ${evScope.clause}
+     ORDER BY ae.user_id, ae.event_time`,
+    [companyId, from, to, ...evScope.params],
+  );
+
+  // Group events by (user_id, date)
+  type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date };
+  const eventMap = new Map<string, EventGroup>();
+  for (const e of events) {
+    const date = new Date(e.event_time).toISOString().split('T')[0];
+    const key = `${e.user_id}:${date}`;
+    if (!eventMap.has(key)) eventMap.set(key, {});
+    const group = eventMap.get(key)!;
+    const t = new Date(e.event_time);
+    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     group.checkin     = t;
+    if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
+    if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
+    if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
+  }
+
+  const LATE_MS       = 15 * 60 * 1000;
+  const EARLY_EXIT_MS = 15 * 60 * 1000;
+  const LONG_BREAK_MS = 60 * 60 * 1000;
+
+  const anomalies: Array<{
+    shift_id: number; user_id: number; user_name: string; user_surname: string;
+    store_name: string; date: string;
+    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit';
+    severity: 'low' | 'medium' | 'high';
+    details: string;
+  }> = [];
+
+  for (const shift of shifts) {
+    const key      = `${shift.user_id}:${shift.date}`;
+    const evGroup  = eventMap.get(key);
+    const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
+    const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+
+    if (!evGroup?.checkin) {
+      anomalies.push({
+        shift_id: shift.id, user_id: shift.user_id,
+        user_name: shift.user_name, user_surname: shift.user_surname,
+        store_name: shift.store_name, date: shift.date,
+        anomaly_type: 'no_show', severity: 'high',
+        details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
+      });
+      continue;
+    }
+
+    const { checkin, checkout, break_start: bStart, break_end: bEnd } = evGroup;
+
+    // Late arrival
+    const lateMs = checkin.getTime() - shiftStart.getTime();
+    if (lateMs > LATE_MS) {
+      const lateMin = Math.round(lateMs / 60000);
+      anomalies.push({
+        shift_id: shift.id, user_id: shift.user_id,
+        user_name: shift.user_name, user_surname: shift.user_surname,
+        store_name: shift.store_name, date: shift.date,
+        anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
+        details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
+      });
+    }
+
+    // Early exit
+    if (checkout) {
+      const earlyMs = shiftEnd.getTime() - checkout.getTime();
+      if (earlyMs > EARLY_EXIT_MS) {
+        const earlyMin = Math.round(earlyMs / 60000);
+        anomalies.push({
+          shift_id: shift.id, user_id: shift.user_id,
+          user_name: shift.user_name, user_surname: shift.user_surname,
+          store_name: shift.store_name, date: shift.date,
+          anomaly_type: 'early_exit', severity: earlyMin > 30 ? 'high' : 'medium',
+          details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
+        });
+      }
+    }
+
+    // Long break
+    if (bStart && bEnd) {
+      const breakMs = bEnd.getTime() - bStart.getTime();
+      if (breakMs > LONG_BREAK_MS) {
+        const breakMin = Math.round(breakMs / 60000);
+        anomalies.push({
+          shift_id: shift.id, user_id: shift.user_id,
+          user_name: shift.user_name, user_surname: shift.user_surname,
+          store_name: shift.store_name, date: shift.date,
+          anomaly_type: 'long_break', severity: breakMin > 90 ? 'high' : 'medium',
+          details: `Pausa di ${breakMin} min (limite: 60 min)`,
+        });
+      }
+    }
+  }
+
+  ok(res, { anomalies, total: anomalies.length });
+});
