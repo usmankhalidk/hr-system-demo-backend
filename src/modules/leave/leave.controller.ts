@@ -75,15 +75,23 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const file = (req as any).file as Express.Multer.File | undefined;
+  const certificateName = file?.originalname ?? null;
+  const certificateData = file?.buffer ?? null;
+
   const firstApprover = await determineFirstApprover(companyId, storeId ?? null);
 
   const leaveRequest = await queryOne(
     `INSERT INTO leave_requests
-      (company_id, user_id, store_id, leave_type, start_date, end_date, status, current_approver_role, notes)
-     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+      (company_id, user_id, store_id, leave_type, start_date, end_date,
+       status, current_approver_role, notes,
+       medical_certificate_name, medical_certificate_data)
+     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
-               status, current_approver_role, notes, created_at`,
-    [companyId, userId, storeId ?? null, leave_type, start_date, end_date, firstApprover, notes ?? null],
+               status, current_approver_role, notes,
+               medical_certificate_name, created_at`,
+    [companyId, userId, storeId ?? null, leave_type, start_date, end_date,
+     firstApprover, notes ?? null, certificateName, certificateData],
   );
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
@@ -449,4 +457,40 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
   );
 
   ok(res, { balances, year: targetYear, user_id: targetUserId });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/leave/:id/certificate — download medical certificate (managers only)
+// ---------------------------------------------------------------------------
+export const downloadCertificate = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const leaveId = parseInt(req.params.id, 10);
+
+  const row = await queryOne<{
+    medical_certificate_name: string | null;
+    medical_certificate_data: Buffer | null;
+  }>(
+    `SELECT medical_certificate_name, medical_certificate_data
+     FROM leave_requests WHERE id = $1 AND company_id = $2`,
+    [leaveId, companyId],
+  );
+
+  if (!row) { notFound(res, 'Richiesta non trovata'); return; }
+
+  if (!row.medical_certificate_data) {
+    notFound(res, 'Nessun certificato allegato a questa richiesta');
+    return;
+  }
+
+  const filename = row.medical_certificate_name ?? 'certificato-medico';
+  const ext = filename.split('.').pop()?.toLowerCase();
+  const contentType =
+    ext === 'pdf'  ? 'application/pdf' :
+    ext === 'png'  ? 'image/png' :
+    ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
+    'application/octet-stream';
+
+  res.setHeader('Content-Type', contentType);
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  res.send(row.medical_certificate_data);
 });
