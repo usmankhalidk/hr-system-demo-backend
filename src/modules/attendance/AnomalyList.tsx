@@ -254,8 +254,8 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
           </thead>
           <tbody>
             {anomalies.map((a, idx) => {
-              const meta = ANOMALY_META[a.anomalyType];
-              const sevMeta = SEVERITY_META[a.severity];
+              const meta = ANOMALY_META[a.anomalyType] ?? ANOMALY_META['late_arrival'];
+              const sevMeta = SEVERITY_META[a.severity] ?? SEVERITY_META['low'];
               const { Icon } = meta;
               const initials = `${a.userSurname.charAt(0)}${a.userName.charAt(0)}`.toUpperCase();
               const avatarBg = getAvatarColor(a.userSurname + a.userName);
