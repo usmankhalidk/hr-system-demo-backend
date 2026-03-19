@@ -11,6 +11,7 @@ import MonthlyCalendar from './MonthlyCalendar';
 import DayCalendar from './DayCalendar';
 import ShiftDrawer from './ShiftDrawer';
 import ShiftTemplatesPanel from './ShiftTemplatesPanel';
+import AffluencePanel from './AffluencePanel';
 
 type ViewMode = 'day' | 'week' | 'month';
 
@@ -147,6 +148,7 @@ export default function ShiftsPage() {
   const [dragover, setDragover]               = useState(false);
   const [guideOpen, setGuideOpen]             = useState(false);
   const fileInputRef                          = useRef<HTMLInputElement>(null);
+  const [affluenceOpen, setAffluenceOpen] = useState(false);
 
   const canEdit = user ? MANAGEMENT_ROLES.includes(user.role) : false;
   const isStoreManager = user?.role === 'store_manager';
@@ -357,6 +359,17 @@ export default function ShiftsPage() {
                   {t('shifts.importShifts')}
                 </button>
               </>
+            )}
+            {viewMode === 'week' && storeFilter && (
+              <button
+                className={`btn ${affluenceOpen ? 'btn-primary' : 'btn-secondary'}`}
+                onClick={() => setAffluenceOpen((o) => !o)}
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" />
+                </svg>
+                Affluenza
+              </button>
             )}
             <button
               className="btn btn-primary"
@@ -587,6 +600,14 @@ export default function ShiftsPage() {
             />
           )}
         </div>
+
+        {/* ── Affluence Panel ───────────────────────────────────────── */}
+        {affluenceOpen && storeFilter && viewMode === 'week' && (
+          <AffluencePanel
+            storeId={storeFilter}
+            week={formatIsoWeek(currentDate)}
+          />
+        )}
       </div>
 
       {/* ── Import modal ──────────────────────────────────────────────── */}
