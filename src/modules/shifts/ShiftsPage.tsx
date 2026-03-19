@@ -597,6 +597,7 @@ export default function ShiftsPage() {
               onShiftClick={handleShiftClick}
               onSlotClick={handleCellClick}
               canEdit={canEdit}
+              leaveBlocks={leaveBlocks}
             />
           ) : viewMode === 'week' ? (
             <WeeklyCalendar

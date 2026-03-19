@@ -1,6 +1,7 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Shift } from '../../api/shifts';
+import { LeaveBlock } from '../../api/leave';
 
 interface DayCalendarProps {
   shifts: Shift[];
@@ -8,6 +9,7 @@ interface DayCalendarProps {
   onShiftClick: (shift: Shift) => void;
   onSlotClick: (userId: number, date: string) => void;
   canEdit: boolean;
+  leaveBlocks?: LeaveBlock[];
 }
 
 const START_HOUR = 7;   // 07:00
@@ -56,7 +58,7 @@ const STATUS_META: Record<string, {
   },
 };
 
-export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, canEdit }: DayCalendarProps) {
+export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, canEdit, leaveBlocks }: DayCalendarProps) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === 'it' ? 'it-IT' : 'en-GB';
   const dateStr = formatDate(date);
@@ -159,6 +161,32 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
               }}>
                 {userData.surname}<br />
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{userData.name}</span>
+                {(() => {
+                  if (!leaveBlocks) return null;
+                  const leave = leaveBlocks.find(
+                    (lb) => lb.userId === userId && dateStr >= lb.startDate && dateStr <= lb.endDate
+                  );
+                  if (!leave) return null;
+                  const isVacation = leave.leaveType === 'vacation';
+                  const isPending = leave.status !== 'hr_approved';
+                  return (
+                    <div style={{
+                      marginTop: 3,
+                      display: 'inline-flex', alignItems: 'center', gap: 3,
+                      padding: '1px 5px', borderRadius: 4,
+                      fontSize: 9, fontWeight: 700, letterSpacing: '0.4px',
+                      textTransform: 'uppercase',
+                      background: isVacation ? 'rgba(29,78,216,0.12)' : 'rgba(180,83,9,0.12)',
+                      color: isVacation ? '#1d4ed8' : '#b45309',
+                      border: `1px solid ${isVacation ? 'rgba(29,78,216,0.3)' : 'rgba(180,83,9,0.3)'}`,
+                      opacity: isPending ? 0.65 : 1,
+                    }}>
+                      {isVacation ? '🏖' : '🤒'}
+                      {isVacation ? 'Ferie' : 'Malattia'}
+                      {isPending && <span style={{ opacity: 0.8 }}>(att.)</span>}
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Timeline */}
