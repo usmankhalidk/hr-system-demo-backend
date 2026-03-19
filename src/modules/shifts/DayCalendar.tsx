@@ -182,8 +182,8 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                       opacity: isPending ? 0.65 : 1,
                     }}>
                       {isVacation ? '🏖' : '🤒'}
-                      {isVacation ? 'Ferie' : 'Malattia'}
-                      {isPending && <span style={{ opacity: 0.8 }}>(att.)</span>}
+                      {isVacation ? t('leave.type_vacation') : t('leave.type_sick')}
+                      {isPending && <span style={{ opacity: 0.8 }}>({t('leave.pending_short')})</span>}
                     </div>
                   );
                 })()}

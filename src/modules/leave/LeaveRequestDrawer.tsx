@@ -223,9 +223,9 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
                 display: 'block', marginBottom: 6,
                 fontSize: 13, fontWeight: 700, color: 'var(--text-secondary)',
               }}>
-                Certificato medico{' '}
+                {t('leave.medical_certificate')}{' '}
                 <span style={{ fontSize: 11, fontWeight: 400, color: 'var(--text-muted)' }}>
-                  (opzionale, PDF/JPEG/PNG, max 5MB)
+                  {t('leave.medical_certificate_hint')}
                 </span>
               </label>
               <label style={{
@@ -248,7 +248,7 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
                   fontWeight: certificate ? 700 : 400,
                   flex: 1,
                 }}>
-                  {certificate ? certificate.name : 'Allega certificato medico'}
+                  {certificate ? certificate.name : t('leave.certificate_upload')}
                 </span>
                 {certificate && (
                   <button

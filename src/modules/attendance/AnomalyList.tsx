@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import client from '../../api/client';
 
 interface Anomaly {
@@ -18,22 +19,19 @@ interface Props {
   dateTo: string;
 }
 
-const ANOMALY_META: Record<string, { label: string; icon: string; color: string; bg: string }> = {
-  late_arrival: { label: 'Ritardo',       icon: '⏰', color: '#b45309', bg: 'rgba(245,158,11,0.10)' },
-  no_show:      { label: 'Assenza',       icon: '🚫', color: '#dc2626', bg: 'rgba(220,38,38,0.10)' },
-  long_break:   { label: 'Pausa lunga',   icon: '⏸',  color: '#7c3aed', bg: 'rgba(124,58,237,0.10)' },
-  early_exit:   { label: 'Uscita antip.', icon: '🔚', color: '#0369a1', bg: 'rgba(3,105,161,0.10)' },
+const ANOMALY_META: Record<string, { icon: string; color: string; bg: string }> = {
+  late_arrival: { icon: '⏰', color: '#b45309', bg: 'rgba(245,158,11,0.10)' },
+  no_show:      { icon: '🚫', color: '#dc2626', bg: 'rgba(220,38,38,0.10)' },
+  long_break:   { icon: '⏸',  color: '#7c3aed', bg: 'rgba(124,58,237,0.10)' },
+  early_exit:   { icon: '🔚', color: '#0369a1', bg: 'rgba(3,105,161,0.10)' },
 };
 
 const SEVERITY_COLOR: Record<string, string> = {
   low: '#22c55e', medium: '#f59e0b', high: '#dc2626',
 };
 
-const SEVERITY_LABEL: Record<string, string> = {
-  low: 'Bassa', medium: 'Media', high: 'Alta',
-};
-
 export default function AnomalyList({ dateFrom, dateTo }: Props) {
+  const { t } = useTranslation();
   const [anomalies, setAnomalies] = useState<Anomaly[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -59,7 +57,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
         details:     a.details,
       })));
     } catch (err: any) {
-      setError(err?.response?.data?.error ?? 'Errore nel caricamento delle anomalie');
+      setError(err?.response?.data?.error ?? t('attendance.error_load_anomalies'));
     } finally {
       setLoading(false);
     }
@@ -75,7 +73,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
           border: '3px solid var(--border)', borderTopColor: 'var(--primary)',
           animation: 'spin 0.7s linear infinite',
         }} />
-        Caricamento...
+        {t('common.loading')}
       </div>
     );
   }
@@ -97,7 +95,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
       <div style={{ padding: '56px 32px', textAlign: 'center' }}>
         <div style={{ fontSize: 40, marginBottom: 12, opacity: 0.25 }}>✅</div>
         <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>
-          Nessuna anomalia rilevata
+          {t('attendance.no_anomalies')}
         </div>
         <div style={{ fontSize: 13, color: 'var(--text-muted)' }}>{dateFrom} → {dateTo}</div>
       </div>
@@ -126,7 +124,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
                 {countByType[type] ?? 0}
               </div>
               <div style={{ fontSize: 10, color: meta.color, opacity: 0.8, textTransform: 'uppercase', letterSpacing: 1, marginTop: 2 }}>
-                {meta.label}
+                {t(`attendance.anomaly_${type}`)}
               </div>
             </div>
           </div>
@@ -141,7 +139,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
         <table style={{ width: '100%', borderCollapse: 'collapse' }}>
           <thead>
             <tr>
-              {['Dipendente', 'Negozio', 'Data', 'Anomalia', 'Gravità', 'Dettagli'].map((h) => (
+              {[t('shifts.employee'), t('common.store'), t('common.date'), t('attendance.col_anomaly'), t('attendance.col_severity'), t('attendance.col_details')].map((h) => (
                 <th key={h} style={{
                   padding: '10px 16px', textAlign: 'left',
                   fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
@@ -178,7 +176,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
                       background: meta.bg, color: meta.color,
                       textTransform: 'uppercase', border: `1px solid ${meta.color}33`,
                     }}>
-                      <span>{meta.icon}</span>{meta.label}
+                      <span>{meta.icon}</span>{t(`attendance.anomaly_${a.anomalyType}`)}
                     </span>
                   </td>
                   <td style={{ padding: '11px 16px' }}>
@@ -190,7 +188,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
                       border: `1px solid ${SEVERITY_COLOR[a.severity]}30`,
                       textTransform: 'uppercase', letterSpacing: '0.5px',
                     }}>
-                      {SEVERITY_LABEL[a.severity]}
+                      {t(`attendance.severity_${a.severity}`)}
                     </span>
                   </td>
                   <td style={{ padding: '11px 16px', fontSize: 12, color: 'var(--text-muted)', maxWidth: 280 }}>
@@ -205,7 +203,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
           padding: '10px 20px', borderTop: '1px solid var(--border)',
           background: 'var(--bg)', fontSize: 12, color: 'var(--text-muted)',
         }}>
-          <strong>{anomalies.length}</strong> anomalie rilevate
+          {t('attendance.anomalies_count', { count: anomalies.length })}
         </div>
       </div>
     </div>

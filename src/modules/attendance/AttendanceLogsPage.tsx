@@ -264,8 +264,8 @@ export default function AttendanceLogsPage() {
         {/* Tab bar */}
         <div style={{ display: 'flex', gap: 2, background: 'var(--background)', border: '1.5px solid var(--border)', borderRadius: 8, padding: 2, flexShrink: 0 }}>
           {([
-            { key: 'events' as const,    label: 'Registro' },
-            { key: 'anomalies' as const, label: 'Anomalie' },
+            { key: 'events' as const,    label: t('attendance.tab_events') },
+            { key: 'anomalies' as const, label: t('attendance.tab_anomalies') },
           ]).map(({ key, label }) => (
             <button
               key={key}

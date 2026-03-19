@@ -210,7 +210,7 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
       a.click();
       URL.revokeObjectURL(url);
     } catch {
-      showToast('Impossibile scaricare il certificato', 'error');
+      showToast(t('leave.certificate_download_error'), 'error');
     }
   }
 
@@ -327,7 +327,7 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
                     color: '#0369a1', fontSize: 11, fontWeight: 700, cursor: 'pointer',
                   }}
                 >
-                  📎 Certificato
+                  {t('leave.certificate_btn')}
                 </button>
               </div>
             )}

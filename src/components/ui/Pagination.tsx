@@ -1,4 +1,5 @@
 import React from 'react';
+import { useTranslation } from 'react-i18next';
 
 interface PaginationProps {
   page: number;
@@ -15,6 +16,7 @@ export const Pagination: React.FC<PaginationProps> = ({
   limit,
   onPageChange,
 }) => {
+  const { t } = useTranslation();
   if (pages <= 1 && total === 0) return null;
 
   const from = total === 0 ? 0 : (page - 1) * limit + 1;
@@ -71,8 +73,8 @@ export const Pagination: React.FC<PaginationProps> = ({
     }}>
       <span style={{ fontSize: '12.5px', color: 'var(--text-muted)', fontFamily: 'var(--font-body)' }}>
         {total === 0
-          ? 'Nessun risultato'
-          : `${from}–${to} di ${total} risultati`}
+          ? t('common.noResults')
+          : t('common.showingResults', { from, to, total })}
       </span>
 
       <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
@@ -81,7 +83,7 @@ export const Pagination: React.FC<PaginationProps> = ({
           style={page <= 1 ? { ...btnBase, opacity: 0.38, cursor: 'not-allowed', pointerEvents: 'none' } : btnBase}
           onClick={() => onPageChange(page - 1)}
           disabled={page <= 1}
-          aria-label="Pagina precedente"
+          aria-label={t('common.previous')}
         >
           <ChevronLeft />
         </button>
@@ -110,7 +112,7 @@ export const Pagination: React.FC<PaginationProps> = ({
           style={page >= pages ? { ...btnBase, opacity: 0.38, cursor: 'not-allowed', pointerEvents: 'none' } : btnBase}
           onClick={() => onPageChange(page + 1)}
           disabled={page >= pages}
-          aria-label="Pagina successiva"
+          aria-label={t('common.next')}
         >
           <ChevronRight />
         </button>

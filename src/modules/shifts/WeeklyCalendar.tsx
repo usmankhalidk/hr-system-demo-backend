@@ -272,8 +272,8 @@ export default function WeeklyCalendar({
                             display: 'flex', alignItems: 'center', gap: 4,
                           }}>
                             {isVacation ? '🏖' : '🤒'}
-                            {isVacation ? 'Ferie' : 'Malattia'}
-                            {isPending && <span style={{ opacity: 0.8 }}>(att.)</span>}
+                            {isVacation ? t('leave.type_vacation') : t('leave.type_sick')}
+                            {isPending && <span style={{ opacity: 0.8 }}>({t('leave.pending_short')})</span>}
                           </div>
                         );
                       })()}

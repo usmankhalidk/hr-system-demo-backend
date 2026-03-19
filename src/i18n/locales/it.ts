@@ -487,6 +487,14 @@ const it = {
     shiftsFailed: '{{count}} falliti (errore)',
     shiftCountPlural: 'turni',
     noShiftsThisMonth: 'Nessun turno questo mese',
+    affluence_btn: 'Affluenza',
+    affluence_heading: 'AFFLUENZA NEGOZIO',
+    affluence_suggestions: 'Suggerimenti Personale',
+    affluence_no_data: 'Nessun dato di affluenza configurato per questo negozio.',
+    affluence_contact_admin: "Contatta l'amministratore per configurare i livelli di affluenza.",
+    level_low: 'Bassa',
+    level_medium: 'Media',
+    level_high: 'Alta',
     form: {
       employee: 'Dipendente',
       store: 'Negozio',
@@ -550,6 +558,26 @@ const it = {
     showing: 'mostrando',
     maxResults: 'Max 500 risultati mostrati — usa i filtri per restringere',
     exportError: 'Errore durante l\'esportazione',
+    // Tabs
+    tab_events: 'Registro',
+    tab_anomalies: 'Anomalie',
+    // Anomaly types
+    anomaly_late_arrival: 'Ritardo',
+    anomaly_no_show: 'Assenza',
+    anomaly_long_break: 'Pausa lunga',
+    anomaly_early_exit: 'Uscita antip.',
+    // Severity levels
+    severity_low: 'Bassa',
+    severity_medium: 'Media',
+    severity_high: 'Alta',
+    // Anomaly table columns
+    col_anomaly: 'Anomalia',
+    col_severity: 'Gravità',
+    col_details: 'Dettagli',
+    // Anomaly list
+    no_anomalies: 'Nessuna anomalia rilevata',
+    error_load_anomalies: 'Errore nel caricamento delle anomalie',
+    anomalies_count: '{{count}} anomalie rilevate',
   },
 
   // ─── Terminal ─────────────────────────────────────────────────────────────
@@ -563,6 +591,10 @@ const it = {
     scanInstruction: 'Token QR',
     tokenPlaceholder: 'Incolla il token QR qui...',
     submit: 'REGISTRA',
+    invalid_employee_id: 'ID dipendente non valido',
+    saved_offline: 'Evento salvato in locale (offline). Verrà sincronizzato automaticamente.',
+    offline_mode: 'Modalità offline — gli eventi verranno sincronizzati al ripristino della connessione',
+    events_pending: '{{count}} eventi in attesa di sincronizzazione…',
   },
 
   // ─── Leave ────────────────────────────────────────────────────────────────
@@ -604,6 +636,12 @@ const it = {
     notes_label: 'Note',
     notes_placeholder: 'Aggiungi una nota (facoltativo)...',
     submit_request: 'Invia richiesta',
+    medical_certificate: 'Certificato medico',
+    medical_certificate_hint: '(opzionale, PDF/JPEG/PNG, max 5MB)',
+    certificate_upload: 'Allega certificato medico',
+    certificate_download_error: 'Impossibile scaricare il certificato',
+    certificate_btn: '📎 Certificato',
+    pending_short: 'att.',
   },
 } as const;
 

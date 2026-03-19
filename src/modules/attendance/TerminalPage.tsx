@@ -50,7 +50,7 @@ export default function TerminalPage() {
     const uid = parseInt(userId, 10);
     if (isNaN(uid) || uid <= 0) {
       setStatus('error');
-      setMessage('ID dipendente non valido');
+      setMessage(t('terminal.invalid_employee_id'));
       return;
     }
 
@@ -63,7 +63,7 @@ export default function TerminalPage() {
           event_time: new Date().toISOString(),
         });
         setStatus('success');
-        setMessage('Evento salvato in locale (offline). Verrà sincronizzato automaticamente.');
+        setMessage(t('terminal.saved_offline'));
         return;
       }
       await recordCheckin({ qrToken: token.trim(), eventType: selectedType, userId: uid });
@@ -124,8 +124,8 @@ export default function TerminalPage() {
           <span>{!isOnline ? '⚡' : '🔄'}</span>
           <span>
             {!isOnline
-              ? 'Modalità offline — gli eventi verranno sincronizzati al ripristino della connessione'
-              : `${queueLength} eventi in attesa di sincronizzazione…`}
+              ? t('terminal.offline_mode')
+              : t('terminal.events_pending', { count: queueLength })}
           </span>
         </div>
       )}

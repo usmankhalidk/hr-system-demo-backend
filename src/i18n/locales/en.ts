@@ -487,6 +487,14 @@ const en = {
     shiftsFailed: '{{count}} failed (error)',
     shiftCountPlural: 'shifts',
     noShiftsThisMonth: 'No shifts this month',
+    affluence_btn: 'Affluence',
+    affluence_heading: 'STORE AFFLUENCE',
+    affluence_suggestions: 'Staff Suggestions',
+    affluence_no_data: 'No affluence data configured for this store.',
+    affluence_contact_admin: 'Contact the administrator to configure affluence levels.',
+    level_low: 'Low',
+    level_medium: 'Medium',
+    level_high: 'High',
     form: {
       employee: 'Employee',
       store: 'Store',
@@ -550,6 +558,26 @@ const en = {
     showing: 'showing',
     maxResults: 'Max 500 results shown — use filters to narrow down',
     exportError: 'Error during export',
+    // Tabs
+    tab_events: 'Log',
+    tab_anomalies: 'Anomalies',
+    // Anomaly types
+    anomaly_late_arrival: 'Late Arrival',
+    anomaly_no_show: 'No Show',
+    anomaly_long_break: 'Long Break',
+    anomaly_early_exit: 'Early Exit',
+    // Severity levels
+    severity_low: 'Low',
+    severity_medium: 'Medium',
+    severity_high: 'High',
+    // Anomaly table columns
+    col_anomaly: 'Anomaly',
+    col_severity: 'Severity',
+    col_details: 'Details',
+    // Anomaly list
+    no_anomalies: 'No anomalies detected',
+    error_load_anomalies: 'Error loading anomalies',
+    anomalies_count: '{{count}} anomalies detected',
   },
 
   // ─── Terminal ─────────────────────────────────────────────────────────────
@@ -563,6 +591,10 @@ const en = {
     scanInstruction: 'QR Token',
     tokenPlaceholder: 'Paste QR token here...',
     submit: 'RECORD',
+    invalid_employee_id: 'Invalid employee ID',
+    saved_offline: 'Event saved locally (offline). Will be synced automatically.',
+    offline_mode: 'Offline mode — events will be synced when connection is restored',
+    events_pending: '{{count}} events pending sync…',
   },
 
   // ─── Leave ────────────────────────────────────────────────────────────────
@@ -604,6 +636,12 @@ const en = {
     notes_label: 'Notes',
     notes_placeholder: 'Add a note (optional)...',
     submit_request: 'Submit request',
+    medical_certificate: 'Medical Certificate',
+    medical_certificate_hint: '(optional, PDF/JPEG/PNG, max 5MB)',
+    certificate_upload: 'Attach medical certificate',
+    certificate_download_error: 'Unable to download certificate',
+    certificate_btn: '📎 Certificate',
+    pending_short: 'pend.',
   },
 } as const;
 

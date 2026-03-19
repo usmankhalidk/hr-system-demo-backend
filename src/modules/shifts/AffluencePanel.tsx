@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { getAffluence, StoreAffluence } from '../../api/shifts';
 
 interface Props {
@@ -7,15 +8,13 @@ interface Props {
 }
 
 const LEVEL_META = {
-  low:    { label: 'Bassa',  color: '#16a34a', bg: 'rgba(22,163,74,0.12)',  dot: '#22c55e' },
-  medium: { label: 'Media',  color: '#b45309', bg: 'rgba(180,83,9,0.12)',   dot: '#f59e0b' },
-  high:   { label: 'Alta',   color: '#dc2626', bg: 'rgba(220,38,38,0.12)',  dot: '#ef4444' },
+  low:    { color: '#16a34a', bg: 'rgba(22,163,74,0.12)',  dot: '#22c55e' },
+  medium: { color: '#b45309', bg: 'rgba(180,83,9,0.12)',   dot: '#f59e0b' },
+  high:   { color: '#dc2626', bg: 'rgba(220,38,38,0.12)',  dot: '#ef4444' },
 };
 
-// ISO day numbering: 0=Sun, 1=Mon … 6=Sat
-const DAY_LABELS = ['Dom', 'Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab'];
-
 export default function AffluencePanel({ storeId, week }: Props) {
+  const { t } = useTranslation();
   const [rows, setRows] = useState<StoreAffluence[]>([]);
   const [loading, setLoading] = useState(false);
   const [selectedDay, setSelectedDay] = useState<number | null>(null);
@@ -53,10 +52,10 @@ export default function AffluencePanel({ storeId, week }: Props) {
       <div style={{ background: 'var(--primary)', padding: '14px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
         <div>
           <div style={{ fontSize: 9, letterSpacing: 2, color: 'rgba(255,255,255,0.4)', textTransform: 'uppercase', marginBottom: 4 }}>
-            AFFLUENZA NEGOZIO
+            {t('shifts.affluence_heading')}
           </div>
           <div style={{ fontFamily: 'var(--font-display)', fontWeight: 800, fontSize: '1rem', color: '#fff' }}>
-            Suggerimenti Personale
+            {t('shifts.affluence_suggestions')}
           </div>
         </div>
         {loading && (
@@ -82,7 +81,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
               transition: 'all 0.15s',
             }}
           >
-            {d === null ? 'Tutti' : DAY_LABELS[d]}
+            {d === null ? t('common.all') : t(`shifts.day${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][d]}`)}
           </button>
         ))}
       </div>
@@ -91,10 +90,10 @@ export default function AffluencePanel({ storeId, week }: Props) {
       {rows.length === 0 && !loading ? (
         <div style={{ padding: '32px 18px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
           <div style={{ fontSize: 28, marginBottom: 8, opacity: 0.3 }}>📊</div>
-          Nessun dato di affluenza configurato per questo negozio.
+          {t('shifts.affluence_no_data')}
           <br />
           <span style={{ fontSize: 11, marginTop: 4, display: 'block', opacity: 0.7 }}>
-            Contatta l'amministratore per configurare i livelli di affluenza.
+            {t('shifts.affluence_contact_admin')}
           </span>
         </div>
       ) : (
@@ -109,7 +108,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
                   fontSize: 11, fontWeight: 800, color: 'var(--text-muted)',
                   textTransform: 'uppercase', letterSpacing: '1.5px',
                 }}>
-                  {DAY_LABELS[day]}
+                  {t(`shifts.day${['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][day]}`)}
                 </div>
                 {slots.map((slot) => {
                   const meta = LEVEL_META[slot.level as keyof typeof LEVEL_META];
@@ -136,7 +135,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
                           border: `1px solid ${meta.dot}44`, textTransform: 'uppercase',
                         }}>
                           <span style={{ width: 6, height: 6, borderRadius: '50%', background: meta.dot }} />
-                          {meta.label}
+                          {t(`shifts.level_${slot.level}`)}
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>
@@ -158,13 +157,13 @@ export default function AffluencePanel({ storeId, week }: Props) {
         background: 'var(--background)',
         display: 'flex', gap: 14, flexWrap: 'wrap', alignItems: 'center',
       }}>
-        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1 }}>Legenda:</span>
+        <span style={{ fontSize: 10, color: 'var(--text-muted)', fontWeight: 700, textTransform: 'uppercase', letterSpacing: 1 }}>{t('shifts.legend')}:</span>
         {(['low','medium','high'] as const).map((lvl) => {
           const m = LEVEL_META[lvl];
           return (
             <span key={lvl} style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 10, color: m.color, fontWeight: 700 }}>
               <span style={{ width: 8, height: 8, borderRadius: '50%', background: m.dot, display: 'inline-block' }} />
-              {m.label}
+              {t(`shifts.level_${lvl}`)}
             </span>
           );
         })}
