@@ -197,6 +197,77 @@ export async function seed() {
     }
     console.log('✓ Leave balances seeded');
 
+    // ── Leave requests — realistic demo data ─────────────────────────────────
+    // Users: Anna=6 (Roma), Roberto=7 (Roma), Chiara=8 (Milano)
+    //        Carol=12 (Napoli/Beta), Marco B.=13 (Napoli/Beta)
+    // Statuses: hr_approved (shows on calendar), supervisor_approved (in-flow),
+    //           pending, rejected — cover W11/W12/W13 + W14
+
+    // Insert leave requests
+    const { rows: lrRows } = await client.query(`
+      INSERT INTO leave_requests
+        (company_id, user_id, store_id, leave_type, start_date, end_date, status, current_approver_role, notes)
+      VALUES
+        -- Anna (6): approved vacation W12 — shows on shift calendar
+        (1, 6, 1, 'vacation', '2026-03-18', '2026-03-20', 'hr_approved',              NULL,             'Ferie primaverili'),
+        -- Roberto (7): approved sick W11 — shows on shift calendar
+        (1, 7, 1, 'sick',     '2026-03-10', '2026-03-10', 'hr_approved',              NULL,             'Influenza'),
+        -- Anna (6): pending vacation W14 — shows as (att.) badge
+        (1, 6, 1, 'vacation', '2026-03-30', '2026-04-03', 'pending',                  'store_manager',  NULL),
+        -- Chiara (8): supervisor-approved vacation W13 — in approval chain
+        (1, 8, 2, 'vacation', '2026-03-24', '2026-03-26', 'supervisor_approved',      'area_manager',   'Vacanza breve'),
+        -- Roberto (7): approved vacation W13 — shows on shift calendar
+        (1, 7, 1, 'vacation', '2026-03-23', '2026-03-24', 'hr_approved',              NULL,             NULL),
+        -- Carol (12): approved sick — Beta company
+        (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'hr_approved',              NULL,             'Certificato medico allegato'),
+        -- Marco B. (13): pending vacation — Beta company
+        (2, 13, 3,'vacation', '2026-03-25', '2026-03-27', 'pending',                  'store_manager',  NULL)
+      RETURNING id, user_id, leave_type, start_date, end_date, status
+    `);
+
+    // Insert approval records for approved/in-flow requests
+    for (const lr of lrRows) {
+      if (['supervisor_approved','area_manager_approved','hr_approved'].includes(lr.status)) {
+        // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
+        const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
+        await client.query(`
+          INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+          VALUES ($1, $2, 'store_manager', 'approved', NULL)
+        `, [lr.id, smId]);
+      }
+      if (['area_manager_approved','hr_approved'].includes(lr.status)) {
+        // Step 2: area_manager approval (Giuseppe=3 for company 1)
+        await client.query(`
+          INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+          VALUES ($1, 3, 'area_manager', 'approved', NULL)
+        `, [lr.id]);
+      }
+      if (lr.status === 'hr_approved') {
+        // Step 3: hr approval (Laura=2 for company 1, Giulia=10 for company 2)
+        const hrId = (lr.user_id === 12 || lr.user_id === 13) ? 10 : 2;
+        await client.query(`
+          INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+          VALUES ($1, $2, 'hr', 'approved', NULL)
+        `, [lr.id, hrId]);
+      }
+    }
+
+    // Update leave_balances used_days for hr_approved requests
+    const approvedReqs = lrRows.filter(r => r.status === 'hr_approved');
+    for (const lr of approvedReqs) {
+      const days = Math.ceil(
+        (new Date(lr.end_date).getTime() - new Date(lr.start_date).getTime()) / 86400000
+      ) + 1;
+      await client.query(`
+        UPDATE leave_balances
+        SET used_days = LEAST(used_days + $1, total_days), updated_at = NOW()
+        WHERE company_id = (SELECT company_id FROM users WHERE id = $2)
+          AND user_id = $2 AND year = 2026 AND leave_type = $3
+      `, [days, lr.user_id, lr.leave_type]);
+    }
+
+    console.log(`✓ Leave requests seeded (${lrRows.length} requests)`);
+
     // Seed store affluence (default patterns for all stores)
     const { rows: storeRows } = await client.query(
       `SELECT id, company_id FROM stores WHERE is_active = true`
