@@ -271,3 +271,88 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 
   ok(res, { events, total, has_more: total > events.length });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/attendance/sync  — offline batch sync (store_terminal only)
+// body: { events: Array<{ event_type, user_id, event_time, notes? }> }
+// ---------------------------------------------------------------------------
+export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, storeId } = req.user!;
+
+  if (!storeId) {
+    badRequest(res, 'store_id obbligatorio per la sincronizzazione', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const { events } = req.body as {
+    events: Array<{
+      event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
+      user_id: number;
+      event_time: string;
+      notes?: string;
+    }>;
+  };
+
+  if (!Array.isArray(events) || events.length === 0) {
+    badRequest(res, 'Nessun evento da sincronizzare', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const VALID_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
+  let synced = 0;
+  let failed = 0;
+  const errors: string[] = [];
+
+  for (let i = 0; i < events.length; i++) {
+    const ev = events[i];
+    const rowNum = i + 1;
+
+    if (!VALID_TYPES.has(ev.event_type)) {
+      errors.push(`Evento ${rowNum}: tipo non valido '${ev.event_type}'`);
+      failed++;
+      continue;
+    }
+
+    const ts = new Date(ev.event_time);
+    if (isNaN(ts.getTime())) {
+      errors.push(`Evento ${rowNum}: data/ora non valida`);
+      failed++;
+      continue;
+    }
+
+    const targetUser = await queryOne<{ id: number }>(
+      `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+      [ev.user_id, companyId],
+    );
+    if (!targetUser) {
+      errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
+      failed++;
+      continue;
+    }
+
+    const dateStr = ts.toISOString().split('T')[0];
+    const linkedShift = await queryOne<{ id: number }>(
+      `SELECT id FROM shifts
+       WHERE company_id = $1 AND user_id = $2 AND date = $3
+         AND store_id = $4 AND status != 'cancelled'
+       ORDER BY start_time LIMIT 1`,
+      [companyId, ev.user_id, dateStr, storeId],
+    );
+
+    try {
+      await queryOne(
+        `INSERT INTO attendance_events
+           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
+         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)`,
+        [companyId, storeId, ev.user_id, ev.event_type, ts.toISOString(),
+         linkedShift?.id ?? null, ev.notes ?? null],
+      );
+      synced++;
+    } catch {
+      errors.push(`Evento ${rowNum}: errore inserimento`);
+      failed++;
+    }
+  }
+
+  ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length });
+});

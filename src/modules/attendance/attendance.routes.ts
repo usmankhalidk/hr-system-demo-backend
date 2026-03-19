@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { checkin, listAttendanceEvents } from './attendance.controller';
+import { checkin, listAttendanceEvents, syncEvents } from './attendance.controller';
 
 const router = Router();
 
@@ -33,6 +33,25 @@ router.get(
   requireRole(...managementRoles),
   enforceCompany,
   listAttendanceEvents,
+);
+
+const syncSchema = z.object({
+  events: z.array(z.object({
+    event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
+    user_id:    z.number().int().positive(),
+    event_time: z.string().min(1),
+    notes:      z.string().max(500).optional(),
+  })).min(1).max(500),
+});
+
+// POST /api/attendance/sync — store_terminal only
+router.post(
+  '/sync',
+  authenticate,
+  requireRole('store_terminal'),
+  enforceCompany,
+  validate(syncSchema),
+  syncEvents,
 );
 
 export default router;
