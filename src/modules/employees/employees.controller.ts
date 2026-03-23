@@ -22,7 +22,8 @@ const LIST_FIELDS = `
 const DETAIL_FIELDS = `
   ${LIST_FIELDS},
   u.personal_email, u.date_of_birth, u.nationality, u.gender,
-  u.iban, u.address, u.cap
+  u.iban, u.address, u.cap,
+  u.contract_type, u.probation_months
 `;
 
 // Base joins
@@ -191,12 +192,14 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       company_id, store_id, supervisor_id, name, surname, email, password_hash,
       role, unique_id, department, hire_date, contract_end_date,
       working_type, weekly_hours, personal_email, date_of_birth, nationality,
-      gender, iban, address, cap, first_aid_flag, marital_status, status
+      gender, iban, address, cap, first_aid_flag, marital_status, status,
+      contract_type, probation_months
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status`,
+        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
+        contract_type, probation_months`,
     [
       companyId,
       body.store_id ?? null,
@@ -222,6 +225,8 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       'active',
+      body.contract_type ?? null,
+      body.probation_months ?? null,
     ],
   );
 
@@ -253,11 +258,13 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       contract_end_date = $9, working_type = $10, weekly_hours = $11,
       personal_email = $12, date_of_birth = $13, nationality = $14,
       gender = $15, iban = $16, address = $17, cap = $18,
-      first_aid_flag = $19, marital_status = $20, updated_at = NOW()
-    WHERE id = $21 AND company_id = $22
+      first_aid_flag = $19, marital_status = $20,
+      contract_type = $21, probation_months = $22, updated_at = NOW()
+    WHERE id = $23 AND company_id = $24
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status`,
+        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
+        contract_type, probation_months`,
     [
       body.store_id ?? null,
       body.supervisor_id ?? null,
@@ -279,6 +286,8 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.cap ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
+      body.contract_type ?? null,
+      body.probation_months ?? null,
       empId,
       companyId,
     ],

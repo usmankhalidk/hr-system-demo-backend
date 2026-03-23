@@ -50,7 +50,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
     }
 
     case 'hr': {
-      const [expiringContracts, newHires, totalEmployeesRes, monthlyHires, statusBreakdown] = await Promise.all([
+      const [expiringContracts, newHires, totalEmployeesRes, monthlyHires, statusBreakdown, expiringTrainings, expiringMedicals] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, contract_end_date FROM users
            WHERE company_id = $1 AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
@@ -79,6 +79,26 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           `SELECT status, COUNT(*)::int AS count FROM users WHERE company_id = $1 GROUP BY status`,
           [companyId]
         ),
+        // Trainings expiring within 60 days
+        query(
+          `SELECT t.id, t.training_type, t.end_date,
+                  u.id AS user_id, u.name, u.surname
+           FROM employee_trainings t
+           JOIN users u ON u.id = t.user_id
+           WHERE t.company_id = $1 AND t.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
+           ORDER BY t.end_date LIMIT 10`,
+          [companyId]
+        ),
+        // Medical checks expiring within 60 days
+        query(
+          `SELECT m.id, m.end_date,
+                  u.id AS user_id, u.name, u.surname
+           FROM employee_medical_checks m
+           JOIN users u ON u.id = m.user_id
+           WHERE m.company_id = $1 AND m.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
+           ORDER BY m.end_date LIMIT 10`,
+          [companyId]
+        ),
       ]);
       ok(res, {
         expiringContracts,
@@ -86,6 +106,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         totalEmployees: parseInt(totalEmployeesRes?.count || '0', 10),
         monthlyHires,
         statusBreakdown,
+        expiringTrainings,
+        expiringMedicals,
       });
       break;
     }

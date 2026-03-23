@@ -11,6 +11,8 @@ import {
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
+import trainingsRoutes from './trainings.routes';
+import medicalsRoutes from './medicals.routes';
 
 const router = Router();
 
@@ -36,6 +38,8 @@ const createEmployeeSchema = z.object({
   cap: z.string().max(10).optional().nullable(),
   first_aid_flag: z.boolean().optional(),
   marital_status: z.string().max(50).optional().nullable(),
+  contract_type: z.string().max(100).optional().nullable(),
+  probation_months: z.number().int().min(0).optional().nullable(),
   password: z.string().min(8).optional(), // initial password
 });
 
@@ -97,5 +101,8 @@ router.patch(
   auditLog('employee'),
   activateEmployee,
 );
+
+router.use('/:id/trainings', trainingsRoutes);
+router.use('/:id/medicals', medicalsRoutes);
 
 export default router;
