@@ -35,7 +35,8 @@ export interface QrTokenResponse {
 export interface CheckinPayload {
   qrToken: string;
   eventType: EventType;
-  userId: number;
+  uniqueId?: string;   // Employee unique text ID (preferred)
+  userId?: number;     // Legacy numeric ID (fallback)
   notes?: string;
 }
 

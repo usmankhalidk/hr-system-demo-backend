@@ -173,18 +173,23 @@ export default function ShiftsPage() {
       const data = await listShifts(params);
       setShifts(data.shifts);
 
-      // Fetch leave blocks for week/day views
-      if (viewMode === 'week' || viewMode === 'day') {
-        const weekStart = viewMode === 'day' ? getWeekStart(currentDate) : currentDate;
-        const dateFrom = formatDateDisplay(weekStart);
-        const dateTo = formatDateDisplay(addDays(weekStart, 6));
-        try {
-          const blocks = await getLeaveBlocks(dateFrom, dateTo);
-          setLeaveBlocks(blocks);
-        } catch {
-          setLeaveBlocks([]);
+      // Fetch leave blocks for all views
+      try {
+        let dateFrom: string;
+        let dateTo: string;
+        if (viewMode === 'month') {
+          const year = currentDate.getFullYear();
+          const month = currentDate.getMonth();
+          dateFrom = formatDateDisplay(new Date(year, month, 1));
+          dateTo   = formatDateDisplay(new Date(year, month + 1, 0));
+        } else {
+          const weekStart = viewMode === 'day' ? getWeekStart(currentDate) : currentDate;
+          dateFrom = formatDateDisplay(weekStart);
+          dateTo   = formatDateDisplay(addDays(weekStart, 6));
         }
-      } else {
+        const blocks = await getLeaveBlocks(dateFrom, dateTo);
+        setLeaveBlocks(blocks);
+      } catch {
         setLeaveBlocks([]);
       }
     } catch (err: any) {
@@ -612,6 +617,7 @@ export default function ShiftsPage() {
             <MonthlyCalendar
               shifts={shifts}
               currentDate={currentDate}
+              leaveBlocks={leaveBlocks}
               onDayClick={(date) => {
                 setCurrentDate(new Date(date + 'T12:00:00'));
                 setViewMode('day');

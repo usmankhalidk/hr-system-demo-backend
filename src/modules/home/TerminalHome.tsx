@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '../../components/ui';
 import { useAuth } from '../../context/AuthContext';
 
@@ -21,6 +22,7 @@ export const TerminalHome: React.FC<TerminalHomeProps> = ({ data }) => {
   const { store } = data;
   const { t, i18n } = useTranslation();
   const { logout } = useAuth();
+  const navigate = useNavigate();
   const [currentTime, setCurrentTime] = useState<Date>(new Date());
 
   useEffect(() => {
@@ -135,11 +137,9 @@ export const TerminalHome: React.FC<TerminalHomeProps> = ({ data }) => {
       <div style={dividerStyle} />
       <div style={timeStyle}>{timeString}</div>
       <div style={dateStyle}>{dateString}</div>
-      <div title={t('common.phase2')}>
-        <Button variant="primary" size="lg" disabled>
-          {t('home.terminal.startCheckin')}
-        </Button>
-      </div>
+      <Button variant="primary" size="lg" onClick={() => navigate('/terminale')}>
+        {t('home.terminal.startCheckin')}
+      </Button>
     </div>
   );
 };

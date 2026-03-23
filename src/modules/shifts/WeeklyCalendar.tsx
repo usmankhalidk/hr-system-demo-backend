@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { Palmtree, Thermometer } from 'lucide-react';
 import { Shift } from '../../api/shifts';
 import { LeaveBlock } from '../../api/leave';
 
@@ -184,6 +185,9 @@ export default function WeeklyCalendar({
                   const dateStr = formatDate(day);
                   const dayShifts = userData.shifts.get(dateStr) ?? [];
                   const isToday = dateStr === todayStr();
+                  const leave = getLeaveForUserDate(userId, dateStr);
+                  const lvVacation = leave?.leaveType === 'vacation';
+                  const lvPending = leave ? leave.status !== 'hr_approved' : false;
                   return (
                     <td
                       key={colIdx}
@@ -195,7 +199,10 @@ export default function WeeklyCalendar({
                         borderBottom: '1px solid var(--border)',
                         cursor: canEdit ? 'pointer' : 'default',
                         minHeight: 60,
-                        background: isToday ? 'rgba(201,151,58,0.04)' : undefined,
+                        position: 'relative',
+                        background: leave
+                          ? (lvVacation ? 'rgba(219,234,254,0.13)' : 'rgba(255,237,213,0.13)')
+                          : (isToday ? 'rgba(201,151,58,0.04)' : undefined),
                       }}
                       onClick={() => canEdit && dayShifts.length === 0 && onCellClick(userId, dateStr)}
                     >
@@ -255,28 +262,45 @@ export default function WeeklyCalendar({
                           </div>
                         );
                       })}
-                      {(() => {
-                        const leave = getLeaveForUserDate(userId, dateStr);
-                        if (!leave) return null;
-                        const isVacation = leave.leaveType === 'vacation';
-                        const isPending = leave.status !== 'hr_approved';
-                        return (
-                          <div style={{
-                            marginTop: 3, padding: '2px 6px', borderRadius: 4,
-                            fontSize: 9, fontWeight: 700, letterSpacing: '0.5px',
-                            textTransform: 'uppercase',
-                            background: isVacation ? 'rgba(29,78,216,0.12)' : 'rgba(180,83,9,0.12)',
-                            color: isVacation ? '#1d4ed8' : '#b45309',
-                            border: `1px solid ${isVacation ? 'rgba(29,78,216,0.3)' : 'rgba(180,83,9,0.3)'}`,
-                            opacity: isPending ? 0.65 : 1,
-                            display: 'flex', alignItems: 'center', gap: 4,
+
+                      {/* Leave event block — Google-Calendar-style, sits below shifts */}
+                      {leave && (
+                        <div style={{
+                          marginTop: dayShifts.length > 0 ? 3 : 0,
+                          borderRadius: 4,
+                          padding: '4px 7px 4px 8px',
+                          background: lvVacation ? 'rgba(219,234,254,0.8)' : 'rgba(255,237,213,0.8)',
+                          borderLeft: `3px solid ${lvVacation
+                            ? (lvPending ? 'rgba(37,99,235,0.45)' : '#2563eb')
+                            : (lvPending ? 'rgba(234,88,12,0.45)' : '#ea580c')}`,
+                          borderTop: `1px ${lvPending ? 'dashed' : 'solid'} ${lvVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                          borderRight: `1px ${lvPending ? 'dashed' : 'solid'} ${lvVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                          borderBottom: `1px ${lvPending ? 'dashed' : 'solid'} ${lvVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                          display: 'flex', alignItems: 'center', gap: 4,
+                          opacity: lvPending ? 0.72 : 1,
+                          pointerEvents: 'none',
+                          minHeight: 22,
+                        }}>
+                          <span style={{ lineHeight: 1, flexShrink: 0, display: 'flex' }}>
+                            {lvVacation ? <Palmtree size={11} strokeWidth={2.5} /> : <Thermometer size={11} strokeWidth={2.5} />}
+                          </span>
+                          <span style={{
+                            fontSize: 10, fontWeight: 700, lineHeight: 1.2,
+                            color: lvVacation ? '#1e40af' : '#9a3412',
+                            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
                           }}>
-                            {isVacation ? '🏖' : '🤒'}
-                            {isVacation ? t('leave.type_vacation') : t('leave.type_sick')}
-                            {isPending && <span style={{ opacity: 0.8 }}>({t('leave.pending_short')})</span>}
-                          </div>
-                        );
-                      })()}
+                            {lvVacation ? t('leave.type_vacation') : t('leave.type_sick')}
+                          </span>
+                          {lvPending && (
+                            <span style={{
+                              fontSize: 8.5, fontWeight: 700, flexShrink: 0,
+                              color: lvVacation ? '#3b82f6' : '#f97316',
+                              background: 'rgba(255,255,255,0.7)',
+                              padding: '1px 4px', borderRadius: 3, lineHeight: 1.4,
+                            }}>{t('leave.pending_short')}</span>
+                          )}
+                        </div>
+                      )}
                     </td>
                   );
                 })}

@@ -1,11 +1,13 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
 import { Shift } from '../../api/shifts';
+import { LeaveBlock } from '../../api/leave';
 
 interface MonthlyCalendarProps {
   shifts: Shift[];
   currentDate: Date;
   onDayClick: (date: string) => void;
+  leaveBlocks?: LeaveBlock[];
 }
 
 function formatDate(date: Date): string {
@@ -15,7 +17,7 @@ function formatDate(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
-export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: MonthlyCalendarProps) {
+export default function MonthlyCalendar({ shifts, currentDate, onDayClick, leaveBlocks }: MonthlyCalendarProps) {
   const { t } = useTranslation();
   const DAY_LABELS = [
     t('shifts.dayMon', 'Lun'),
@@ -36,6 +38,23 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
     if (shift.status !== 'cancelled') {
       const dateKey = shift.date.split('T')[0];
       countMap.set(dateKey, (countMap.get(dateKey) ?? 0) + 1);
+    }
+  }
+
+  // Build leave indicator map: date → array of {type, pending}
+  interface LeaveDot { type: string; pending: boolean; }
+  const leaveMap = new Map<string, LeaveDot[]>();
+  if (leaveBlocks) {
+    for (const lb of leaveBlocks) {
+      const start = new Date(lb.startDate + 'T12:00:00');
+      const end   = new Date(lb.endDate   + 'T12:00:00');
+      const isPending = lb.status !== 'hr_approved';
+      for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+        const key = formatDate(d);
+        const arr = leaveMap.get(key) ?? [];
+        arr.push({ type: lb.leaveType, pending: isPending });
+        leaveMap.set(key, arr);
+      }
     }
   }
 
@@ -76,7 +95,9 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
           }
           const dateStr = formatDate(date);
           const count = countMap.get(dateStr) ?? 0;
+          const leaveDots = leaveMap.get(dateStr) ?? [];
           const isToday = dateStr === today;
+          const hasLeave = leaveDots.length > 0;
 
           return (
             <div
@@ -90,7 +111,7 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
                 cursor: 'pointer',
                 background: isToday ? 'rgba(201, 151, 58, 0.05)' : 'var(--surface)',
                 transition: 'background 0.15s',
-                boxShadow: count > 0 ? 'var(--shadow-xs)' : undefined,
+                boxShadow: (count > 0 || hasLeave) ? 'var(--shadow-xs)' : undefined,
               }}
               onMouseEnter={(e) => (e.currentTarget.style.background = 'var(--background)')}
               onMouseLeave={(e) => (e.currentTarget.style.background = isToday ? 'rgba(201, 151, 58, 0.05)' : 'var(--surface)')}
@@ -122,8 +143,30 @@ export default function MonthlyCalendar({ shifts, currentDate, onDayClick }: Mon
                   fontWeight: 700,
                   letterSpacing: 0.3,
                   display: 'inline-block',
+                  marginBottom: hasLeave ? 4 : 0,
                 }}>
                   {count} {count === 1 ? t('shifts.shiftCount', 'turno') : t('shifts.shiftCountPlural', 'turni')}
+                </div>
+              )}
+              {hasLeave && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 2, marginTop: count > 0 ? 0 : 2 }}>
+                  {leaveDots.slice(0, 4).map((dot, di) => (
+                    <span
+                      key={di}
+                      title={dot.type === 'vacation' ? t('leave.type_vacation') : t('leave.type_sick')}
+                      style={{
+                        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+                        background: dot.type === 'vacation' ? '#1d4ed8' : '#b45309',
+                        opacity: dot.pending ? 0.45 : 0.85,
+                        border: dot.pending ? '1px dashed currentColor' : 'none',
+                      }}
+                    />
+                  ))}
+                  {leaveDots.length > 4 && (
+                    <span style={{ fontSize: 8, color: 'var(--text-muted)', fontWeight: 700, lineHeight: '8px' }}>
+                      +{leaveDots.length - 4}
+                    </span>
+                  )}
                 </div>
               )}
             </div>

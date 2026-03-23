@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
 import { recordCheckin, EventType } from '../../api/attendance';
 import { useOfflineSync } from '../../hooks/useOfflineSync';
+import { getStore } from '../../api/stores';
+import { Store } from '../../types';
 
 const EVENT_TYPES: { type: EventType; labelKey: string; color: string }[] = [
   { type: 'checkin',     labelKey: 'terminal.checkin',    color: '#22c55e' },
@@ -12,16 +14,17 @@ const EVENT_TYPES: { type: EventType; labelKey: string; color: string }[] = [
 ];
 
 export default function TerminalPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { user } = useAuth();
 
   const [token, setToken]               = useState('');
-  const [userId, setUserId]             = useState('');
+  const [uniqueId, setUniqueId]         = useState('');
   const [selectedType, setSelectedType] = useState<EventType>('checkin');
   const [status, setStatus]             = useState<'idle' | 'success' | 'error'>('idle');
   const [message, setMessage]           = useState('');
   const [loading, setLoading]           = useState(false);
   const [time, setTime]                 = useState(new Date());
+  const [store, setStore]               = useState<Store | null>(null);
   const { enqueue, queueLength, isOnline } = useOfflineSync();
 
   // Live clock
@@ -29,6 +32,13 @@ export default function TerminalPage() {
     const interval = setInterval(() => setTime(new Date()), 1000);
     return () => clearInterval(interval);
   }, []);
+
+  // Load store name
+  useEffect(() => {
+    if (user?.storeId) {
+      getStore(user.storeId).then(setStore).catch(() => {});
+    }
+  }, [user?.storeId]);
 
   // Auto-clear status after 3 seconds
   useEffect(() => {
@@ -38,7 +48,7 @@ export default function TerminalPage() {
         setMessage('');
         if (status === 'success') {
           setToken('');
-          setUserId('');
+          setUniqueId('');
         }
       }, 3000);
       return () => clearTimeout(timeout);
@@ -46,27 +56,21 @@ export default function TerminalPage() {
   }, [status]);
 
   async function handleSubmit() {
-    if (!token.trim() || !userId.trim()) return;
-    const uid = parseInt(userId, 10);
-    if (isNaN(uid) || uid <= 0) {
-      setStatus('error');
-      setMessage(t('terminal.invalid_employee_id'));
-      return;
-    }
+    if (!token.trim() || !uniqueId.trim()) return;
 
     setLoading(true);
     try {
       if (!isOnline) {
         enqueue({
           event_type: selectedType,
-          user_id: uid,
+          unique_id: uniqueId.trim(),
           event_time: new Date().toISOString(),
         });
         setStatus('success');
         setMessage(t('terminal.saved_offline'));
         return;
       }
-      await recordCheckin({ qrToken: token.trim(), eventType: selectedType, userId: uid });
+      await recordCheckin({ qrToken: token.trim(), eventType: selectedType, uniqueId: uniqueId.trim() });
       setStatus('success');
       setMessage(t('attendance.successMessage'));
     } catch (err: unknown) {
@@ -78,8 +82,9 @@ export default function TerminalPage() {
     }
   }
 
-  const timeStr = time.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
-  const dateStr = time.toLocaleDateString('it-IT', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
+  const locale = i18n.language === 'en' ? 'en-GB' : 'it-IT';
+  const timeStr = time.toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const dateStr = time.toLocaleDateString(locale, { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric' });
 
   return (
     <div style={{
@@ -97,14 +102,22 @@ export default function TerminalPage() {
           {dateStr}
         </div>
         {user?.storeId != null && (
-          <div style={{ marginTop: 8 }}>
-            <span style={{
-              background: 'rgba(201,151,58,0.15)', borderRadius: 20, padding: '3px 12px',
-              display: 'inline-block', fontSize: 16, fontWeight: 600, opacity: 0.9,
-            }}>
-              {t('common.store')} #{user.storeId}
-            </span>
-          </div>
+          <>
+            <div style={{
+              marginTop: 12,
+              borderTop: '1px solid rgba(255,255,255,0.12)',
+              paddingTop: 12,
+            }} />
+            <div>
+              <span style={{
+                background: 'rgba(201,151,58,0.2)', border: '1px solid rgba(201,151,58,0.4)',
+                borderRadius: 20, padding: '5px 16px',
+                display: 'inline-block', fontSize: 15, fontWeight: 700, color: '#fcd34d',
+              }}>
+                {store?.name ?? `${t('common.store')} #${user.storeId}`}
+              </span>
+            </div>
+          </>
         )}
       </div>
 
@@ -136,17 +149,20 @@ export default function TerminalPage() {
         borderRadius: 16, padding: 32,
         width: '100%', maxWidth: 480,
         backdropFilter: 'blur(8px)',
-        border: '1px solid rgba(255,255,255,0.15)',
+        border: '1px solid rgba(255,255,255,0.2)',
         borderTop: '3px solid var(--accent)',
       }}>
         <div style={{ fontSize: 13, fontWeight: 600, opacity: 0.6, marginBottom: 8, letterSpacing: 1, textTransform: 'uppercase' }}>
-          {t('terminal.employeeId')}
+          {t('terminal.uniqueIdLabel')}
         </div>
         <input
-          type="number"
-          value={userId}
-          onChange={(e) => setUserId(e.target.value)}
-          placeholder="ID"
+          type="text"
+          autoFocus
+          value={uniqueId}
+          onChange={(e) => setUniqueId(e.target.value)}
+          placeholder={t('terminal.uniqueIdPlaceholder')}
+          onFocus={(e) => { e.currentTarget.style.border = '1.5px solid rgba(201,151,58,0.8)'; }}
+          onBlur={(e) => { e.currentTarget.style.border = '1.5px solid rgba(255,255,255,0.2)'; }}
           style={{
             width: '100%', padding: '12px 16px', borderRadius: 10,
             border: '1.5px solid rgba(255,255,255,0.2)',
@@ -164,6 +180,8 @@ export default function TerminalPage() {
           value={token}
           onChange={(e) => setToken(e.target.value)}
           placeholder={t('terminal.tokenPlaceholder')}
+          onFocus={(e) => { e.currentTarget.style.border = '1.5px solid rgba(201,151,58,0.8)'; }}
+          onBlur={(e) => { e.currentTarget.style.border = '1.5px solid rgba(255,255,255,0.2)'; }}
           style={{
             width: '100%', padding: '12px 16px', borderRadius: 10,
             border: '1.5px solid rgba(255,255,255,0.2)',
@@ -181,8 +199,9 @@ export default function TerminalPage() {
               key={type}
               onClick={() => setSelectedType(type)}
               style={{
-                padding: '16px 8px',
-                borderRadius: 10, border: 'none',
+                padding: '20px 8px',
+                borderRadius: 10,
+                border: selectedType === type ? 'none' : '1px solid rgba(255,255,255,0.15)',
                 background: selectedType === type ? color : 'rgba(255,255,255,0.1)',
                 color: '#fff', fontWeight: 800, fontSize: 13,
                 cursor: 'pointer', letterSpacing: 0.5,
@@ -199,15 +218,15 @@ export default function TerminalPage() {
         {/* Submit */}
         <button
           onClick={handleSubmit}
-          disabled={loading || !token.trim() || !userId.trim()}
+          disabled={loading || !token.trim() || !uniqueId.trim()}
           style={{
-            width: '100%', padding: '18px',
+            width: '100%', padding: '20px',
             borderRadius: 12, border: 'none',
             background: loading ? 'rgba(255,255,255,0.2)' : 'var(--accent)',
-            color: '#fff', fontWeight: 800, fontSize: 17,
-            cursor: loading || !token.trim() || !userId.trim() ? 'not-allowed' : 'pointer',
+            color: '#fff', fontWeight: 800, fontSize: 18,
+            cursor: loading || !token.trim() || !uniqueId.trim() ? 'not-allowed' : 'pointer',
             letterSpacing: 0.5, transition: 'all 0.15s',
-            boxShadow: !loading && token.trim() && userId.trim() ? '0 4px 20px rgba(201,151,58,0.35)' : 'none',
+            boxShadow: !loading && token.trim() && uniqueId.trim() ? '0 4px 20px rgba(201,151,58,0.35)' : 'none',
           }}
         >
           {loading ? t('common.saving') : t('terminal.submit')}
@@ -216,7 +235,7 @@ export default function TerminalPage() {
         {/* Feedback */}
         {status !== 'idle' && (
           <div style={{
-            marginTop: 16, padding: '12px 16px', borderRadius: 10,
+            marginTop: 20, padding: '14px 16px', borderRadius: 10,
             background: status === 'success' ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)',
             border: `1px solid ${status === 'success' ? '#22c55e' : '#ef4444'}`,
             color: status === 'success' ? '#86efac' : '#fca5a5',
@@ -228,7 +247,7 @@ export default function TerminalPage() {
       </div>
 
       <div style={{ marginTop: 32, opacity: 0.4, fontSize: 12 }}>
-        {t('terminal.title')}
+        {store ? store.name : t('terminal.title')}
       </div>
     </div>
   );

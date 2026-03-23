@@ -40,13 +40,13 @@ export interface ShiftTemplate {
 
 export interface StoreAffluence {
   id: number;
-  company_id: number;
-  store_id: number;
-  iso_week: number | null;
-  day_of_week: number;
-  time_slot: string;
+  companyId: number;
+  storeId: number;
+  isoWeek: number | null;
+  dayOfWeek: number;
+  timeSlot: string;
   level: 'low' | 'medium' | 'high';
-  required_staff: number;
+  requiredStaff: number;
 }
 
 export interface CreateShiftPayload {

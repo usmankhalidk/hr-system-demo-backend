@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { CalendarDays, Palmtree, Thermometer, Coffee } from 'lucide-react';
 import { Shift } from '../../api/shifts';
 import { LeaveBlock } from '../../api/leave';
 
@@ -118,7 +119,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
 
       {users.length === 0 ? (
         <div style={{ padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
-          <div style={{ fontSize: 32, marginBottom: 10, opacity: 0.25 }}>🗓</div>
+          <div style={{ marginBottom: 10, opacity: 0.25, display: 'flex', justifyContent: 'center' }}><CalendarDays size={32} /></div>
           <div style={{ fontWeight: 600 }}>{t('shifts.noShiftsToday', 'Nessun turno oggi')}</div>
           {canEdit && (
             <div style={{ fontSize: 12, marginTop: 4 }}>
@@ -143,11 +144,18 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
           </div>
 
           {/* Rows */}
-          {users.map(([userId, userData], rowIdx) => (
+          {users.map(([userId, userData], rowIdx) => {
+            const rowLeave = leaveBlocks?.find(
+              (lb) => lb.userId === userId && dateStr >= lb.startDate && dateStr <= lb.endDate
+            ) ?? null;
+            const isVacation = rowLeave?.leaveType === 'vacation';
+            const isPending = rowLeave ? rowLeave.status !== 'hr_approved' : false;
+
+            return (
             <div
               key={userId}
               style={{
-                display: 'flex', alignItems: 'center',
+                display: 'flex', alignItems: 'stretch',
                 borderBottom: '1px solid var(--border)',
                 background: rowIdx % 2 === 0 ? 'var(--surface)' : 'var(--background)',
                 minHeight: 52,
@@ -155,45 +163,65 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
             >
               {/* Name */}
               <div style={{
-                width: 150, flexShrink: 0, padding: '8px 14px',
+                width: 150, flexShrink: 0, padding: '8px 10px 8px 12px',
                 fontSize: 13, fontWeight: 600, color: 'var(--text-primary)',
                 borderRight: '1px solid var(--border)', lineHeight: 1.3,
+                background: rowLeave
+                  ? (isVacation ? 'rgba(219,234,254,0.28)' : 'rgba(255,237,213,0.28)')
+                  : undefined,
+                display: 'flex', flexDirection: 'column', justifyContent: 'center',
               }}>
-                {userData.surname}<br />
+                <div>{userData.surname}</div>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)', fontWeight: 400 }}>{userData.name}</span>
-                {(() => {
-                  if (!leaveBlocks) return null;
-                  const leave = leaveBlocks.find(
-                    (lb) => lb.userId === userId && dateStr >= lb.startDate && dateStr <= lb.endDate
-                  );
-                  if (!leave) return null;
-                  const isVacation = leave.leaveType === 'vacation';
-                  const isPending = leave.status !== 'hr_approved';
-                  return (
-                    <div style={{
-                      marginTop: 3,
-                      display: 'inline-flex', alignItems: 'center', gap: 3,
-                      padding: '1px 5px', borderRadius: 4,
-                      fontSize: 9, fontWeight: 700, letterSpacing: '0.4px',
-                      textTransform: 'uppercase',
-                      background: isVacation ? 'rgba(29,78,216,0.12)' : 'rgba(180,83,9,0.12)',
-                      color: isVacation ? '#1d4ed8' : '#b45309',
-                      border: `1px solid ${isVacation ? 'rgba(29,78,216,0.3)' : 'rgba(180,83,9,0.3)'}`,
-                      opacity: isPending ? 0.65 : 1,
-                    }}>
-                      {isVacation ? '🏖' : '🤒'}
-                      {isVacation ? t('leave.type_vacation') : t('leave.type_sick')}
-                      {isPending && <span style={{ opacity: 0.8 }}>({t('leave.pending_short')})</span>}
-                    </div>
-                  );
-                })()}
+                {rowLeave && (
+                  <div style={{
+                    display: 'flex', alignItems: 'center', gap: 4,
+                    marginTop: 5,
+                    padding: '3px 8px 3px 6px',
+                    borderRadius: 4,
+                    background: isVacation ? 'rgba(219,234,254,0.9)' : 'rgba(255,237,213,0.9)',
+                    borderLeft: `3px solid ${isVacation
+                      ? (isPending ? 'rgba(37,99,235,0.45)' : '#2563eb')
+                      : (isPending ? 'rgba(234,88,12,0.45)' : '#ea580c')}`,
+                    borderTop: `1px ${isPending ? 'dashed' : 'solid'} ${isVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                    borderRight: `1px ${isPending ? 'dashed' : 'solid'} ${isVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                    borderBottom: `1px ${isPending ? 'dashed' : 'solid'} ${isVacation ? 'rgba(37,99,235,0.18)' : 'rgba(234,88,12,0.18)'}`,
+                    fontSize: 10, fontWeight: 700,
+                    color: isVacation ? '#1e40af' : '#9a3412',
+                    opacity: isPending ? 0.75 : 1,
+                  }}>
+                    {isVacation ? <Palmtree size={11} strokeWidth={2.5} /> : <Thermometer size={11} strokeWidth={2.5} />}
+                    <span>{isVacation ? t('leave.type_vacation') : t('leave.type_sick')}</span>
+                    {isPending && (
+                      <span style={{
+                        fontSize: 8.5, fontWeight: 700,
+                        background: 'rgba(255,255,255,0.7)',
+                        padding: '1px 3px', borderRadius: 3, lineHeight: 1.4,
+                        color: isVacation ? '#3b82f6' : '#f97316',
+                      }}>{t('leave.pending_short')}</span>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* Timeline */}
               <div
-                style={{ flex: 1, position: 'relative', height: 52, cursor: canEdit ? 'pointer' : 'default' }}
+                style={{ flex: 1, position: 'relative', minHeight: 52, cursor: canEdit ? 'pointer' : 'default' }}
                 onClick={() => canEdit && onSlotClick(userId, dateStr)}
               >
+                {/* Leave timeline overlay — clean gradient wash */}
+                {rowLeave && (
+                  <div style={{
+                    position: 'absolute', inset: 0, pointerEvents: 'none', zIndex: 1,
+                    background: isVacation
+                      ? 'linear-gradient(90deg, rgba(219,234,254,0.45) 0%, rgba(219,234,254,0.12) 100%)'
+                      : 'linear-gradient(90deg, rgba(255,237,213,0.45) 0%, rgba(255,237,213,0.12) 100%)',
+                    borderTop: `2px solid ${isVacation
+                      ? (isPending ? 'rgba(37,99,235,0.2)' : 'rgba(37,99,235,0.38)')
+                      : (isPending ? 'rgba(234,88,12,0.2)' : 'rgba(234,88,12,0.38)')}`,
+                    opacity: isPending ? 0.65 : 1,
+                  }} />
+                )}
                 {/* Hour grid lines */}
                 {HOUR_LABELS.slice(0, -1).map((_, i) => (
                   <div key={i} style={{
@@ -269,7 +297,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                         style={{
                           position: 'absolute',
                           left: blockLeft, width: blockWidth,
-                          top: 6, bottom: 6,
+                          top: '50%', transform: 'translateY(-50%)', height: 40,
                           background: colors.bg,
                           color: colors.text,
                           borderRadius: 6,
@@ -333,7 +361,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                               background: 'rgba(255,255,255,0.12)',
                               borderRadius: 3, padding: '1px 4px',
                             }}>
-                              ☕ {shift.breakStart!.slice(0, 5)}
+                              <Coffee size={9} strokeWidth={2.5} /> {shift.breakStart!.slice(0, 5)}
                             </span>
                           )}
                         </span>
@@ -356,7 +384,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                 })}
               </div>
             </div>
-          ))}
+          ); })}
         </div>
       )}
 
@@ -419,7 +447,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                 border: '1px solid rgba(255,255,255,0.25)',
                 flexShrink: 0,
               }} />
-              ☕ {t('shifts.form.breakStart', 'Pausa')}
+              <Coffee size={11} strokeWidth={2.5} /> {t('shifts.form.breakStart', 'Pausa')}
             </span>
             <span style={{ fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic' }}>
               {t('shifts.breakLegend', 'Break period shown as hatched section')}

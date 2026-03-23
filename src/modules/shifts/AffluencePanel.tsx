@@ -37,8 +37,8 @@ export default function AffluencePanel({ storeId, week }: Props) {
 
   const byDay = new Map<number, StoreAffluence[]>();
   for (const r of rows) {
-    if (!byDay.has(r.day_of_week)) byDay.set(r.day_of_week, []);
-    byDay.get(r.day_of_week)!.push(r);
+    if (!byDay.has(r.dayOfWeek)) byDay.set(r.dayOfWeek, []);
+    byDay.get(r.dayOfWeek)!.push(r);
   }
   const days = Array.from(byDay.keys()).sort((a, b) => a - b);
 
@@ -99,7 +99,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
       ) : (
         <div style={{ maxHeight: 420, overflowY: 'auto' }}>
           {days.map((day) => {
-            const slots = byDay.get(day)!.sort((a, b) => a.time_slot.localeCompare(b.time_slot));
+            const slots = byDay.get(day)!.sort((a, b) => a.timeSlot.localeCompare(b.timeSlot));
             return (
               <div key={day}>
                 <div style={{
@@ -114,7 +114,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
                   const meta = LEVEL_META[slot.level as keyof typeof LEVEL_META];
                   return (
                     <div
-                      key={`${day}-${slot.time_slot}`}
+                      key={`${day}-${slot.timeSlot}`}
                       style={{
                         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                         padding: '8px 16px', borderBottom: '1px solid var(--border)',
@@ -125,7 +125,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
                     >
                       <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                         <span style={{ fontFamily: 'monospace', fontWeight: 700, fontSize: 13, color: 'var(--text)', minWidth: 44 }}>
-                          {slot.time_slot}
+                          {slot.timeSlot}
                         </span>
                         <span style={{
                           display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -139,7 +139,7 @@ export default function AffluencePanel({ storeId, week }: Props) {
                         </span>
                       </div>
                       <div style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)' }}>
-                        <span style={{ fontSize: 13, color: meta.color }}>{slot.required_staff}</span>
+                        <span style={{ fontSize: 13, color: meta.color }}>{slot.requiredStaff}</span>
                         <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>pers.</span>
                       </div>
                     </div>

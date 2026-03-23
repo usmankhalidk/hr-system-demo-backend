@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { CalendarDays } from 'lucide-react';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 interface StoreInfo {
@@ -9,9 +10,21 @@ interface StoreInfo {
   maxStaff: number | null;
 }
 
+interface TodayShift {
+  id: number;
+  name: string;
+  surname: string;
+  startTime: string;
+  endTime: string;
+  status: string;
+  latestEvent: string | null;
+}
+
 export interface StoreManagerHomeData {
   store: StoreInfo;
   employeeCount: number;
+  todayShifts?: TodayShift[];
+  todayAttendance?: Record<string, number>;
 }
 
 interface StoreManagerHomeProps {
@@ -78,10 +91,35 @@ const MetricRow: React.FC<{ label: string; value: string | number; accent?: stri
   </div>
 );
 
+function fmt(t: string): string { return t ? t.slice(0, 5) : ''; }
+
+// Keys must match camelCase-converted response object keys from the API interceptor.
+// DB values: checkin, checkout, break_start, break_end → after camelizeKeys: checkin, checkout, breakStart, breakEnd
+function getEventMeta(t: (key: string) => string): Record<string, { label: string; color: string; bg: string; icon: string }> {
+  return {
+    checkin:    { label: t('attendance.checkin'),    color: '#15803d', bg: 'rgba(21,128,61,0.10)',  icon: '→' },
+    checkout:   { label: t('attendance.checkout'),   color: '#0369a1', bg: 'rgba(3,105,161,0.10)',  icon: '←' },
+    breakStart: { label: t('attendance.breakStart'), color: '#b45309', bg: 'rgba(180,83,9,0.10)',   icon: '⏸' },
+    breakEnd:   { label: t('attendance.breakEnd'),   color: '#7c3aed', bg: 'rgba(124,58,237,0.10)', icon: '▶' },
+  };
+}
+
+// Convert snake_case event type values (from DB) to camelCase keys (as camelizeKeys converts them)
+function eventTypeToKey(eventType: string): string {
+  return eventType.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+}
+
+const SHIFT_STATUS_COLOR: Record<string, string> = {
+  confirmed: '#15803d',
+  scheduled: '#1e4a7a',
+  cancelled: '#9ca3af',
+};
+
 export const StoreManagerHome: React.FC<StoreManagerHomeProps> = ({ data }) => {
-  const { store, employeeCount } = data;
-  const { t } = useTranslation();
+  const { store, employeeCount, todayShifts = [], todayAttendance = {} } = data;
+  const { t, i18n } = useTranslation();
   const { isMobile } = useBreakpoint();
+  const EVENT_META = getEventMeta(t);
 
   const available = store.maxStaff ? Math.max(0, store.maxStaff - employeeCount) : null;
 
@@ -152,33 +190,132 @@ export const StoreManagerHome: React.FC<StoreManagerHomeProps> = ({ data }) => {
         </div>
       </div>
 
-      {/* Phase 2 placeholders */}
+      {/* Today's shifts + attendance */}
       <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '1fr 1fr', gap: '16px' }}>
-        {[t('home.storeManager.todayShifts'), t('home.storeManager.todayAttendance')].map((title) => (
-          <div key={title} style={{
-            background: 'var(--surface)', borderRadius: 'var(--radius-lg)',
-            border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)',
-          }}>
-            <div style={{ padding: '18px 20px 14px', borderBottom: '1px solid var(--border-light)' }}>
-              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', margin: 0, letterSpacing: '-0.01em' }}>
-                {title}
+
+        {/* Today's shifts */}
+        <div style={{
+          background: 'var(--surface)', borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden',
+        }}>
+          <div style={{ padding: '18px 20px 12px', borderBottom: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 2px', letterSpacing: '-0.01em' }}>
+                {t('home.storeManager.todayShifts')}
               </h3>
+              <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+                {new Date().toLocaleDateString(i18n.language, { weekday: 'long', day: 'numeric', month: 'long' })}
+              </p>
             </div>
-            <div style={{
-              padding: '32px 16px', textAlign: 'center',
-              color: 'var(--text-disabled)', fontSize: '13px',
-            }}>
-              <div style={{
-                display: 'inline-flex', alignItems: 'center', gap: '6px',
-                padding: '5px 12px', borderRadius: '999px',
-                background: 'var(--surface-warm)', border: '1px solid var(--border)',
-                fontSize: '11px', color: 'var(--text-muted)', fontWeight: 500,
+            {todayShifts.length > 0 && (
+              <span style={{
+                padding: '3px 10px', borderRadius: 20,
+                background: 'rgba(13,33,55,0.08)', color: 'var(--primary)',
+                fontSize: 12, fontWeight: 700,
               }}>
-                {t('common.phase2')}
-              </div>
-            </div>
+                {todayShifts.length}
+              </span>
+            )}
           </div>
-        ))}
+          <div style={{ maxHeight: 260, overflowY: 'auto' }}>
+            {todayShifts.length === 0 ? (
+              <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                <div style={{ marginBottom: 8, opacity: 0.3, display: 'flex', justifyContent: 'center' }}><CalendarDays size={24} /></div>
+                {t('shifts.noShiftsToday', 'Nessun turno oggi')}
+              </div>
+            ) : (
+              todayShifts.map((shift, idx) => {
+                const eventMeta = shift.latestEvent ? EVENT_META[eventTypeToKey(shift.latestEvent)] : null;
+                const statusColor = SHIFT_STATUS_COLOR[shift.status] ?? '#9ca3af';
+                return (
+                  <div key={shift.id} style={{
+                    display: 'flex', alignItems: 'center', gap: 10,
+                    padding: '10px 16px',
+                    borderBottom: idx < todayShifts.length - 1 ? '1px solid var(--border-light)' : 'none',
+                  }}>
+                    {/* Avatar */}
+                    <div style={{
+                      width: 30, height: 30, borderRadius: '50%', flexShrink: 0,
+                      background: 'var(--primary)', color: '#fff',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 10, fontWeight: 700,
+                    }}>
+                      {shift.surname.charAt(0)}{shift.name.charAt(0)}
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', lineHeight: 1.2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {shift.surname} {shift.name}
+                      </div>
+                      <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
+                        {fmt(shift.startTime)}–{fmt(shift.endTime)}
+                        <span style={{ display: 'inline-block', width: 6, height: 6, borderRadius: '50%', background: statusColor, marginLeft: 6, verticalAlign: 'middle' }} />
+                      </div>
+                    </div>
+                    {eventMeta && (
+                      <span style={{
+                        padding: '2px 7px', borderRadius: 12,
+                        fontSize: 10, fontWeight: 700,
+                        background: eventMeta.bg, color: eventMeta.color,
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {eventMeta.label}
+                      </span>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+
+        {/* Today's attendance summary */}
+        <div style={{
+          background: 'var(--surface)', borderRadius: 'var(--radius-lg)',
+          border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden',
+        }}>
+          <div style={{ padding: '18px 20px 12px', borderBottom: '1px solid var(--border-light)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', margin: '0 0 2px', letterSpacing: '-0.01em' }}>
+              {t('home.storeManager.todayAttendance')}
+            </h3>
+            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: 0 }}>
+              {t('home.storeManager.attendanceDesc', 'Riepilogo eventi di oggi')}
+            </p>
+          </div>
+          <div style={{ padding: '16px 20px' }}>
+            {Object.entries(EVENT_META).map(([key, meta]) => {
+              const count = todayAttendance[key] ?? 0;
+              return (
+                <div key={key} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  padding: '10px 0',
+                  borderBottom: key !== 'breakEnd' ? '1px solid var(--border-light)' : 'none',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                    <div style={{
+                      width: 32, height: 32, borderRadius: 8, flexShrink: 0,
+                      background: count > 0 ? meta.bg : 'var(--surface-warm)',
+                      color: count > 0 ? meta.color : 'var(--text-muted)',
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: 14, fontWeight: 700,
+                    }}>
+                      {meta.icon}
+                    </div>
+                    <span style={{ fontSize: 13, color: count > 0 ? 'var(--text-primary)' : 'var(--text-muted)', fontWeight: count > 0 ? 600 : 400 }}>
+                      {meta.label}
+                    </span>
+                  </div>
+                  <span style={{
+                    fontSize: 20, fontWeight: 800, fontFamily: 'var(--font-display)',
+                    color: count > 0 ? meta.color : 'var(--text-disabled)',
+                    lineHeight: 1,
+                  }}>
+                    {count}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
     </div>
   );

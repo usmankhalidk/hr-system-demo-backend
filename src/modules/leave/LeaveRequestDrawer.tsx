@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { submitLeaveRequest, LeaveType } from '../../api/leave';
 import { useToast } from '../../context/ToastContext';
+import { DatePicker } from '../../components/ui/DatePicker';
 
 interface Props {
   open: boolean;
@@ -44,7 +45,13 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
       setError(t('leave.error_dates_required'));
       return;
     }
-    if (new Date(startDate) > new Date(endDate)) {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    if (new Date(startDate + 'T00:00:00') < today) {
+      setError(t('leave.error_past_date', 'Non è possibile richiedere un permesso per una data passata'));
+      return;
+    }
+    if (new Date(startDate + 'T00:00:00') > new Date(endDate + 'T00:00:00')) {
       setError(t('leave.error_date_range'));
       return;
     }
@@ -161,38 +168,19 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
 
           {/* Start date */}
           <div style={{ marginBottom: 18 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              {t('leave.start_date')}
-            </label>
-            <input
-              type="date"
+            <DatePicker
+              label={t('leave.start_date')}
               value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-              required
-              style={{
-                width: '100%', padding: '9px 12px', borderRadius: 8, fontSize: 14,
-                border: '1.5px solid var(--border)', background: 'var(--surface)',
-                color: 'var(--text-primary)', boxSizing: 'border-box',
-              }}
+              onChange={setStartDate}
             />
           </div>
 
           {/* End date */}
           <div style={{ marginBottom: 18 }}>
-            <label style={{ display: 'block', fontSize: 13, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 6 }}>
-              {t('leave.end_date')}
-            </label>
-            <input
-              type="date"
+            <DatePicker
+              label={t('leave.end_date')}
               value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-              required
-              min={startDate || undefined}
-              style={{
-                width: '100%', padding: '9px 12px', borderRadius: 8, fontSize: 14,
-                border: '1.5px solid var(--border)', background: 'var(--surface)',
-                color: 'var(--text-primary)', boxSizing: 'border-box',
-              }}
+              onChange={setEndDate}
             />
           </div>
 

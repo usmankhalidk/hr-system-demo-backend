@@ -3,7 +3,8 @@ import client from '../api/client';
 
 export interface OfflineEvent {
   event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
-  user_id: number;
+  unique_id?: string;   // Employee unique text ID (preferred)
+  user_id?: number;     // Legacy numeric ID (fallback)
   event_time: string;   // ISO timestamp captured at the moment of scan
   notes?: string;
 }

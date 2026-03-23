@@ -36,62 +36,97 @@ function StatusBadge({ status }: { status: LeaveStatus }) {
 const CHAIN_STEPS = ['store_manager', 'area_manager', 'hr'] as const;
 type ChainStep = typeof CHAIN_STEPS[number];
 
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <polyline points="20 6 9 17 4 12" />
+    </svg>
+  );
+}
+
+function XIcon() {
+  return (
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
+  );
+}
+
 function ApprovalStepper({ currentApprover, status }: { currentApprover: string | null; status: LeaveStatus }) {
   const { t } = useTranslation();
+  const isRejected = status === 'rejected';
 
   function stepState(stepRole: ChainStep): 'completed' | 'current' | 'pending' {
     if (status === 'hr_approved') return 'completed';
+    if (isRejected) return 'pending'; // all grayed out for rejected
     const currentIdx = currentApprover ? CHAIN_STEPS.indexOf(currentApprover as ChainStep) : -1;
     const stepIdx    = CHAIN_STEPS.indexOf(stepRole);
-    if (currentIdx === -1) return 'pending'; // rejected / terminal
+    if (currentIdx === -1) return 'pending';
     if (stepIdx < currentIdx) return 'completed';
     if (stepIdx === currentIdx) return 'current';
     return 'pending';
   }
 
   return (
-    <div style={{ display: 'flex', alignItems: 'center', gap: 0, marginTop: 8 }}>
-      {CHAIN_STEPS.map((step, idx) => {
-        const state = stepState(step);
-        const isCompleted = state === 'completed';
-        const isCurrent   = state === 'current';
+    <div>
+      {isRejected && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          marginBottom: 8, fontSize: 11, fontWeight: 700,
+          color: 'var(--danger)', letterSpacing: 0.3, textTransform: 'uppercase',
+        }}>
+          <XIcon />
+          {t('leave.status_rejected')}
+        </div>
+      )}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 0, opacity: isRejected ? 0.45 : 1, transition: 'opacity 0.2s' }}>
+        {CHAIN_STEPS.map((step, idx) => {
+          const state = stepState(step);
+          const isCompleted = state === 'completed';
+          const isCurrent   = state === 'current';
 
-        const circleBackground = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'transparent';
-        const circleBorder     = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'var(--border)';
-        const circleTextColor  = (isCompleted || isCurrent) ? '#fff' : 'var(--text-secondary)';
-        const labelColor       = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'var(--text-secondary)';
-        const lineBackground   = stepState(CHAIN_STEPS[idx + 1] as ChainStep) === 'pending' ? 'var(--border)' : 'var(--accent)';
+          const circleBackground = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'transparent';
+          const circleBorder     = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'var(--border)';
+          const circleTextColor  = (isCompleted || isCurrent) ? '#fff' : 'var(--text-muted)';
+          const labelColor       = isCompleted ? 'var(--accent)' : isCurrent ? 'var(--primary)' : 'var(--text-muted)';
+          const nextState = idx < CHAIN_STEPS.length - 1 ? stepState(CHAIN_STEPS[idx + 1] as ChainStep) : 'pending';
+          const lineBackground   = nextState === 'pending' ? 'var(--border)' : 'var(--accent)';
 
-        return (
-          <React.Fragment key={step}>
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 60 }}>
-              <div style={{
-                width: 34, height: 34, borderRadius: '50%',
-                background: circleBackground,
-                border: `2px solid ${circleBorder}`,
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
-                fontSize: 14, fontWeight: 700, color: circleTextColor,
-                transition: 'all 0.2s',
-              }}>
-                {isCompleted ? '✓' : idx + 1}
+          return (
+            <React.Fragment key={step}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', minWidth: 64 }}>
+                <div style={{
+                  width: 30, height: 30, borderRadius: '50%',
+                  background: circleBackground,
+                  border: `2px solid ${circleBorder}`,
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  color: circleTextColor,
+                  transition: 'all 0.2s',
+                  boxShadow: isCompleted ? '0 2px 8px rgba(201,151,58,0.35)' : isCurrent ? '0 2px 8px rgba(13,33,55,0.25)' : 'none',
+                }}>
+                  {isCompleted ? <CheckIcon /> : (
+                    <span style={{ fontSize: 12, fontWeight: 700, fontFamily: 'var(--font-display)' }}>{idx + 1}</span>
+                  )}
+                </div>
+                <div style={{
+                  fontSize: 9, fontWeight: 600, color: labelColor,
+                  marginTop: 4, textAlign: 'center', lineHeight: 1.2,
+                  letterSpacing: 0.3, textTransform: 'uppercase',
+                }}>
+                  {t(`leave.approver_${step}`)}
+                </div>
               </div>
-              <div style={{
-                fontSize: 10, fontWeight: 600, color: labelColor,
-                marginTop: 4, textAlign: 'center', lineHeight: 1.2,
-              }}>
-                {t(`leave.approver_${step}`)}
-              </div>
-            </div>
-            {idx < CHAIN_STEPS.length - 1 && (
-              <div style={{
-                flex: 1, height: 2, marginBottom: 20,
-                background: lineBackground,
-                transition: 'background 0.3s',
-              }} />
-            )}
-          </React.Fragment>
-        );
-      })}
+              {idx < CHAIN_STEPS.length - 1 && (
+                <div style={{
+                  flex: 1, height: 2, marginBottom: 22,
+                  background: lineBackground,
+                  transition: 'background 0.3s',
+                }} />
+              )}
+            </React.Fragment>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -194,7 +229,7 @@ interface Props {
 }
 
 export function LeaveApprovalList({ requests, loading, onRefresh, showActions = false }: Props) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { showToast } = useToast();
 
   const [rejectTarget, setRejectTarget] = useState<number | null>(null);
@@ -243,7 +278,25 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
 
   function formatDate(iso: string): string {
     const d = new Date(iso);
-    return d.toLocaleDateString('it-IT', { day: '2-digit', month: 'short', year: 'numeric' });
+    const locale = i18n.language === 'en' ? 'en-GB' : 'it-IT';
+    return d.toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+
+  function getDurationDays(start: string, end: string): number {
+    const s = new Date(start);
+    const e = new Date(end);
+    return Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+  }
+
+  function getInitials(surname: string, name: string): string {
+    return `${(surname[0] ?? '').toUpperCase()}${(name[0] ?? '').toUpperCase()}`;
+  }
+
+  function getAvatarColor(name: string): string {
+    const colors = ['#0D2137', '#1d4ed8', '#7c3aed', '#0369a1', '#065f46', '#92400e'];
+    let h = 0;
+    for (let i = 0; i < name.length; i++) h = name.charCodeAt(i) + ((h << 5) - h);
+    return colors[Math.abs(h) % colors.length];
   }
 
   if (loading) {
@@ -267,95 +320,163 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
         loading={actionLoading}
       />
 
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-        {requests.map((req) => (
-          <div
-            key={req.id}
-            className="card-lift"
-            style={{
-              background: 'var(--surface)',
-              border: '1px solid var(--border)',
-              borderRadius: 12,
-              padding: '16px 20px',
-              boxShadow: 'var(--shadow-xs)',
-              transition: 'box-shadow 0.15s',
-            }}
-          >
-            {/* Top row: name + type badge + status badge */}
-            <div style={{
-              display: 'flex', alignItems: 'center',
-              justifyContent: 'space-between', flexWrap: 'wrap',
-              gap: 8, marginBottom: 8,
-            }}>
-              <div>
-                <span style={{ fontWeight: 700, fontSize: 15, color: 'var(--text-primary)' }}>
-                  {req.userSurname} {req.userName}
-                </span>
-                <span style={{
-                  marginLeft: 10, fontSize: 12, fontWeight: 600,
-                  color: req.leaveType === 'vacation' ? 'var(--accent)' : 'var(--info)',
-                  background: req.leaveType === 'vacation' ? 'var(--accent-light)' : 'var(--info-bg)',
-                  padding: '2px 8px', borderRadius: 20,
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+        {requests.map((req) => {
+          const isVacation = req.leaveType === 'vacation';
+          const isRejected = req.status === 'rejected';
+          const accentColor = isRejected ? 'var(--danger)' : isVacation ? 'var(--accent)' : '#0369a1';
+          const days = getDurationDays(req.startDate, req.endDate);
+          const initials = getInitials(req.userSurname ?? '', req.userName ?? '');
+          const avatarBg = getAvatarColor((req.userSurname ?? '') + (req.userName ?? ''));
+
+          return (
+            <div
+              key={req.id}
+              className="card-lift"
+              style={{
+                background: 'var(--surface)',
+                border: '1px solid var(--border)',
+                borderLeft: `4px solid ${accentColor}`,
+                borderRadius: 10,
+                boxShadow: 'var(--shadow-xs)',
+                transition: 'box-shadow 0.15s',
+                overflow: 'hidden',
+              }}
+            >
+              <div style={{ padding: '14px 18px' }}>
+                {/* Top row: avatar + name/date + badges */}
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12, marginBottom: 10 }}>
+                  {/* Avatar */}
+                  <div style={{
+                    width: 40, height: 40, borderRadius: '50%', flexShrink: 0,
+                    background: avatarBg, color: '#fff',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: 13, fontWeight: 700, fontFamily: 'var(--font-display)',
+                    letterSpacing: 0.5,
+                  }}>
+                    {initials}
+                  </div>
+
+                  {/* Name + date */}
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 8, marginBottom: 2 }}>
+                      <span style={{ fontWeight: 700, fontSize: 14, color: 'var(--text-primary)', fontFamily: 'var(--font-display)' }}>
+                        {req.userSurname} {req.userName}
+                      </span>
+                      {/* Leave type badge */}
+                      <span style={{
+                        fontSize: 11, fontWeight: 600,
+                        color: isVacation ? 'var(--accent)' : '#0369a1',
+                        background: isVacation ? 'var(--accent-light)' : 'rgba(3,105,161,0.08)',
+                        padding: '1px 8px', borderRadius: 20,
+                        border: `1px solid ${isVacation ? 'rgba(201,151,58,0.3)' : 'rgba(3,105,161,0.2)'}`,
+                      }}>
+                        {t(`leave.type_${req.leaveType}`)}
+                      </span>
+                      {/* Duration badge */}
+                      <span style={{
+                        fontSize: 11, fontWeight: 600, color: 'var(--text-muted)',
+                        background: 'var(--background)', padding: '1px 8px',
+                        borderRadius: 20, border: '1px solid var(--border)',
+                      }}>
+                        {days} {days === 1 ? t('leave.day_singular', 'giorno') : t('leave.day_plural', 'giorni')}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
+                      {formatDate(req.startDate)}
+                      {req.startDate !== req.endDate && <> — {formatDate(req.endDate)}</>}
+                    </div>
+                  </div>
+
+                  {/* Status badge */}
+                  <div style={{ flexShrink: 0 }}>
+                    <StatusBadge status={req.status} />
+                  </div>
+                </div>
+
+                {/* Notes */}
+                {req.notes && (
+                  <div style={{
+                    fontSize: 12, color: 'var(--text-secondary)', fontStyle: 'italic',
+                    marginBottom: 8, paddingLeft: 52,
+                  }}>
+                    "{req.notes}"
+                  </div>
+                )}
+
+                {/* Certificate download button */}
+                {req.medicalCertificateName && (
+                  <div style={{ marginBottom: 8, paddingLeft: 52 }}>
+                    <button
+                      onClick={() => handleDownloadCertificate(req)}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 5,
+                        padding: '3px 10px', borderRadius: 6,
+                        background: 'rgba(3,105,161,0.08)', border: '1px solid rgba(3,105,161,0.25)',
+                        color: '#0369a1', fontSize: 11, fontWeight: 700, cursor: 'pointer',
+                      }}
+                    >
+                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                      {t('leave.certificate_btn')}
+                    </button>
+                  </div>
+                )}
+
+                {/* Approval chain stepper */}
+                <div style={{
+                  background: 'var(--background)', borderRadius: 8,
+                  padding: '10px 14px', marginTop: 4,
+                  border: '1px solid var(--border)',
                 }}>
-                  {t(`leave.type_${req.leaveType}`)}
-                </span>
+                  <ApprovalStepper currentApprover={req.currentApproverRole} status={req.status} />
+                </div>
+
+                {/* Action buttons */}
+                {showActions && req.status !== 'hr_approved' && req.status !== 'rejected' && (
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+                    <button
+                      onClick={() => handleApprove(req.id)}
+                      disabled={actionLoading}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        padding: '8px 16px', borderRadius: 8, border: 'none',
+                        background: 'var(--primary)', color: '#fff',
+                        fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                        opacity: actionLoading ? 0.6 : 1,
+                        transition: 'opacity 0.15s',
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      {t('leave.action_approve')}
+                    </button>
+                    <button
+                      onClick={() => setRejectTarget(req.id)}
+                      disabled={actionLoading}
+                      style={{
+                        display: 'inline-flex', alignItems: 'center', gap: 6,
+                        padding: '8px 16px', borderRadius: 8,
+                        border: '1.5px solid var(--danger)',
+                        background: 'transparent', color: 'var(--danger)',
+                        fontSize: 13, fontWeight: 700, cursor: 'pointer',
+                        opacity: actionLoading ? 0.6 : 1,
+                        transition: 'opacity 0.15s',
+                      }}
+                    >
+                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                        <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+                      </svg>
+                      {t('leave.action_reject')}
+                    </button>
+                  </div>
+                )}
               </div>
-              <StatusBadge status={req.status} />
             </div>
-
-            {/* Date range */}
-            <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
-              {formatDate(req.startDate)} — {formatDate(req.endDate)}
-            </div>
-
-            {/* Notes */}
-            {req.notes && (
-              <div style={{ fontSize: 13, color: 'var(--text-secondary)', fontStyle: 'italic', marginBottom: 8 }}>
-                "{req.notes}"
-              </div>
-            )}
-
-            {/* Certificate download button */}
-            {req.medicalCertificateName && (
-              <div style={{ marginBottom: 8 }}>
-                <button
-                  onClick={() => handleDownloadCertificate(req)}
-                  style={{
-                    display: 'inline-flex', alignItems: 'center', gap: 5,
-                    padding: '3px 10px', borderRadius: 6,
-                    background: 'rgba(3,105,161,0.08)', border: '1px solid rgba(3,105,161,0.25)',
-                    color: '#0369a1', fontSize: 11, fontWeight: 700, cursor: 'pointer',
-                  }}
-                >
-                  {t('leave.certificate_btn')}
-                </button>
-              </div>
-            )}
-
-            {/* Approval chain stepper */}
-            <ApprovalStepper currentApprover={req.currentApproverRole} status={req.status} />
-
-            {/* Action buttons (pending approval queue only) */}
-            {showActions && req.status !== 'hr_approved' && req.status !== 'rejected' && (
-              <div style={{ display: 'flex', gap: 10, marginTop: 14 }}>
-                <button
-                  className="btn btn-primary"
-                  onClick={() => handleApprove(req.id)}
-                  disabled={actionLoading}
-                >
-                  {t('leave.action_approve')}
-                </button>
-                <button
-                  className="btn btn-danger"
-                  onClick={() => setRejectTarget(req.id)}
-                  disabled={actionLoading}
-                >
-                  {t('leave.action_reject')}
-                </button>
-              </div>
-            )}
-          </div>
-        ))}
+          );
+        })}
       </div>
     </>
   );
