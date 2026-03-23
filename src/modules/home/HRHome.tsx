@@ -297,7 +297,7 @@ export const HRHome: React.FC<HRHomeProps> = ({ data }) => {
                     <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>{t(`employees.trainingType_${tr.trainingType}`)}</span>
                   </div>
                   <span style={{ fontSize: 11, fontWeight: 700, color: daysLeft <= 14 ? '#dc2626' : '#ea580c', background: daysLeft <= 14 ? 'rgba(220,38,38,0.1)' : 'rgba(234,88,12,0.1)', padding: '2px 8px', borderRadius: 20 }}>
-                    {daysLeft}d
+                    {daysLeft}{t('leave.days_label')}
                   </span>
                 </div>
               );
@@ -324,7 +324,7 @@ export const HRHome: React.FC<HRHomeProps> = ({ data }) => {
                 >
                   <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{m.name} {m.surname}</span>
                   <span style={{ fontSize: 11, fontWeight: 700, color: daysLeft <= 14 ? '#dc2626' : '#7c3aed', background: daysLeft <= 14 ? 'rgba(220,38,38,0.1)' : 'rgba(124,58,237,0.1)', padding: '2px 8px', borderRadius: 20 }}>
-                    {daysLeft}d
+                    {daysLeft}{t('leave.days_label')}
                   </span>
                 </div>
               );
