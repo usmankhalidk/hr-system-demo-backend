@@ -139,8 +139,8 @@ export const deleteStorePermanent = asyncHandler(async (req: Request, res: Respo
 
   // Refuse if any user is assigned to this store
   const userCount = await queryOne<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM users WHERE store_id = $1`,
-    [storeId]
+    `SELECT COUNT(*) AS count FROM users WHERE store_id = $1 AND company_id = $2`,
+    [storeId, companyId]
   );
   if (parseInt(userCount?.count ?? '0', 10) > 0) {
     conflict(res, 'Impossibile eliminare: il negozio ha dipendenti assegnati. Riassegnarli prima di procedere.', 'STORE_HAS_EMPLOYEES');

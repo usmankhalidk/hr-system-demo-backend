@@ -31,6 +31,12 @@ export const createTraining = asyncHandler(async (req: Request, res: Response) =
   const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const { training_type, start_date, end_date, notes } = req.body;
+  // Verify employee belongs to this company
+  const emp = await queryOne<{ id: number }>(
+    `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
+    [empId, companyId]
+  );
+  if (!emp) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne<TrainingRow>(
     `INSERT INTO employee_trainings (user_id, company_id, training_type, start_date, end_date, notes)
      VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
