@@ -34,6 +34,7 @@ export interface EmployeeHomeData {
   nextShift?: NextShift | null;
   leaveBalance?: LeaveBalance[];
   isBirthday?: boolean;
+  showLeaveBalance?: boolean;
 }
 
 interface EmployeeHomeProps {
@@ -129,7 +130,7 @@ function BalanceBar({ balance, locale }: { balance: LeaveBalance; locale: string
 
 // ── Main component ─────────────────────────────────────────────────────────
 export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
-  const { profile, nextShift, leaveBalance = [], isBirthday = false } = data;
+  const { profile, nextShift, leaveBalance = [], isBirthday = false, showLeaveBalance } = data;
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const locale = i18n.language === 'it' ? 'it-IT' : 'en-GB';
@@ -301,7 +302,11 @@ export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
           </button>
         </div>
         <div style={{ padding: '20px 20px 4px' }}>
-          {leaveBalance.length > 0 ? (
+          {showLeaveBalance === false ? (
+            <div style={{ paddingBottom: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+              {t('home.employee.balanceHidden')}
+            </div>
+          ) : leaveBalance.length > 0 ? (
             leaveBalance.map((b) => (
               <BalanceBar key={b.leaveType} balance={b} locale={locale} />
             ))

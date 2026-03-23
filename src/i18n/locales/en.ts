@@ -203,6 +203,7 @@ const en = {
       noNextShift: 'No shifts scheduled',
       birthdayTitle: 'Happy birthday, {{name}}!',
       birthdaySubtitle: 'Warm wishes from the whole team',
+      balanceHidden: 'Balance visibility is currently disabled by your administrator.',
     },
     terminal: {
       welcome: 'Welcome',
@@ -373,6 +374,11 @@ const en = {
     title: 'Settings',
     subtitle: 'Application configuration and preferences.',
     noSettingsAvailable: 'No settings are available for your role at this time.',
+    sectionLeave: 'Leave & Permissions',
+    leaveBalanceVisibility: 'Show leave balance to employees',
+    leaveBalanceVisibilityDesc: 'When disabled, employees cannot see their vacation/sick day balances on the home page.',
+    savedSuccess: 'Setting saved.',
+    saveError: 'Failed to save setting.',
   },
 
   // ─── Profile ──────────────────────────────────────────────────────────────

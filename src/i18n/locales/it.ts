@@ -203,6 +203,7 @@ const it = {
       noNextShift: 'Nessun turno programmato',
       birthdayTitle: 'Buon compleanno, {{name}}!',
       birthdaySubtitle: 'Tanti auguri da tutto il team',
+      balanceHidden: "La visibilità del saldo è attualmente disabilitata dall'amministratore.",
     },
     terminal: {
       welcome: 'Benvenuto',
@@ -373,6 +374,11 @@ const it = {
     title: 'Impostazioni',
     subtitle: 'Configurazione e preferenze dell\'applicazione.',
     noSettingsAvailable: 'Nessuna impostazione disponibile per il tuo ruolo al momento.',
+    sectionLeave: 'Permessi e Ferie',
+    leaveBalanceVisibility: 'Mostra saldo ferie ai dipendenti',
+    leaveBalanceVisibilityDesc: 'Se disabilitato, i dipendenti non vedono il saldo ferie/malattia nella propria home.',
+    savedSuccess: 'Impostazione salvata.',
+    saveError: 'Impossibile salvare l\'impostazione.',
   },
 
   // ─── Profile ──────────────────────────────────────────────────────────────
