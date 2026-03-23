@@ -148,6 +148,72 @@ export async function seed() {
     await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
     console.log('✓ Users seeded (13 users)');
 
+    // ── Phase 1 feedback: is_super_admin ──────────────────────────────────────
+    await client.query(`
+      UPDATE users SET is_super_admin = true WHERE email = 'admin@fusarouomo.com'
+    `);
+    console.log('✓ Super admin flag set');
+
+    // ── Phase 1 feedback: contract_type + probation_months for employees ──────
+    await client.query(`
+      UPDATE users SET contract_type = 'Tempo Indeterminato', probation_months = NULL
+        WHERE id = 6;  -- Anna: confirmed permanent
+      UPDATE users SET contract_type = 'Tempo Determinato',  probation_months = 3
+        WHERE id = 7;  -- Roberto: fixed-term with 3-month probation
+      UPDATE users SET contract_type = 'Tempo Indeterminato', probation_months = 6
+        WHERE id = 8;  -- Chiara: permanent, past probation (6 months)
+      UPDATE users SET contract_type = 'Tempo Indeterminato', probation_months = NULL
+        WHERE id = 12; -- Carol: permanent
+      UPDATE users SET contract_type = 'Tempo Determinato',  probation_months = 3
+        WHERE id = 13; -- Marco B.: fixed-term with probation
+    `);
+    console.log('✓ Contract type / probation seeded');
+
+    // ── Phase 1 feedback: employee_trainings ─────────────────────────────────
+    // Four training types per employee (product, general, low_risk_safety, fire_safety)
+    // Employees: Anna(6,c1), Roberto(7,c1), Chiara(8,c1), Carol(12,c2), Marco B.(13,c2)
+    await client.query(`
+      INSERT INTO employee_trainings (user_id, company_id, training_type, start_date, end_date, notes) VALUES
+        -- Anna (6)
+        (6, 1, 'product',          '2026-01-10', '2026-01-10', 'Formazione prodotti collezione primavera'),
+        (6, 1, 'general',          '2026-01-15', '2026-01-16', 'Orientamento aziendale e procedure interne'),
+        (6, 1, 'low_risk_safety',  '2026-02-05', '2026-02-05', 'Sicurezza rischio basso'),
+        (6, 1, 'fire_safety',      '2026-02-20', '2026-02-20', 'Antincendio base'),
+        -- Roberto (7)
+        (7, 1, 'product',          '2026-01-20', '2026-01-20', 'Formazione prodotti nuova stagione'),
+        (7, 1, 'general',          '2026-01-22', '2026-01-23', 'Orientamento e regolamento aziendale'),
+        (7, 1, 'low_risk_safety',  '2026-02-10', '2026-02-10', 'Sicurezza rischio basso'),
+        (7, 1, 'fire_safety',      '2026-03-01', '2026-03-01', 'Antincendio base'),
+        -- Chiara (8)
+        (8, 1, 'product',          '2025-11-25', '2025-11-25', 'Formazione prodotti autunno/inverno'),
+        (8, 1, 'general',          '2025-11-28', '2025-11-29', 'Procedure interne Milano'),
+        (8, 1, 'low_risk_safety',  '2025-12-10', '2025-12-10', 'Sicurezza rischio basso'),
+        (8, 1, 'fire_safety',      '2026-01-08', '2026-01-08', 'Antincendio base'),
+        -- Carol (12)
+        (12, 2, 'product',         '2026-03-12', '2026-03-12', 'Formazione prodotti'),
+        (12, 2, 'general',         '2026-03-13', '2026-03-14', 'Orientamento aziendale'),
+        (12, 2, 'low_risk_safety', '2026-03-15', '2026-03-15', 'Sicurezza rischio basso'),
+        (12, 2, 'fire_safety',     '2026-03-15', '2026-03-15', 'Antincendio base'),
+        -- Marco B. (13)
+        (13, 2, 'product',         '2025-12-08', '2025-12-08', 'Formazione prodotti'),
+        (13, 2, 'general',         '2025-12-10', '2025-12-11', 'Orientamento e procedure'),
+        (13, 2, 'low_risk_safety', '2025-12-15', '2025-12-15', 'Sicurezza rischio basso'),
+        (13, 2, 'fire_safety',     '2026-01-12', '2026-01-12', 'Antincendio base')
+    `);
+    console.log('✓ Employee trainings seeded (20 records)');
+
+    // ── Phase 1 feedback: employee_medical_checks ─────────────────────────────
+    await client.query(`
+      INSERT INTO employee_medical_checks (user_id, company_id, start_date, end_date, notes) VALUES
+        (6,  1, '2026-01-08', '2026-01-08', 'Visita medica di assunzione — idoneità confermata'),
+        (7,  1, '2026-01-20', '2026-01-20', 'Visita medica di assunzione — idoneità confermata'),
+        (8,  1, '2025-11-22', '2025-11-22', 'Visita medica periodica — idoneità confermata'),
+        (8,  1, '2024-11-18', '2024-11-18', 'Visita medica periodica annuale'),
+        (12, 2, '2026-03-11', '2026-03-11', 'Visita medica di assunzione — idoneità confermata'),
+        (13, 2, '2025-12-06', '2025-12-06', 'Visita medica di assunzione — idoneità confermata')
+    `);
+    console.log('✓ Employee medical checks seeded (6 records)');
+
     // ── role_module_permissions ───────────────────────────────────────────────
     const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
     const roles   = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
