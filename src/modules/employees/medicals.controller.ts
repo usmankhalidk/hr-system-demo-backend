@@ -8,56 +8,78 @@ interface MedicalRow {
   start_date: string | null; end_date: string | null; notes: string | null; created_at: string;
 }
 
+async function resolveCompanyId(empId: number, callerCompanyId: number, isSuperAdmin: boolean): Promise<number | null> {
+  if (!isSuperAdmin) return callerCompanyId;
+  const emp = await queryOne<{ company_id: number }>(`SELECT company_id FROM users WHERE id = $1`, [empId]);
+  return emp?.company_id ?? null;
+}
+
+async function checkSuperAdmin(userId: number): Promise<boolean> {
+  const row = await queryOne<{ is_super_admin: boolean }>(`SELECT is_super_admin FROM users WHERE id = $1`, [userId]);
+  return row?.is_super_admin ?? false;
+}
+
 export const listMedicals = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (role === 'employee' && userId !== empId) { forbidden(res, 'Accesso negato'); return; }
+  const isSuperAdmin = await checkSuperAdmin(userId);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const rows = await query<MedicalRow>(
     `SELECT * FROM employee_medical_checks WHERE user_id = $1 AND company_id = $2 ORDER BY start_date DESC`,
-    [empId, companyId]
+    [empId, effectiveCompanyId]
   );
   ok(res, rows);
 });
 
 export const createMedical = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const { start_date, end_date, notes } = req.body;
-  // Verify employee belongs to this company
+  const isSuperAdmin = await checkSuperAdmin(userId);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const emp = await queryOne<{ id: number }>(
     `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
-    [empId, companyId]
+    [empId, effectiveCompanyId]
   );
   if (!emp) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne<MedicalRow>(
     `INSERT INTO employee_medical_checks (user_id, company_id, start_date, end_date, notes)
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [empId, companyId, start_date || null, end_date || null, notes || null]
+    [empId, effectiveCompanyId, start_date || null, end_date || null, notes || null]
   );
   created(res, row, 'Visita medica aggiunta');
 });
 
 export const updateMedical = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const medId = parseInt(req.params.medicalId, 10);
   const { start_date, end_date, notes } = req.body;
+  const isSuperAdmin = await checkSuperAdmin(userId);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne<MedicalRow>(
     `UPDATE employee_medical_checks SET start_date = $1, end_date = $2, notes = $3, updated_at = NOW()
      WHERE id = $4 AND user_id = $5 AND company_id = $6 RETURNING *`,
-    [start_date || null, end_date || null, notes || null, medId, empId, companyId]
+    [start_date || null, end_date || null, notes || null, medId, empId, effectiveCompanyId]
   );
   if (!row) { notFound(res, 'Visita medica non trovata'); return; }
   ok(res, row, 'Visita medica aggiornata');
 });
 
 export const deleteMedical = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const medId = parseInt(req.params.medicalId, 10);
+  const isSuperAdmin = await checkSuperAdmin(userId);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne(
     `DELETE FROM employee_medical_checks WHERE id = $1 AND user_id = $2 AND company_id = $3 RETURNING id`,
-    [medId, empId, companyId]
+    [medId, empId, effectiveCompanyId]
   );
   if (!row) { notFound(res, 'Visita medica non trovata'); return; }
   ok(res, { id: medId }, 'Visita medica eliminata');

@@ -169,14 +169,24 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
 
+  // Check super admin status
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`,
+    [userId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
   // Determine if caller can see sensitive fields
   const canSeeSensitive = role === 'admin' || role === 'hr' || userId === empId;
 
   const fields = canSeeSensitive ? DETAIL_FIELDS : LIST_FIELDS;
 
+  // Super admins can view employees across companies
   const employee = await queryOne<Record<string, any>>(
-    `SELECT ${fields} ${BASE_JOINS} WHERE u.id = $1 AND u.company_id = $2`,
-    [empId, companyId],
+    isSuperAdmin
+      ? `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1`
+      : `SELECT ${fields} ${BASE_JOINS} WHERE u.id = $1 AND u.company_id = $2`,
+    isSuperAdmin ? [empId] : [empId, companyId],
   );
 
   if (!employee) {
@@ -184,17 +194,20 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Access control: employee can only see themselves
-  if (role === 'employee' && userId !== empId) {
-    forbidden(res, 'Accesso negato'); return;
-  }
-  // store_manager can only see employees in their store
-  if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
-    forbidden(res, 'Accesso negato'); return;
-  }
-  // area_manager can only see their direct reports
-  if (role === 'area_manager' && employee.supervisor_id !== userId) {
-    forbidden(res, 'Accesso negato'); return;
+  // Super admins bypass all role-based access checks
+  if (!isSuperAdmin) {
+    // Access control: employee can only see themselves
+    if (role === 'employee' && userId !== empId) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+    // store_manager can only see employees in their store
+    if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+    // area_manager can only see their direct reports
+    if (role === 'area_manager' && employee.supervisor_id !== userId) {
+      forbidden(res, 'Accesso negato'); return;
+    }
   }
 
   ok(res, employee);
