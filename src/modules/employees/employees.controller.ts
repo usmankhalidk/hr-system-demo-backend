@@ -18,6 +18,12 @@ const LIST_FIELDS = `
   CONCAT(sup.name, ' ', sup.surname) AS supervisor_name
 `;
 
+// Extended list fields including company name (for super admin cross-company view)
+const LIST_FIELDS_WITH_COMPANY = `
+  ${LIST_FIELDS.trim()},
+  c.name AS company_name
+`;
+
 // Full fields for detail view (includes sensitive)
 const DETAIL_FIELDS = `
   ${LIST_FIELDS},
@@ -31,6 +37,14 @@ const BASE_JOINS = `
   FROM users u
   LEFT JOIN stores s ON s.id = u.store_id
   LEFT JOIN users sup ON sup.id = u.supervisor_id
+`;
+
+// Base joins with company (for super admin cross-company view)
+const BASE_JOINS_WITH_COMPANY = `
+  FROM users u
+  LEFT JOIN stores s ON s.id = u.store_id
+  LEFT JOIN users sup ON sup.id = u.supervisor_id
+  LEFT JOIN companies c ON c.id = u.company_id
 `;
 
 // Build WHERE clause based on role
@@ -65,11 +79,38 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     department,
     status: statusFilter,
     role: roleFilter,
+    target_company_id,
     page = '1',
     limit = '20',
   } = req.query as Record<string, string>;
 
-  const { where, params } = buildScopeWhere(role, companyId, userId, storeId);
+  // Check if requester is a super admin (DB lookup, not JWT)
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`,
+    [userId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
+  const targetCompanyId = target_company_id ? parseInt(target_company_id, 10) : null;
+  const effectiveCompanyId = (isSuperAdmin && targetCompanyId) ? targetCompanyId : companyId;
+
+  // Super admin with no target company: query all companies (no company filter)
+  const crossCompany = isSuperAdmin && !targetCompanyId;
+
+  let where: string;
+  let params: any[];
+
+  if (crossCompany) {
+    where = '1=1';
+    params = [];
+  } else if (isSuperAdmin && targetCompanyId) {
+    where = `u.company_id = $1`;
+    params = [effectiveCompanyId];
+  } else {
+    const scope = buildScopeWhere(role, companyId, userId, storeId);
+    where = scope.where;
+    params = scope.params;
+  }
 
   let extraWhere = '';
   const extraParams: any[] = [];
@@ -106,15 +147,17 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   const offset = (pageNum - 1) * limitNum;
 
   const allParams = [...params, ...extraParams];
+  const selectFields = crossCompany ? LIST_FIELDS_WITH_COMPANY : LIST_FIELDS;
+  const joins = crossCompany ? BASE_JOINS_WITH_COMPANY : BASE_JOINS;
 
   const countResult = await queryOne<{ count: string }>(
-    `SELECT COUNT(*) AS count ${BASE_JOINS} WHERE ${where}${extraWhere}`,
+    `SELECT COUNT(*) AS count ${joins} WHERE ${where}${extraWhere}`,
     allParams,
   );
   const total = parseInt(countResult?.count ?? '0', 10);
 
   const employees = await query(
-    `SELECT ${LIST_FIELDS} ${BASE_JOINS} WHERE ${where}${extraWhere} ORDER BY u.surname, u.name LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+    `SELECT ${selectFields} ${joins} WHERE ${where}${extraWhere} ORDER BY u.surname, u.name LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
     [...allParams, limitNum, offset],
   );
 

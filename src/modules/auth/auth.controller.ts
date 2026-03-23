@@ -16,6 +16,7 @@ interface UserRow {
   store_id: number | null;
   supervisor_id: number | null;
   status: string;
+  is_super_admin: boolean;
 }
 
 async function isRateLimited(email: string, ip: string): Promise<boolean> {
@@ -119,7 +120,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const user = await queryOne<Omit<UserRow, 'password_hash'>>(
-    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status
+    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status, is_super_admin
      FROM users WHERE id = $1`,
     [req.user!.userId]
   );
@@ -127,7 +128,18 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
     unauthorized(res, 'Utente non trovato', 'USER_NOT_FOUND');
     return;
   }
-  ok(res, user);
+  ok(res, {
+    id: user.id,
+    companyId: user.company_id,
+    storeId: user.store_id,
+    supervisorId: user.supervisor_id,
+    name: user.name,
+    surname: user.surname,
+    email: user.email,
+    role: user.role,
+    status: user.status,
+    isSuperAdmin: user.is_super_admin,
+  });
 });
 
 export const changePassword = asyncHandler(async (req: Request, res: Response) => {
