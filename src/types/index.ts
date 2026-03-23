@@ -55,6 +55,7 @@ export interface Employee {
   maritalStatus: string | null;
   storeName?: string;
   supervisorName?: string;
+  companyName?: string;
   // Sensitive — only returned for admin/hr or self
   personalEmail?: string | null;
   dateOfBirth?: string | null;

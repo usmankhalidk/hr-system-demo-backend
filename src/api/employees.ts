@@ -9,10 +9,20 @@ export interface EmployeeListParams {
   role?: string;
   page?: number;
   limit?: number;
+  targetCompanyId?: number | null;
 }
 
 export async function getEmployees(params?: EmployeeListParams): Promise<PaginatedResponse<Employee>> {
-  const { data } = await apiClient.get('/employees', { params });
+  const query: Record<string, string | number> = {};
+  if (params?.search) query.search = params.search;
+  if (params?.store_id != null) query.store_id = params.store_id;
+  if (params?.department) query.department = params.department;
+  if (params?.status) query.status = params.status;
+  if (params?.role) query.role = params.role;
+  if (params?.page != null) query.page = params.page;
+  if (params?.limit != null) query.limit = params.limit;
+  if (params?.targetCompanyId != null) query.target_company_id = params.targetCompanyId;
+  const { data } = await apiClient.get('/employees', { params: query });
   return data.data;
 }
 

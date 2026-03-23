@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getEmployees } from '../../api/employees';
+import apiClient from '../../api/client';
 import { translateApiError } from '../../utils/apiErrors';
 import { getStores } from '../../api/stores';
 import { useAuth } from '../../context/AuthContext';
@@ -15,6 +16,11 @@ import { Select } from '../../components/ui/Select';
 import { Alert } from '../../components/ui/Alert';
 import { Pagination } from '../../components/ui/Pagination';
 import { EmployeeForm } from './EmployeeForm';
+
+interface CompanyOption {
+  id: number;
+  name: string;
+}
 
 const ROLE_BADGE_VARIANT: Record<UserRole, 'accent' | 'primary' | 'info' | 'success' | 'warning' | 'neutral'> = {
   admin: 'accent',
@@ -43,6 +49,7 @@ export function EmployeeList() {
 
   const [employees, setEmployees] = useState<Employee[]>([]);
   const [stores, setStores] = useState<Store[]>([]);
+  const [companies, setCompanies] = useState<CompanyOption[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [total, setTotal] = useState(0);
@@ -53,13 +60,15 @@ export function EmployeeList() {
   const department = searchParams.get('department') ?? '';
   const status = searchParams.get('status') ?? '';
   const role = searchParams.get('role') ?? '';
+  const companyFilter = searchParams.get('company_id') ?? '';
   const page = parseInt(searchParams.get('page') ?? '1', 10);
   const limit = 20;
 
   const { isMobile } = useBreakpoint();
   const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
+  const isSuperAdmin = user?.isSuperAdmin === true;
   const tRole = (roleKey: string) => (t as (k: string) => string)(`roles.${roleKey}`);
-  const hasActiveFilters = !!(search || storeId || department || status || role);
+  const hasActiveFilters = !!(search || storeId || department || status || role || companyFilter);
 
   const updateParam = useCallback(
     (key: string, value: string) => {
@@ -78,6 +87,18 @@ export function EmployeeList() {
   }, []);
 
   useEffect(() => {
+    if (!isSuperAdmin) return;
+    apiClient.get('/companies')
+      .then((res) => {
+        const data = res.data?.data;
+        if (Array.isArray(data)) {
+          setCompanies(data.map((c: any) => ({ id: c.id, name: c.name })));
+        }
+      })
+      .catch(() => {});
+  }, [isSuperAdmin]);
+
+  useEffect(() => {
     setLoading(true);
     setError(null);
     getEmployees({
@@ -88,11 +109,15 @@ export function EmployeeList() {
       role: role || undefined,
       page,
       limit,
+      targetCompanyId: companyFilter ? parseInt(companyFilter, 10) : undefined,
     })
       .then((res) => { setEmployees(res.employees); setTotal(res.total); setPages(res.pages); })
       .catch((err) => { setError(translateApiError(err, t, t('employees.errorLoad'))); })
       .finally(() => setLoading(false));
-  }, [search, storeId, department, status, role, page]);
+  }, [search, storeId, department, status, role, companyFilter, page]);
+
+  // Show company column when super admin is viewing all companies (no specific company filter)
+  const showCompanyColumn = isSuperAdmin && !companyFilter;
 
   const columns: Column<Employee>[] = [
     {
@@ -142,6 +167,15 @@ export function EmployeeList() {
       label: t('employees.colRole'),
       render: (row) => <Badge variant={ROLE_BADGE_VARIANT[row.role]}>{tRole(row.role)}</Badge>,
     },
+    ...(showCompanyColumn ? [{
+      key: 'companyName' as keyof Employee,
+      label: t('employees.colCompany'),
+      render: (row: Employee) => (
+        <span style={{ fontSize: '13px', color: row.companyName ? 'var(--text-secondary)' : 'var(--text-disabled)' }}>
+          {row.companyName ?? '—'}
+        </span>
+      ),
+    }] : []),
     {
       key: 'storeName',
       label: t('employees.colStore'),
@@ -259,6 +293,14 @@ export function EmployeeList() {
             onChange={(e) => updateParam('search', e.target.value)}
           />
         </div>
+        {isSuperAdmin && (
+          <div style={{ flex: '1 1 175px', minWidth: '140px', maxWidth: '240px' }}>
+            <Select value={companyFilter} onChange={(e) => updateParam('company_id', e.target.value)}>
+              <option value="">{t('employees.allCompanies')}</option>
+              {companies.map((c) => <option key={c.id} value={String(c.id)}>{c.name}</option>)}
+            </Select>
+          </div>
+        )}
         <div style={{ flex: '1 1 155px', minWidth: '130px', maxWidth: '220px' }}>
           <Select value={storeId} onChange={(e) => updateParam('store_id', e.target.value)}>
             <option value="">{t('employees.allStores')}</option>
