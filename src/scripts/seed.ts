@@ -224,7 +224,10 @@ export async function seed() {
         for (const mod of modules) {
           const enabled =
             (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'impostazioni' && role === 'admin');
+            (mod === 'turni'        && ['admin','hr','area_manager','store_manager'].includes(role)) ||
+            (mod === 'presenze'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
+            (mod === 'permessi'     && ['admin','hr','area_manager','store_manager','employee'].includes(role)) ||
+            (mod === 'impostazioni' && ['admin','hr'].includes(role));
           await client.query(
             `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
              VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
