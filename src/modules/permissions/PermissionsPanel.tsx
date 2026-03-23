@@ -31,12 +31,17 @@ const ROLE_COLORS: Record<string, string> = {
 
 type LocalGrid = Record<string, Record<string, boolean>>;
 
+const snakeToCamel = (s: string) => s.replace(/_([a-z])/g, (_, l) => l.toUpperCase());
+
 function buildLocalGrid(data: PermissionGrid): LocalGrid {
   const result: LocalGrid = {};
   for (const mod of MODULE_KEYS) {
     result[mod.key] = {};
     for (const roleKey of ROLE_KEYS) {
-      result[mod.key][roleKey] = mod.implemented ? (data.grid?.[mod.key]?.[roleKey] ?? false) : false;
+      // API response keys are camelized by the Axios interceptor, so snake_case role keys
+      // (e.g. store_manager) become camelCase (e.g. storeManager) in the response object.
+      const camelKey = snakeToCamel(roleKey);
+      result[mod.key][roleKey] = mod.implemented ? (data.grid?.[mod.key]?.[camelKey] ?? false) : false;
     }
   }
   return result;

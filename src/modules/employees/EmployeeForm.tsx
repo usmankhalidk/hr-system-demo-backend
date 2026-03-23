@@ -578,17 +578,17 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       onChange={(e) => set('maritalStatus', e.target.value)}
                     >
                       <option value="">{t('employees.selectOption')}</option>
-                      <option value="Celibe">Celibe</option>
-                      <option value="Nubile">Nubile</option>
-                      <option value="Coniugato">Coniugato</option>
-                      <option value="Coniugata">Coniugata</option>
-                      <option value="Divorziato">Divorziato</option>
-                      <option value="Divorziata">Divorziata</option>
-                      <option value="Vedovo">Vedovo</option>
-                      <option value="Vedova">Vedova</option>
-                      <option value="Separato">Separato</option>
-                      <option value="Separata">Separata</option>
-                      <option value="Unione Civile">Unione Civile</option>
+                      <option value="Celibe">{t('employees.marital_celibe')}</option>
+                      <option value="Nubile">{t('employees.marital_nubile')}</option>
+                      <option value="Coniugato">{t('employees.marital_coniugato')}</option>
+                      <option value="Coniugata">{t('employees.marital_coniugata')}</option>
+                      <option value="Divorziato">{t('employees.marital_divorziato')}</option>
+                      <option value="Divorziata">{t('employees.marital_divorziata')}</option>
+                      <option value="Vedovo">{t('employees.marital_vedovo')}</option>
+                      <option value="Vedova">{t('employees.marital_vedova')}</option>
+                      <option value="Separato">{t('employees.marital_separato')}</option>
+                      <option value="Separata">{t('employees.marital_separata')}</option>
+                      <option value="Unione Civile">{t('employees.marital_unione_civile')}</option>
                     </Select>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '9px', paddingTop: '22px' }}>
                       <input
@@ -615,7 +615,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       label={t('employees.contractTypeField')}
                       value={formData.contractType}
                       onChange={(e) => set('contractType', e.target.value)}
-                      placeholder="Es. Tempo Indeterminato"
+                      placeholder={t('employees.contractTypePlaceholder')}
                     />
                     <Input
                       label={t('employees.probationField')}
@@ -623,7 +623,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       min="0"
                       value={formData.probationMonths}
                       onChange={(e) => set('probationMonths', e.target.value)}
-                      placeholder="Es. 6"
+                      placeholder={t('employees.probationPlaceholder')}
                     />
                   </div>
                 </div>
