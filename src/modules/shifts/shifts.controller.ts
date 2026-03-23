@@ -104,7 +104,7 @@ function shiftHoursExpr(): string {
 
 const SHIFT_FIELDS = `
   s.id, s.company_id, s.store_id, s.user_id, s.date,
-  s.start_time, s.end_time, s.break_start, s.break_end,
+  s.start_time, s.end_time, s.break_start, s.break_end, -- Phase 2: break_type ('fixed'|'flexible') + break_minutes for flexible break duration
   s.is_split, s.split_start2, s.split_end2,
   s.status, s.notes, s.created_by, s.created_at, s.updated_at,
   st.name AS store_name,
@@ -137,9 +137,9 @@ async function buildShiftScope(
       // Restricted to stores where they supervise a store_manager
       const managedStores = await query<{ store_id: number }>(
         `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1
+         WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
            AND status = 'active' AND store_id IS NOT NULL`,
-        [userId],
+        [userId, companyId],
       );
       const storeIds = managedStores.map((r) => r.store_id);
       if (storeIds.length === 0) {
@@ -183,10 +183,14 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
 
   // Date range filter
   if (week) {
-    // Parse ISO week: YYYY-WNN
+    // Parse ISO week: YYYY-WNN (week must be 1–53)
     const match = week.match(/^(\d{4})-W(\d{1,2})$/);
     if (match) {
       const [, yr, wk] = match;
+      const weekNum = parseInt(wk, 10);
+      if (weekNum < 1 || weekNum > 53) {
+        badRequest(res, 'Settimana non valida: deve essere tra 1 e 53'); return;
+      }
       extraWhere += ` AND s.date >= (DATE_TRUNC('week', TO_DATE($${idx}, 'IYYY-IW')))`;
       extra.push(`${yr}-${wk.padStart(2, '0')}`);
       idx++;
@@ -204,13 +208,17 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
   // Optional filters (only for non-employee roles)
   if (role !== 'employee') {
     if (store_id) {
+      const storeIdNum = parseInt(store_id, 10);
+      if (isNaN(storeIdNum)) { badRequest(res, 'store_id non valido'); return; }
       extraWhere += ` AND s.store_id = $${idx}`;
-      extra.push(parseInt(store_id, 10));
+      extra.push(storeIdNum);
       idx++;
     }
     if (user_id) {
+      const userIdNum = parseInt(user_id, 10);
+      if (isNaN(userIdNum)) { badRequest(res, 'user_id non valido'); return; }
       extraWhere += ` AND s.user_id = $${idx}`;
-      extra.push(parseInt(user_id, 10));
+      extra.push(userIdNum);
       idx++;
     }
   }
