@@ -287,6 +287,42 @@ describe('DELETE /api/stores/:id', () => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/stores/:id/permanent
+// ---------------------------------------------------------------------------
+
+describe('DELETE /api/stores/:id/permanent — admin hard delete', () => {
+  it('403 for non-admin', async () => {
+    const hrToken = await login('hr@acme-test.com');
+    const res = await request
+      .delete(`/api/stores/${seeds.romaStoreId}/permanent`)
+      .set('Authorization', `Bearer ${hrToken}`);
+    expect(res.status).toBe(403);
+  });
+
+  it('409 if store has employees', async () => {
+    const adminToken = await login('admin@acme-test.com');
+    const res = await request
+      .delete(`/api/stores/${seeds.romaStoreId}/permanent`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('STORE_HAS_EMPLOYEES');
+  });
+
+  it('200 deletes inactive store with no employees', async () => {
+    const adminToken = await login('admin@acme-test.com');
+    const createRes = await request.post('/api/stores')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ name: 'Temp Store', code: 'TMP-99', max_staff: 0 });
+    const tmpId = createRes.body.data.id;
+    await request.delete(`/api/stores/${tmpId}`).set('Authorization', `Bearer ${adminToken}`); // soft-delete
+    const delRes = await request.delete(`/api/stores/${tmpId}/permanent`).set('Authorization', `Bearer ${adminToken}`);
+    expect(delRes.status).toBe(200);
+    const getRes = await request.get(`/api/stores/${tmpId}`).set('Authorization', `Bearer ${adminToken}`);
+    expect(getRes.status).toBe(404);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PATCH /api/stores/:id/activate
 // ---------------------------------------------------------------------------
 

@@ -124,6 +124,33 @@ export const deactivateStore = asyncHandler(async (req: Request, res: Response) 
   ok(res, store, 'Negozio disattivato');
 });
 
+// DELETE /api/stores/:id/permanent — Admin only, hard delete
+// Refuses if any user (active or inactive) is assigned to this store
+export const deleteStorePermanent = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const storeId = parseInt(req.params.id, 10);
+
+  // Verify store exists in company
+  const store = await queryOne<StoreRow>(
+    `SELECT * FROM stores WHERE id = $1 AND company_id = $2`,
+    [storeId, companyId]
+  );
+  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+
+  // Refuse if any user is assigned to this store
+  const userCount = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM users WHERE store_id = $1`,
+    [storeId]
+  );
+  if (parseInt(userCount?.count ?? '0', 10) > 0) {
+    conflict(res, 'Impossibile eliminare: il negozio ha dipendenti assegnati. Riassegnarli prima di procedere.', 'STORE_HAS_EMPLOYEES');
+    return;
+  }
+
+  await query(`DELETE FROM stores WHERE id = $1 AND company_id = $2`, [storeId, companyId]);
+  ok(res, { id: storeId }, 'Negozio eliminato definitivamente');
+});
+
 // PATCH /api/stores/:id/activate — Admin only
 export const activateStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
