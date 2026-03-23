@@ -84,7 +84,7 @@ function AppRoutes() {
       } />
 
       <Route path="/turni" element={
-        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager']}>
+        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager', 'employee']}>
           <Layout title={t('nav.turni')}><ShiftsPage /></Layout>
         </ProtectedRoute>
       } />

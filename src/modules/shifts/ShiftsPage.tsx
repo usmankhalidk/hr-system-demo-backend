@@ -155,12 +155,12 @@ export default function ShiftsPage() {
   const canEdit = user ? MANAGEMENT_ROLES.includes(user.role) : false;
   const isStoreManager = user?.role === 'store_manager';
 
-  // Load stores for admin/hr/area_manager store filter
+  // Load stores for admin/hr/area_manager store filter (not for store_manager or employee)
   useEffect(() => {
-    if (!isStoreManager) {
+    if (canEdit && !isStoreManager) {
       getStores().then(setStores).catch(() => {});
     }
-  }, [isStoreManager]);
+  }, [canEdit, isStoreManager]);
 
   const fetchShifts = useCallback(async () => {
     setLoading(true);
