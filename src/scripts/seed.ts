@@ -13,7 +13,15 @@ export async function migrate() {
   const client = await pool.connect();
   try {
     const migrationsDir = path.join(__dirname, '../../../database/migrations');
-    for (const file of ['001_initial_schema.sql', '003_phase2_shifts.sql', '004_phase2_attendance.sql', '005_phase2_leave.sql', '006_leave_certificate.sql']) {
+    for (const file of [
+      '001_initial_schema.sql',
+      '002_phase1_schema.sql',           // was missing
+      '003_phase2_shifts.sql',
+      '004_phase2_attendance.sql',
+      '005_phase2_leave.sql',
+      '006_leave_certificate.sql',
+      '007_phase1_client_feedback.sql',  // new
+    ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -66,7 +74,15 @@ export async function seed() {
     const migrationsDir = path.join(__dirname, '../../../database/migrations');
     // Apply base schema (001) then Phase 2 migrations (003, 004, 005)
     // 002 is for upgrading legacy deployments — not needed on a fresh seed
-    for (const file of ['001_initial_schema.sql', '003_phase2_shifts.sql', '004_phase2_attendance.sql', '005_phase2_leave.sql', '006_leave_certificate.sql']) {
+    for (const file of [
+      '001_initial_schema.sql',
+      '002_phase1_schema.sql',           // was missing
+      '003_phase2_shifts.sql',
+      '004_phase2_attendance.sql',
+      '005_phase2_leave.sql',
+      '006_leave_certificate.sql',
+      '007_phase1_client_feedback.sql',  // new
+    ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -221,13 +237,21 @@ export async function seed() {
         -- Carol (12): approved sick — Beta company
         (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'hr_approved',              NULL,             'Certificato medico allegato'),
         -- Marco B. (13): pending vacation — Beta company
-        (2, 13, 3,'vacation', '2026-03-25', '2026-03-27', 'pending',                  'store_manager',  NULL)
+        (2, 13, 3,'vacation', '2026-03-25', '2026-03-27', 'pending',                  'store_manager',  NULL),
+        -- Anna (6): area_manager_approved vacation W15 — waiting for HR final step
+        (1, 6, 1, 'vacation', '2026-04-07', '2026-04-11', 'area_manager_approved',    'hr',             'Pasqua'),
+        -- Roberto (7): supervisor_approved sick W14 — waiting for area_manager
+        (1, 7, 1, 'sick',     '2026-04-01', '2026-04-02', 'supervisor_approved',      'area_manager',   NULL),
+        -- Chiara (8): rejected vacation — shows rejected state
+        (1, 8, 2, 'vacation', '2026-04-14', '2026-04-18', 'rejected',                 NULL,             'Ponte aprile'),
+        -- Chiara (8): new pending vacation W16 after rejection
+        (1, 8, 2, 'vacation', '2026-04-21', '2026-04-25', 'pending',                  'store_manager',  'Richiesta alternativa')
       RETURNING id, user_id, leave_type, start_date, end_date, status
     `);
 
-    // Insert approval records for approved/in-flow requests
+    // Insert approval records for approved/in-flow/rejected requests
     for (const lr of lrRows) {
-      if (['supervisor_approved','area_manager_approved','hr_approved'].includes(lr.status)) {
+      if (['supervisor_approved','area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
         // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
         const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
         await client.query(`
@@ -235,7 +259,7 @@ export async function seed() {
           VALUES ($1, $2, 'store_manager', 'approved', NULL)
         `, [lr.id, smId]);
       }
-      if (['area_manager_approved','hr_approved'].includes(lr.status)) {
+      if (['area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
         // Step 2: area_manager approval (Giuseppe=3 for company 1)
         await client.query(`
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
@@ -249,6 +273,13 @@ export async function seed() {
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
           VALUES ($1, $2, 'hr', 'approved', NULL)
         `, [lr.id, hrId]);
+      }
+      if (lr.status === 'rejected') {
+        // Rejection step by hr (Laura=2 for company 1)
+        await client.query(`
+          INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+          VALUES ($1, 2, 'hr', 'rejected', 'Periodo non compatibile con le esigenze aziendali')
+        `, [lr.id]);
       }
     }
 
@@ -573,6 +604,44 @@ export async function seed() {
         (2,3,13,'checkout',   '2026-03-17 14:01:00+00','manual')
     `);
     console.log('✓ Attendance events seeded');
+
+    // ── Today's demo data (always relative to CURRENT_DATE) ──────────────────
+    // Ensures StoreManagerHome "Today's Shifts" + "Today's Attendance" widgets
+    // always have visible data regardless of when Docker boots.
+
+    // Today's shifts for Roma (store 1) — skipped if already seeded on this date
+    const { rows: todayShiftCheck } = await client.query(
+      `SELECT COUNT(*)::int AS count FROM shifts WHERE store_id = 1 AND date = CURRENT_DATE AND company_id = 1`
+    );
+    if (todayShiftCheck[0].count === 0) {
+      await client.query(`
+        INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, break_start, break_end, is_split, status, notes, created_by)
+        VALUES
+          (1, 1, 4, CURRENT_DATE, '09:00', '18:00', '13:00', '14:00', false, 'scheduled', NULL, 1),
+          (1, 1, 6, CURRENT_DATE, '14:00', '20:00', '17:00', '17:30', false, 'scheduled', NULL, 1),
+          (1, 1, 7, CURRENT_DATE, '09:00', '14:00', NULL,    NULL,    false, 'scheduled', NULL, 1)
+      `);
+      console.log('✓ Today\'s shifts seeded (dynamic date)');
+    }
+
+    // Today's attendance events for Roma store — Sofia checked in + break, Roberto in+out
+    await client.query(`
+      INSERT INTO attendance_events (company_id, store_id, user_id, event_type, event_time, source)
+      VALUES
+        (1, 1, 4, 'checkin',     (CURRENT_DATE + INTERVAL '9 hours 3 minutes')::timestamptz,   'qr'),
+        (1, 1, 4, 'break_start', (CURRENT_DATE + INTERVAL '13 hours 1 minute')::timestamptz,   'qr'),
+        (1, 1, 7, 'checkin',     (CURRENT_DATE + INTERVAL '9 hours 11 minutes')::timestamptz,  'qr'),
+        (1, 1, 7, 'checkout',    (CURRENT_DATE + INTERVAL '14 hours 2 minutes')::timestamptz,  'qr')
+    `);
+    console.log('✓ Today\'s attendance events seeded (dynamic date)');
+
+    // Set Roberto's birthday to today (for birthday banner demo)
+    await client.query(`
+      UPDATE users
+      SET date_of_birth = (NOW() - INTERVAL '28 years')::date
+      WHERE id = 7
+    `);
+    console.log('✓ Birthday demo: Roberto\'s birthday set to today');
 
     // ── Shift templates ──────────────────────────────────────────────────────
     // Templates for FUSARO UOMO stores (store_id 1=Roma, 2=Milano)

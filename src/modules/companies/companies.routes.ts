@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { listCompanies, updateCompany } from './companies.controller';
+import { listCompanies, updateCompany, getCompanySettings, updateCompanySettings } from './companies.controller';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
@@ -12,6 +12,8 @@ const updateCompanySchema = z.object({
 });
 
 router.get('/', authenticate, requireRole('admin'), enforceCompany, listCompanies);
+router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, getCompanySettings);
+router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, updateCompanySettings);
 router.put('/:id', authenticate, requireRole('admin'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
 
 export default router;

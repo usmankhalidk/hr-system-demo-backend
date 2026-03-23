@@ -1,6 +1,6 @@
 import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
-import { ok, notFound, conflict } from '../../utils/response';
+import { ok, notFound, conflict, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 
 interface CompanyRow {
@@ -72,4 +72,34 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
     return;
   }
   ok(res, company, 'Azienda aggiornata');
+});
+
+// GET /api/companies/settings — admin/hr: get current company settings
+export const getCompanySettings = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const company = await queryOne<{ show_leave_balance_to_employee: boolean }>(
+    `SELECT show_leave_balance_to_employee FROM companies WHERE id = $1`,
+    [companyId]
+  );
+  if (!company) { notFound(res, 'Azienda non trovata'); return; }
+  ok(res, { showLeaveBalanceToEmployee: company.show_leave_balance_to_employee });
+});
+
+// PATCH /api/companies/settings — admin only, update company-level settings
+export const updateCompanySettings = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const { showLeaveBalanceToEmployee } = req.body as { showLeaveBalanceToEmployee?: boolean };
+
+  if (showLeaveBalanceToEmployee === undefined) {
+    badRequest(res, 'Nessuna impostazione fornita', 'NO_SETTINGS');
+    return;
+  }
+
+  const company = await queryOne(
+    `UPDATE companies SET show_leave_balance_to_employee = $1 WHERE id = $2
+     RETURNING id, show_leave_balance_to_employee`,
+    [showLeaveBalanceToEmployee, companyId]
+  );
+  if (!company) { notFound(res, 'Azienda non trovata'); return; }
+  ok(res, company, 'Impostazioni aggiornate');
 });
