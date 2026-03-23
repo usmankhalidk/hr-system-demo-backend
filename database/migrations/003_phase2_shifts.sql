@@ -31,9 +31,9 @@ CREATE TABLE shifts (
   updated_at   TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_shifts_company_date ON shifts(company_id, date);
-CREATE INDEX idx_shifts_user_date    ON shifts(user_id, date);
-CREATE INDEX idx_shifts_store_date   ON shifts(store_id, date);
+CREATE INDEX IF NOT EXISTS idx_shifts_company_date ON shifts(company_id, date);
+CREATE INDEX IF NOT EXISTS idx_shifts_user_date    ON shifts(user_id, date);
+CREATE INDEX IF NOT EXISTS idx_shifts_store_date   ON shifts(store_id, date);
 
 -- shift_templates
 CREATE TABLE shift_templates (
@@ -46,7 +46,7 @@ CREATE TABLE shift_templates (
   created_at    TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_shift_templates_company_store ON shift_templates(company_id, store_id);
+CREATE INDEX IF NOT EXISTS idx_shift_templates_company_store ON shift_templates(company_id, store_id);
 
 -- store_affluence
 CREATE TABLE store_affluence (
@@ -61,6 +61,6 @@ CREATE TABLE store_affluence (
   created_at     TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX idx_affluence_store_week ON store_affluence(company_id, store_id, iso_week);
+CREATE INDEX IF NOT EXISTS idx_affluence_store_week ON store_affluence(company_id, store_id, iso_week);
 
 COMMIT;

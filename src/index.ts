@@ -61,7 +61,30 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
   res.status(500).json({ success: false, error: 'Errore interno del server', code: 'SERVER_ERROR' });
 });
 
+async function waitForDb(retries = 10, delayMs = 3000): Promise<void> {
+  const { pool } = await import('./config/database');
+  for (let i = 1; i <= retries; i++) {
+    try {
+      const client = await pool.connect();
+      client.release();
+      return;
+    } catch (err: any) {
+      if (i === retries) throw err;
+      console.log(`DB not ready (attempt ${i}/${retries}), retrying in ${delayMs / 1000}s...`);
+      await new Promise(r => setTimeout(r, delayMs));
+    }
+  }
+}
+
 async function start() {
+  if (!process.env.DATABASE_URL) {
+    console.error('FATAL: DATABASE_URL environment variable is not set.');
+    process.exit(1);
+  }
+
+  // Wait for PostgreSQL to be reachable (handles Railway startup race condition)
+  await waitForDb();
+
   // Always apply migrations so the schema exists on fresh databases.
   // This is idempotent (CREATE TABLE IF NOT EXISTS) and safe every boot.
   await migrate();

@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS qr_tokens (
   id          SERIAL PRIMARY KEY,
   company_id  INTEGER NOT NULL REFERENCES companies(id),
   store_id    INTEGER NOT NULL REFERENCES stores(id),
-  nonce       VARCHAR(64) NOT NULL UNIQUE,
+  nonce       VARCHAR(64) NOT NULL,
   issued_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
   used_at     TIMESTAMPTZ,
   CONSTRAINT qr_nonce_unique UNIQUE (nonce)

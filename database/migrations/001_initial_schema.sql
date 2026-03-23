@@ -154,9 +154,15 @@ CREATE TABLE IF NOT EXISTS shifts (
   updated_at  TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_shifts_company_id  ON shifts(company_id);
-CREATE INDEX IF NOT EXISTS idx_shifts_employee_id ON shifts(employee_id);
-CREATE INDEX IF NOT EXISTS idx_shifts_date        ON shifts(date);
+CREATE INDEX IF NOT EXISTS idx_shifts_company_id ON shifts(company_id);
+CREATE INDEX IF NOT EXISTS idx_shifts_date       ON shifts(date);
+-- employee_id only exists on the legacy schema (before migration 003 replaces it with user_id)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='shifts' AND column_name='employee_id') THEN
+    CREATE INDEX IF NOT EXISTS idx_shifts_employee_id ON shifts(employee_id);
+  END IF;
+END $$;
 
 -- ---------------------------------------------------------------------------
 -- 9. attendance  (Phase 2 — kept for legacy routes)
@@ -174,7 +180,13 @@ CREATE TABLE IF NOT EXISTS attendance (
   created_at      TIMESTAMPTZ DEFAULT NOW()
 );
 
-CREATE INDEX IF NOT EXISTS idx_attendance_company_id  ON attendance(company_id);
-CREATE INDEX IF NOT EXISTS idx_attendance_employee_id ON attendance(employee_id);
-CREATE INDEX IF NOT EXISTS idx_attendance_shift_id    ON attendance(shift_id);
-CREATE INDEX IF NOT EXISTS idx_attendance_check_in    ON attendance(check_in_time);
+CREATE INDEX IF NOT EXISTS idx_attendance_company_id ON attendance(company_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_shift_id   ON attendance(shift_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_check_in   ON attendance(check_in_time);
+-- employee_id only exists on the legacy attendance table
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='attendance' AND column_name='employee_id') THEN
+    CREATE INDEX IF NOT EXISTS idx_attendance_employee_id ON attendance(employee_id);
+  END IF;
+END $$;
