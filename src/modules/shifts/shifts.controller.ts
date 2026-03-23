@@ -86,7 +86,7 @@ function parseIsoWeek(week: string): string {
 function shiftHoursExpr(): string {
   return `
     ROUND(
-      (
+      GREATEST(0,
         EXTRACT(EPOCH FROM (s.end_time - s.start_time)) / 3600.0
         - COALESCE(
             EXTRACT(EPOCH FROM (s.break_end - s.break_start)) / 3600.0,
