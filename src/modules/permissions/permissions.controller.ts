@@ -5,7 +5,9 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
 
 const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
-const ACTIVE_MODULES = new Set(['dipendenti', 'impostazioni']); // Phase 1 active modules
+const ACTIVE_MODULES = new Set([
+  'dipendenti', 'turni', 'presenze', 'permessi', 'impostazioni',
+]); // Phase 2 active modules
 
 type ModuleName = typeof ALL_MODULES[number];
 

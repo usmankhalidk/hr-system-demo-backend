@@ -41,6 +41,9 @@ describe('GET /api/permissions', () => {
     expect(res.body.data.grid).toHaveProperty('dipendenti');
     expect(res.body.data.grid).toHaveProperty('impostazioni');
     expect(res.body.data.moduleMeta.dipendenti).toEqual({ active: true });
+    expect(res.body.data.moduleMeta.turni).toEqual({ active: true });
+    expect(res.body.data.moduleMeta.presenze).toEqual({ active: true });
+    expect(res.body.data.moduleMeta.permessi).toEqual({ active: true });
     expect(res.body.data.moduleMeta.impostazioni).toEqual({ active: true });
   });
 
@@ -81,12 +84,22 @@ describe('PUT /api/permissions', () => {
       .send({ updates: [{ role: 'hr', module: 'dipendenti', enabled: true }] });
   });
 
-  it('non-active module (turni) → 400 with code MODULE_NOT_ACTIVE', async () => {
+  it('active module (turni) → 200 now that turni is in ACTIVE_MODULES', async () => {
     const token = await loginAs('admin@acme-test.com');
     const res = await request
       .put('/api/permissions')
       .set('Authorization', `Bearer ${token}`)
       .send({ updates: [{ role: 'hr', module: 'turni', enabled: true }] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('non-active module (documenti) → 400 with code MODULE_NOT_ACTIVE', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request
+      .put('/api/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'hr', module: 'documenti', enabled: true }] });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
     expect(res.body.code).toBe('MODULE_NOT_ACTIVE');
