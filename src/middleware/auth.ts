@@ -44,5 +44,11 @@ export function enforceCompany(req: Request, res: Response, next: NextFunction):
     res.status(401).json({ success: false, error: 'Non autenticato', code: 'NOT_AUTHENTICATED' });
     return;
   }
+  // Reject requests that explicitly pass a company_id not matching the JWT company
+  const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
+  if (explicit !== undefined && parseInt(String(explicit), 10) !== req.user.companyId) {
+    res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+    return;
+  }
   next();
 }

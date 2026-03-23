@@ -75,6 +75,19 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Overlap check: reject if user already has an active (non-rejected) request overlapping these dates
+  const overlap = await queryOne<{ id: number }>(
+    `SELECT id FROM leave_requests
+     WHERE company_id = $1 AND user_id = $2
+       AND status NOT IN ('rejected')
+       AND start_date <= $3 AND end_date >= $4`,
+    [companyId, userId, end_date, start_date],
+  );
+  if (overlap) {
+    badRequest(res, 'Hai già una richiesta di permesso che si sovrappone a queste date', 'LEAVE_OVERLAP');
+    return;
+  }
+
   const file = (req as any).file as Express.Multer.File | undefined;
   const certificateName = file?.originalname ?? null;
   const certificateData = file?.buffer ?? null;
@@ -121,8 +134,9 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       // area_manager sees requests from stores whose store_manager reports to them
       const amStores = await query<{ store_id: number }>(
         `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1 AND status = 'active' AND store_id IS NOT NULL`,
-        [userId],
+         WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+           AND status = 'active' AND store_id IS NOT NULL`,
+        [userId, companyId],
       );
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
@@ -207,8 +221,9 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
     case 'area_manager': {
       const amStores = await query<{ store_id: number }>(
         `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1 AND status = 'active' AND store_id IS NOT NULL`,
-        [userId],
+         WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+           AND status = 'active' AND store_id IS NOT NULL`,
+        [userId, companyId],
       );
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
@@ -291,36 +306,39 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     const year = new Date(leaveRequest.start_date).getFullYear();
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
 
-    // Auto-insert balance row if missing
-    await pool.query(
-      `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
-       VALUES ($1, $2, $3, $4, $5, 0)
-       ON CONFLICT (company_id, user_id, year, leave_type) DO NOTHING`,
-      [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type, defaultTotal],
-    );
-
-    const balance = await queryOne<{ total_days: string; used_days: string }>(
-      `SELECT total_days, used_days FROM leave_balances
-       WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
-      [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type],
-    );
-
-    const totalDays = parseFloat(balance!.total_days);
-    const usedDays = parseFloat(balance!.used_days);
-
-    if (usedDays + workingDays > totalDays) {
-      res.status(422).json({
-        success: false,
-        error: `Saldo insufficiente: rimangono ${totalDays - usedDays} giorni, richiesti ${workingDays}`,
-        code: 'INSUFFICIENT_BALANCE',
-      });
-      return;
-    }
-
-    // Atomic transaction: update request + record approval + update balance
+    // Atomic transaction: check balance (FOR UPDATE lock), update request + record approval + update balance
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
+
+      // Auto-insert balance row if missing (inside transaction)
+      await client.query(
+        `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+         VALUES ($1, $2, $3, $4, $5, 0)
+         ON CONFLICT (company_id, user_id, year, leave_type) DO NOTHING`,
+        [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type, defaultTotal],
+      );
+
+      // Lock the balance row to prevent concurrent approvals from bypassing the limit
+      const balanceResult = await client.query(
+        `SELECT total_days, used_days FROM leave_balances
+         WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4
+         FOR UPDATE`,
+        [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type],
+      );
+      const balance = balanceResult.rows[0];
+      const totalDays = parseFloat(balance.total_days);
+      const usedDays = parseFloat(balance.used_days);
+
+      if (usedDays + workingDays > totalDays) {
+        await client.query('ROLLBACK');
+        res.status(422).json({
+          success: false,
+          error: `Saldo insufficiente: rimangono ${totalDays - usedDays} giorni, richiesti ${workingDays}`,
+          code: 'INSUFFICIENT_BALANCE',
+        });
+        return;
+      }
 
       const updated = await client.query(
         `UPDATE leave_requests
@@ -355,24 +373,34 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
-  // Non-final approval: simple update + record approval
-  const updated = await queryOne(
-    `UPDATE leave_requests
-     SET status = $1, current_approver_role = $2, updated_at = NOW()
-     WHERE id = $3
-     RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
-               status, current_approver_role, notes, created_at, updated_at`,
-    [transition.nextStatus, transition.nextApprover, leaveId],
-  );
+  // Non-final approval: wrap update + approval record in a transaction
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await queryOne(
-    `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
-     VALUES ($1, $2, $3, 'approved', $4)
-     RETURNING id`,
-    [leaveId, userId, role, notes ?? null],
-  );
+    const updatedResult = await client.query(
+      `UPDATE leave_requests
+       SET status = $1, current_approver_role = $2, updated_at = NOW()
+       WHERE id = $3
+       RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 status, current_approver_role, notes, created_at, updated_at`,
+      [transition.nextStatus, transition.nextApprover, leaveId],
+    );
 
-  ok(res, updated, 'Richiesta approvata');
+    await client.query(
+      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+       VALUES ($1, $2, $3, 'approved', $4)`,
+      [leaveId, userId, role, notes ?? null],
+    );
+
+    await client.query('COMMIT');
+    ok(res, updatedResult.rows[0], 'Richiesta approvata');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -397,6 +425,12 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
 
   if (!leaveRequest) {
     notFound(res, 'Richiesta di permesso non trovata');
+    return;
+  }
+
+  // Prevent rejecting requests that are already finalized
+  if (leaveRequest.status === 'rejected' || leaveRequest.status === 'hr_approved') {
+    badRequest(res, 'Impossibile rifiutare una richiesta già finalizzata', 'INVALID_STATE');
     return;
   }
 
@@ -438,8 +472,32 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
   let targetUserId: number;
   if (role === 'employee' || role === 'store_manager') {
     targetUserId = userId;
+  } else if (role === 'area_manager' && user_id) {
+    // area_manager can only view balance for employees in their supervised stores
+    const requestedId = parseInt(user_id, 10);
+    if (isNaN(requestedId) || requestedId < 1) {
+      badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
+    }
+    const allowed = await queryOne<{ id: number }>(
+      `SELECT u.id FROM users u
+       WHERE u.id = $1 AND u.company_id = $2
+         AND u.store_id IN (
+           SELECT DISTINCT store_id FROM users
+           WHERE role = 'store_manager' AND supervisor_id = $3 AND company_id = $2
+             AND status = 'active' AND store_id IS NOT NULL
+         )`,
+      [requestedId, companyId, userId],
+    );
+    if (!allowed) {
+      forbidden(res, 'Accesso negato a questo dipendente'); return;
+    }
+    targetUserId = requestedId;
   } else {
-    targetUserId = user_id ? parseInt(user_id, 10) : userId;
+    const requestedId = user_id ? parseInt(user_id, 10) : userId;
+    if (user_id && (isNaN(requestedId) || requestedId < 1)) {
+      badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
+    }
+    targetUserId = requestedId;
   }
 
   const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();

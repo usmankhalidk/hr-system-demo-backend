@@ -29,8 +29,9 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // store_manager can only generate QR for their own store
-  if (req.user!.role === 'store_manager' && storeId !== req.user!.storeId) {
+  // store_manager and store_terminal can only generate QR for their own store
+  const roleLimitedToStore = req.user!.role === 'store_manager' || req.user!.role === 'store_terminal';
+  if (roleLimitedToStore && storeId !== req.user!.storeId) {
     forbidden(res, 'Puoi generare QR solo per il tuo negozio');
     return;
   }
@@ -61,13 +62,30 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
 // body: { qr_token, event_type, user_id, notes? }
 // ---------------------------------------------------------------------------
 export const checkin = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  const { qr_token, event_type, user_id, notes } = req.body as {
+  const { companyId, role, userId: callerId } = req.user!;
+  const { qr_token, event_type, notes } = req.body as {
     qr_token: string;
     event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
-    user_id: number;
     notes?: string;
   };
+  // Employees can only check in for themselves — managers/terminals can specify any user
+  let user_id: number;
+  if (role === 'employee') {
+    user_id = callerId;
+  } else if (req.body.unique_id) {
+    // Resolve unique_id → numeric user_id within this company
+    const found = await queryOne<{ id: number }>(
+      `SELECT id FROM users WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
+      [req.body.unique_id as string, companyId],
+    );
+    if (!found) {
+      badRequest(res, 'Dipendente non trovato con questo codice', 'NOT_FOUND');
+      return;
+    }
+    user_id = found.id;
+  } else {
+    user_id = req.body.user_id as number;
+  }
 
   // 1. Verify JWT signature and expiry
   let payload: { companyId: number; storeId: number; nonce: string };
@@ -162,21 +180,66 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
 // Query params: user_id?, store_id?, date_from?, date_to?, event_type?
 // ---------------------------------------------------------------------------
 export const listAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, role, userId, storeId } = req.user!;
   const { user_id, store_id, date_from, date_to, event_type } = req.query as Record<string, string>;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const VALID_EVENT_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
+
+  // Validate date formats
+  if (date_from && !DATE_RE.test(date_from)) {
+    badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  if (date_to && !DATE_RE.test(date_to)) {
+    badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  if (event_type && !VALID_EVENT_TYPES.has(event_type)) {
+    badRequest(res, 'event_type non valido', 'VALIDATION_ERROR'); return;
+  }
 
   const params: any[] = [companyId];
   let extraWhere = '';
   let idx = 2;
 
+  // ── Role-based mandatory scope (applied before caller-provided filters) ───
+  if (role === 'store_manager') {
+    // store_manager can only see their own store's events
+    extraWhere += ` AND ae.store_id = $${idx}`;
+    params.push(storeId);
+    idx++;
+  } else if (role === 'area_manager') {
+    const managedRows = await query<{ store_id: number }>(
+      `SELECT DISTINCT store_id FROM users
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+         AND status = 'active' AND store_id IS NOT NULL`,
+      [userId, companyId],
+    );
+    const managedIds = managedRows.map((r) => r.store_id);
+    if (managedIds.length === 0) {
+      ok(res, { events: [], total: 0, has_more: false });
+      return;
+    }
+    const ph = managedIds.map((_, i) => `$${idx + i}`).join(',');
+    extraWhere += ` AND ae.store_id IN (${ph})`;
+    params.push(...managedIds);
+    idx += managedIds.length;
+  }
+  // admin / hr: full company scope — no additional mandatory constraint
+
+  // ── Caller-provided filters (scoped to above) ────────────────────────────
   if (user_id) {
+    const uid = parseInt(user_id, 10);
+    if (isNaN(uid) || uid < 1) { badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return; }
     extraWhere += ` AND ae.user_id = $${idx}`;
-    params.push(parseInt(user_id, 10));
+    params.push(uid);
     idx++;
   }
-  if (store_id) {
+  // store_manager: ignore caller store_id (already scoped to their store above)
+  if (store_id && role !== 'store_manager') {
+    const sid = parseInt(store_id, 10);
+    if (isNaN(sid) || sid < 1) { badRequest(res, 'store_id non valido', 'VALIDATION_ERROR'); return; }
     extraWhere += ` AND ae.store_id = $${idx}`;
-    params.push(parseInt(store_id, 10));
+    params.push(sid);
     idx++;
   }
   if (date_from) {
@@ -287,7 +350,8 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
   const { events } = req.body as {
     events: Array<{
       event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
-      user_id: number;
+      user_id?: number;
+      unique_id?: string;
       event_time: string;
       notes?: string;
     }>;
@@ -303,12 +367,25 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
   let failed = 0;
   const errors: string[] = [];
 
-  // Pre-fetch all unique user IDs in one query (avoids N+1)
-  const uniqueUserIds = [...new Set(events.map((e) => e.user_id))];
+  // Resolve unique_ids → numeric user IDs (for events that use unique_id)
+  const uniqueIdStrings = [...new Set(events.filter((e) => e.unique_id).map((e) => e.unique_id as string))];
+  const uniqueIdMap = new Map<string, number>();
+  if (uniqueIdStrings.length > 0) {
+    const uniqueIdRows = await query<{ id: number; unique_id: string }>(
+      `SELECT id, unique_id FROM users
+       WHERE unique_id = ANY($1::text[]) AND company_id = $2 AND status = 'active'`,
+      [uniqueIdStrings, companyId],
+    );
+    for (const row of uniqueIdRows) uniqueIdMap.set(row.unique_id, row.id);
+  }
+
+  // Pre-fetch all numeric user IDs in one query (avoids N+1)
+  const numericUserIds = [...new Set(events.filter((e) => !e.unique_id && e.user_id != null).map((e) => e.user_id as number))];
   const validUserRows = await query<{ id: number }>(
-    `SELECT id FROM users
-     WHERE id = ANY($1::int[]) AND company_id = $2 AND status = 'active'`,
-    [uniqueUserIds, companyId],
+    numericUserIds.length > 0
+      ? `SELECT id FROM users WHERE id = ANY($1::int[]) AND company_id = $2 AND status = 'active'`
+      : `SELECT id FROM users WHERE FALSE AND company_id = $2`,
+    numericUserIds.length > 0 ? [numericUserIds, companyId] : [companyId],
   );
   const validUserSet = new Set(validUserRows.map((r) => r.id));
 
@@ -337,8 +414,24 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    if (!validUserSet.has(ev.user_id)) {
-      errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
+    // Resolve user_id: prefer unique_id lookup, fall back to numeric user_id
+    let resolvedUserId: number | undefined;
+    if (ev.unique_id) {
+      resolvedUserId = uniqueIdMap.get(ev.unique_id);
+      if (resolvedUserId == null) {
+        errors.push(`Evento ${rowNum}: dipendente con codice '${ev.unique_id}' non trovato`);
+        failed++;
+        continue;
+      }
+    } else if (ev.user_id != null) {
+      if (!validUserSet.has(ev.user_id)) {
+        errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
+        failed++;
+        continue;
+      }
+      resolvedUserId = ev.user_id;
+    } else {
+      errors.push(`Evento ${rowNum}: user_id o unique_id obbligatorio`);
       failed++;
       continue;
     }
@@ -349,7 +442,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
        WHERE company_id = $1 AND user_id = $2 AND date = $3
          AND store_id = $4 AND status != 'cancelled'
        ORDER BY start_time LIMIT 1`,
-      [companyId, ev.user_id, dateStr, storeId],
+      [companyId, resolvedUserId, dateStr, storeId],
     );
 
     try {
@@ -357,7 +450,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
         `INSERT INTO attendance_events
            (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
          VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)`,
-        [companyId, storeId, ev.user_id, ev.event_type, ts.toISOString(),
+        [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(),
          linkedShift?.id ?? null, ev.notes ?? null],
       );
       synced++;
@@ -380,6 +473,14 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const { companyId, role, userId, storeId: callerStoreId } = req.user!;
   const { store_id, date_from, date_to } = req.query as Record<string, string>;
 
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (date_from && !DATE_RE.test(date_from)) {
+    badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  if (date_to && !DATE_RE.test(date_to)) {
+    badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+
   const today = new Date().toISOString().split('T')[0];
   const from = date_from || today;
   const to   = date_to   || today;
@@ -389,9 +490,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   if (role === 'area_manager') {
     const rows = await query<{ store_id: number }>(
       `SELECT DISTINCT store_id FROM users
-       WHERE role = 'store_manager' AND supervisor_id = $1
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
          AND status = 'active' AND store_id IS NOT NULL`,
-      [userId],
+      [userId, companyId],
     );
     managedStoreIds = rows.map((r) => r.store_id);
     if (managedStoreIds.length === 0) {
@@ -433,7 +534,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
      WHERE s.company_id = $1
        AND s.date BETWEEN $2 AND $3
        AND s.status != 'cancelled'
-       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < LOCALTIME))
+       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))
        ${shiftScope.clause}
      ORDER BY s.date, s.user_id`,
     [companyId, from, to, ...shiftScope.params],
@@ -483,6 +584,8 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit';
     severity: 'low' | 'medium' | 'high';
     details: string;
+    details_key: string;
+    details_params: Record<string, string | number>;
   }> = [];
 
   for (const shift of shifts) {
@@ -498,6 +601,8 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'no_show', severity: 'high',
         details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
+        details_key: 'attendance.detail_no_show',
+        details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
       });
       continue;
     }
@@ -514,6 +619,8 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
         details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
+        details_key: 'attendance.detail_late_arrival',
+        details_params: { minutes: lateMin, entry: checkin.toTimeString().slice(0, 5), shift: shift.start_time.slice(0, 5) },
       });
     }
 
@@ -528,6 +635,8 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'early_exit', severity: earlyMin > 30 ? 'high' : 'medium',
           details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
+          details_key: 'attendance.detail_early_exit',
+          details_params: { minutes: earlyMin, exit: checkout.toTimeString().slice(0, 5), shift: shift.end_time.slice(0, 5) },
         });
       }
     }
@@ -543,6 +652,8 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'long_break', severity: breakMin > 90 ? 'high' : 'medium',
           details: `Pausa di ${breakMin} min (limite: 60 min)`,
+          details_key: 'attendance.detail_long_break',
+          details_params: { minutes: breakMin },
         });
       }
     }
