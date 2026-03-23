@@ -3,15 +3,17 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { getEmployee, deactivateEmployee, activateEmployee } from '../../api/employees';
+import { getTrainings, getMedicals, createTraining, updateTraining, createMedical, updateMedical } from '../../api/trainings';
 import { translateApiError } from '../../utils/apiErrors';
 import { useAuth } from '../../context/AuthContext';
 import { useToast } from '../../context/ToastContext';
-import { Employee, UserRole } from '../../types';
+import { Employee, UserRole, Training, MedicalCheck, TrainingType } from '../../types';
 import { Badge } from '../../components/ui/Badge';
 import { Button } from '../../components/ui/Button';
 import { Spinner } from '../../components/ui/Spinner';
 import { Alert } from '../../components/ui/Alert';
 import { Modal } from '../../components/ui/Modal';
+import { DatePicker } from '../../components/ui/DatePicker';
 import { EmployeeForm } from './EmployeeForm';
 
 // ── Types & constants ──────────────────────────────────────────────────────────
@@ -151,6 +153,14 @@ export function EmployeeDetail() {
   const [activating, setActivating] = useState(false);
   const [activateError, setActivateError] = useState<string | null>(null);
 
+  const [trainings, setTrainings] = useState<Training[]>([]);
+  const [medicals, setMedicals] = useState<MedicalCheck[]>([]);
+  const [trainingsLoading, setTrainingsLoading] = useState(false);
+  const [editingTraining, setEditingTraining] = useState<{ trainingType?: TrainingType; startDate?: string | null; endDate?: string | null; editing?: number | null }>({});
+  const [editingMedical, setEditingMedical] = useState<{ startDate?: string | null; endDate?: string | null; editing?: number | null }>({});
+  const [trainingFormOpen, setTrainingFormOpen] = useState(false);
+  const [medicalFormOpen, setMedicalFormOpen] = useState(false);
+
   const employeeId = id && !isNaN(parseInt(id, 10)) ? parseInt(id, 10) : undefined;
   const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
   const isAdmin = user?.role === 'admin';
@@ -178,6 +188,15 @@ export function EmployeeDetail() {
     }
     loadEmployee();
   }, [employeeId]);
+
+  useEffect(() => {
+    if (!employeeId || !canViewSensitive) return;
+    setTrainingsLoading(true);
+    Promise.all([getTrainings(employeeId), getMedicals(employeeId)])
+      .then(([tr, med]) => { setTrainings(tr); setMedicals(med); })
+      .catch(() => {})
+      .finally(() => setTrainingsLoading(false));
+  }, [employeeId, canViewSensitive]);
 
   const handleActivate = async () => {
     if (!employeeId) return;
@@ -417,10 +436,169 @@ export function EmployeeDetail() {
                 {employee.firstAidFlag ? t('common.yes') : t('common.no')}
               </span>
             } />
-            <InfoRow label={t('employees.maritalStatusField')} value={employee.maritalStatus ?? '—'} last />
+            <InfoRow label={t('employees.maritalStatusField')} value={employee.maritalStatus ?? '—'} />
+            <InfoRow label={t('employees.contractTypeField')} value={employee.contractType ?? '—'} />
+            <InfoRow label={t('employees.probationField')} value={employee.probationMonths != null ? `${employee.probationMonths} ${t('employees.months')}` : '—'} last />
           </SectionPanel>
         )}
       </div>
+
+      {/* Training Records */}
+      {canViewSensitive && (
+        <div style={{ marginTop: 20 }}>
+          <SectionPanel title={t('employees.trainingSection')} icon={<IconFile />}>
+            {trainingsLoading ? (
+              <div style={{ padding: '20px', textAlign: 'center' }}><Spinner size="sm" /></div>
+            ) : (
+              <div>
+                {(['product', 'general', 'low_risk_safety', 'fire_safety'] as TrainingType[]).map((type) => {
+                  const record = trainings
+                    .filter(tr => tr.training_type === type)
+                    .sort((a, b) => (b.end_date ?? '').localeCompare(a.end_date ?? ''))[0];
+                  return (
+                    <div key={type} style={{ padding: '10px 0', borderBottom: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>
+                        {t(`employees.trainingType_${type}`)}
+                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                        {record ? (
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>
+                            {record.start_date ?? '—'} → {record.end_date ?? '—'}
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>—</span>
+                        )}
+                        {isAdminOrHr && (
+                          <Button size="sm" variant="secondary" onClick={() => {
+                            setEditingTraining({ trainingType: type, startDate: record?.start_date ?? null, endDate: record?.end_date ?? null, editing: record?.id ?? null });
+                            setTrainingFormOpen(true);
+                          }}>
+                            {record ? t('common.edit') : t('employees.addTraining')}
+                          </Button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionPanel>
+        </div>
+      )}
+
+      {/* Medical Checks */}
+      {canViewSensitive && (
+        <div style={{ marginTop: 20 }}>
+          <SectionPanel title={t('employees.medicalSection')} icon={<IconFile />}>
+            {medicals.length === 0 ? (
+              <div style={{ padding: '20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
+                {t('employees.noMedicals')}
+              </div>
+            ) : (
+              medicals.map((m, i) => (
+                <div key={m.id} style={{ padding: '10px 0', borderBottom: i < medicals.length - 1 ? '1px solid var(--border-light)' : 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
+                  <span style={{ fontSize: 13, color: 'var(--text-primary)' }}>
+                    {t('employees.medicalStartDate')}: {m.start_date ?? '—'} &nbsp;|&nbsp; {t('employees.medicalEndDate')}: {m.end_date ?? '—'}
+                  </span>
+                  {isAdminOrHr && (
+                    <Button size="sm" variant="secondary" onClick={() => {
+                      setEditingMedical({ startDate: m.start_date, endDate: m.end_date, editing: m.id });
+                      setMedicalFormOpen(true);
+                    }}>
+                      {t('common.edit')}
+                    </Button>
+                  )}
+                </div>
+              ))
+            )}
+            {isAdminOrHr && (
+              <div style={{ padding: '10px 0' }}>
+                <Button size="sm" onClick={() => { setEditingMedical({ editing: null }); setMedicalFormOpen(true); }}>
+                  {t('employees.addMedical')}
+                </Button>
+              </div>
+            )}
+          </SectionPanel>
+        </div>
+      )}
+
+      {/* Training Edit Modal */}
+      <Modal
+        open={trainingFormOpen}
+        onClose={() => setTrainingFormOpen(false)}
+        title={editingTraining.editing ? t('common.edit') : t('employees.addTraining')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setTrainingFormOpen(false)}>{t('common.cancel')}</Button>
+            <Button onClick={async () => {
+              if (!employeeId) return;
+              const payload = {
+                training_type: editingTraining.trainingType,
+                start_date: editingTraining.startDate,
+                end_date: editingTraining.endDate,
+              };
+              if (editingTraining.editing) {
+                await updateTraining(employeeId, editingTraining.editing, payload);
+              } else {
+                await createTraining(employeeId, payload);
+              }
+              const tr = await getTrainings(employeeId);
+              setTrainings(tr);
+              setTrainingFormOpen(false);
+            }}>{t('common.save')}</Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <DatePicker
+            label={t('employees.trainingStartDate')}
+            value={editingTraining.startDate ?? ''}
+            onChange={(v) => setEditingTraining(p => ({ ...p, startDate: v || null }))}
+          />
+          <DatePicker
+            label={t('employees.trainingEndDate')}
+            value={editingTraining.endDate ?? ''}
+            onChange={(v) => setEditingTraining(p => ({ ...p, endDate: v || null }))}
+          />
+        </div>
+      </Modal>
+
+      {/* Medical Edit Modal */}
+      <Modal
+        open={medicalFormOpen}
+        onClose={() => setMedicalFormOpen(false)}
+        title={editingMedical.editing ? t('common.edit') : t('employees.addMedical')}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setMedicalFormOpen(false)}>{t('common.cancel')}</Button>
+            <Button onClick={async () => {
+              if (!employeeId) return;
+              const payload = { start_date: editingMedical.startDate, end_date: editingMedical.endDate };
+              if (editingMedical.editing) {
+                await updateMedical(employeeId, editingMedical.editing, payload);
+              } else {
+                await createMedical(employeeId, payload);
+              }
+              const med = await getMedicals(employeeId);
+              setMedicals(med);
+              setMedicalFormOpen(false);
+            }}>{t('common.save')}</Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          <DatePicker
+            label={t('employees.medicalStartDate')}
+            value={editingMedical.startDate ?? ''}
+            onChange={(v) => setEditingMedical(p => ({ ...p, startDate: v || null }))}
+          />
+          <DatePicker
+            label={t('employees.medicalEndDate')}
+            value={editingMedical.endDate ?? ''}
+            onChange={(v) => setEditingMedical(p => ({ ...p, endDate: v || null }))}
+          />
+        </div>
+      </Modal>
 
       {/* Edit drawer */}
       {showEditForm && employeeId && (

@@ -1,5 +1,6 @@
 import React from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
@@ -40,6 +41,14 @@ export interface HRHomeData {
   totalEmployees: number;
   monthlyHires?: MonthlyHire[];
   statusBreakdown?: StatusItem[];
+  expiringTrainings?: Array<{
+    id: number; training_type: string; end_date: string;
+    user_id: number; name: string; surname: string;
+  }>;
+  expiringMedicals?: Array<{
+    id: number; end_date: string;
+    user_id: number; name: string; surname: string;
+  }>;
 }
 
 interface HRHomeProps {
@@ -54,14 +63,15 @@ function formatDate(dateStr: string, lang: string): string {
 }
 
 // Fill missing months so the chart always has 6 bars
-function buildMonthSeries(raw: MonthlyHire[]): { label: string; value: number }[] {
+function buildMonthSeries(raw: MonthlyHire[], lang: string): { label: string; value: number }[] {
   const months: { label: string; value: number }[] = [];
+  const locale = lang === 'en' ? 'en-GB' : 'it-IT';
   const now = new Date();
   for (let i = 5; i >= 0; i--) {
     const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
     const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
     const found = raw.find((r) => r.month === key);
-    const label = d.toLocaleDateString('en-US', { month: 'short' });
+    const label = d.toLocaleDateString(locale, { month: 'short' });
     months.push({ label, value: found?.count ?? 0 });
   }
   return months;
@@ -122,9 +132,10 @@ export const HRHome: React.FC<HRHomeProps> = ({ data }) => {
   const { expiringContracts, newHires, totalEmployees, monthlyHires = [], statusBreakdown = [] } = data;
   const { t, i18n } = useTranslation();
   const { isMobile, isTablet } = useBreakpoint();
+  const navigate = useNavigate();
   const tRole = (role: string) => (t as (k: string) => string)(`roles.${role}`);
 
-  const monthSeries = buildMonthSeries(monthlyHires);
+  const monthSeries = buildMonthSeries(monthlyHires, i18n.language);
 
   const statusPieData = statusBreakdown.map((s) => ({
     name: s.status === 'active' ? t('employees.statusActive') : t('employees.statusInactive'),
@@ -264,6 +275,63 @@ export const HRHome: React.FC<HRHomeProps> = ({ data }) => {
           <Table<NewHire> flush columns={hireColumns} data={newHires} emptyText={t('home.hr.noNewHires')} />
         </SectionCard>
       </div>
+
+      {/* Expiring Trainings */}
+      {(data.expiringTrainings?.length ?? 0) > 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-light)', background: 'rgba(234,88,12,0.05)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700, color: '#ea580c', margin: 0, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              {t('home.hr.expiringTrainings')}
+            </h3>
+          </div>
+          <div>
+            {data.expiringTrainings!.map((tr) => {
+              const daysLeft = Math.ceil((new Date(tr.end_date).getTime() - Date.now()) / 86400000);
+              return (
+                <div key={tr.id}
+                  onClick={() => navigate(`/dipendenti/${tr.user_id}`)}
+                  style={{ padding: '10px 20px', borderBottom: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+                >
+                  <div>
+                    <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{tr.name} {tr.surname}</span>
+                    <span style={{ fontSize: 12, color: 'var(--text-muted)', marginLeft: 8 }}>{t(`employees.trainingType_${tr.training_type}`)}</span>
+                  </div>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: daysLeft <= 14 ? '#dc2626' : '#ea580c', background: daysLeft <= 14 ? 'rgba(220,38,38,0.1)' : 'rgba(234,88,12,0.1)', padding: '2px 8px', borderRadius: 20 }}>
+                    {daysLeft}d
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Expiring Medical Checks */}
+      {(data.expiringMedicals?.length ?? 0) > 0 && (
+        <div style={{ background: 'var(--surface)', border: '1px solid var(--border)', borderRadius: 'var(--radius-lg)', overflow: 'hidden' }}>
+          <div style={{ padding: '14px 20px', borderBottom: '1px solid var(--border-light)', background: 'rgba(124,58,237,0.05)' }}>
+            <h3 style={{ fontFamily: 'var(--font-display)', fontSize: 13, fontWeight: 700, color: '#7c3aed', margin: 0, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              {t('home.hr.expiringMedicals')}
+            </h3>
+          </div>
+          <div>
+            {data.expiringMedicals!.map((m) => {
+              const daysLeft = Math.ceil((new Date(m.end_date).getTime() - Date.now()) / 86400000);
+              return (
+                <div key={m.id}
+                  onClick={() => navigate(`/dipendenti/${m.user_id}`)}
+                  style={{ padding: '10px 20px', borderBottom: '1px solid var(--border-light)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', cursor: 'pointer' }}
+                >
+                  <span style={{ fontWeight: 600, fontSize: 13, color: 'var(--text-primary)' }}>{m.name} {m.surname}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color: daysLeft <= 14 ? '#dc2626' : '#7c3aed', background: daysLeft <= 14 ? 'rgba(220,38,38,0.1)' : 'rgba(124,58,237,0.1)', padding: '2px 8px', borderRadius: 20 }}>
+                    {daysLeft}d
+                  </span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 };

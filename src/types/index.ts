@@ -10,6 +10,7 @@ export interface User {
   email: string;
   role: UserRole;
   status: 'active' | 'inactive';
+  isSuperAdmin?: boolean;
 }
 
 export interface Company {
@@ -62,6 +63,31 @@ export interface Employee {
   iban?: string | null;
   address?: string | null;
   cap?: string | null;
+  contractType?: string | null;
+  probationMonths?: number | null;
+}
+
+export type TrainingType = 'product' | 'general' | 'low_risk_safety' | 'fire_safety';
+
+export interface Training {
+  id: number;
+  userId: number;
+  companyId: number;
+  training_type: TrainingType;
+  start_date: string | null;
+  end_date: string | null;
+  notes: string | null;
+  createdAt: string;
+}
+
+export interface MedicalCheck {
+  id: number;
+  userId: number;
+  companyId: number;
+  start_date: string | null;
+  end_date: string | null;
+  notes: string | null;
+  createdAt: string;
 }
 
 export interface PermissionGrid {

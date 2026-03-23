@@ -41,6 +41,8 @@ interface FormData {
   cap: string;
   firstAidFlag: boolean;
   maritalStatus: string;
+  contractType: string;
+  probationMonths: string;
 }
 
 const initialFormData: FormData = {
@@ -49,6 +51,7 @@ const initialFormData: FormData = {
   hireDate: '', contractEndDate: '', workingType: '', weeklyHours: '',
   personalEmail: '', dateOfBirth: '', nationality: '', gender: '',
   iban: '', address: '', cap: '', firstAidFlag: false, maritalStatus: '',
+  contractType: '', probationMonths: '',
 };
 
 function generateUniqueId(): string {
@@ -163,6 +166,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
           cap: emp.cap ?? '',
           firstAidFlag: emp.firstAidFlag ?? false,
           maritalStatus: emp.maritalStatus ?? '',
+          contractType: emp.contractType ?? '',
+          probationMonths: emp.probationMonths != null ? String(emp.probationMonths) : '',
         });
       })
       .catch(() => {
@@ -233,6 +238,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
         cap: formData.cap || null,
         firstAidFlag: formData.firstAidFlag,
         maritalStatus: formData.maritalStatus || null,
+        contractType: formData.contractType || null,
+        probationMonths: formData.probationMonths ? parseInt(formData.probationMonths, 10) : null,
       };
       if (isEditMode && employeeId) {
         await updateEmployee(employeeId, payload);
@@ -589,6 +596,22 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                         {t('employees.firstAidField')}
                       </label>
                     </div>
+                  </div>
+                  <div style={row2}>
+                    <Input
+                      label={t('employees.contractTypeField')}
+                      value={formData.contractType}
+                      onChange={(e) => set('contractType', e.target.value)}
+                      placeholder="Es. Tempo Indeterminato"
+                    />
+                    <Input
+                      label={t('employees.probationField')}
+                      type="number"
+                      min="0"
+                      value={formData.probationMonths}
+                      onChange={(e) => set('probationMonths', e.target.value)}
+                      placeholder="Es. 6"
+                    />
                   </div>
                 </div>
               )}
