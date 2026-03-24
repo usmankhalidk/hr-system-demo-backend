@@ -27,6 +27,7 @@ export async function migrate() {
       '011_login_attempts_index.sql',
       '012_shifts_composite_index.sql',
       '013_add_ip_index_to_login_attempts.sql',
+      '014_data_integrity_constraints.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -94,6 +95,7 @@ export async function seed() {
       '011_login_attempts_index.sql',
       '012_shifts_composite_index.sql',
       '013_add_ip_index_to_login_attempts.sql',
+      '014_data_integrity_constraints.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);

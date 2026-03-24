@@ -76,17 +76,34 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // start_date must not be in the past
+  const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD in UTC
+  if (start_date < today) {
+    badRequest(res, 'Non è possibile richiedere ferie per date passate', 'PAST_DATE_NOT_ALLOWED');
+    return;
+  }
+
   // start_date must not be after end_date (ISO strings compare lexicographically)
   if (start_date > end_date) {
     badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
     return;
   }
 
+  // Validate PDF magic bytes if a certificate is uploaded
+  const file = (req as any).file as Express.Multer.File | undefined;
+  if (file) {
+    const magic = file.buffer?.slice(0, 4);
+    if (!magic || magic.toString('ascii') !== '%PDF') {
+      badRequest(res, 'Il file deve essere un PDF valido', 'INVALID_FILE_TYPE');
+      return;
+    }
+  }
+
   // Overlap check: reject if user already has an active (non-rejected) request overlapping these dates
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status NOT IN ('rejected')
+       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [companyId, userId, end_date, start_date],
   );
@@ -95,7 +112,6 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const file = (req as any).file as Express.Multer.File | undefined;
   const certificateName = file?.originalname ?? null;
   const certificateData = file?.buffer ?? null;
 
@@ -610,7 +626,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status NOT IN ('rejected')
+       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [effectiveCompanyId, user_id, end_date, start_date],
   );

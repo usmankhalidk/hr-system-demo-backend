@@ -346,9 +346,18 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   if (isNaN(shiftId)) { notFound(res, 'Turno non trovato'); return; }
   const body = req.body as Record<string, any>;
 
-  // Fetch existing shift
-  const existing = await queryOne<{ id: number; store_id: number; user_id: number; date: string }>(
-    `SELECT id, store_id, user_id, date FROM shifts WHERE id = $1 AND company_id = $2`,
+  // Fetch existing shift (include time fields for cross-field validation of partial patches)
+  const existing = await queryOne<{
+    id: number; store_id: number; user_id: number; date: string;
+    start_time: string; end_time: string;
+    break_start: string | null; break_end: string | null;
+    break_type: string | null; break_minutes: number | null;
+    is_split: boolean; split_start2: string | null; split_end2: string | null;
+  }>(
+    `SELECT id, store_id, user_id, date,
+            start_time, end_time, break_start, break_end,
+            break_type, break_minutes, is_split, split_start2, split_end2
+     FROM shifts WHERE id = $1 AND company_id = $2`,
     [shiftId, companyId],
   );
   if (!existing) { notFound(res, 'Turno non trovato'); return; }
@@ -405,6 +414,24 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
       conflict(res, 'Turno sovrapposto per questo dipendente in questa data', 'OVERLAP_CONFLICT');
       return;
     }
+  }
+
+  // Validate cross-field constraints on merged (existing + patched) values
+  const mergedForValidation = {
+    start_time:    body.start_time    ?? existing.start_time,
+    end_time:      body.end_time      ?? existing.end_time,
+    break_start:   body.break_start   ?? existing.break_start,
+    break_end:     body.break_end     ?? existing.break_end,
+    break_type:    body.break_type    ?? existing.break_type,
+    break_minutes: body.break_minutes ?? existing.break_minutes,
+    is_split:      body.is_split      ?? existing.is_split,
+    split_start2:  body.split_start2  ?? existing.split_start2,
+    split_end2:    body.split_end2    ?? existing.split_end2,
+  };
+  const crossErrs = validateShiftCrossFields(mergedForValidation);
+  if (crossErrs.length > 0) {
+    badRequest(res, crossErrs[0], 'VALIDATION_ERROR');
+    return;
   }
 
   const isFlexible = body.break_type === 'flexible';

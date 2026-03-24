@@ -240,6 +240,12 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
     return;
   }
 
+  // Reject timestamps more than 1 hour in the future
+  if (ts.getTime() > Date.now() + 60 * 60 * 1000) {
+    badRequest(res, 'La data/ora non può essere più di 1 ora nel futuro', 'VALIDATION_ERROR');
+    return;
+  }
+
   // Try to link to an existing shift for that user/store/date
   const dateStr = ts.toISOString().split('T')[0];
   const linkedShift = await queryOne<{ id: number }>(
@@ -475,6 +481,26 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
   );
   const validUserSet = new Set(validUserRows.map((r) => r.id));
 
+  // Pre-fetch all shifts for this store across the event date range (avoids N+1 per event)
+  const eventTimestamps = events.map((e) => new Date(e.event_time)).filter((t) => !isNaN(t.getTime()));
+  const shiftMap = new Map<string, number>(); // "userId:date" → first shift id
+  if (eventTimestamps.length > 0) {
+    const dateStrings = eventTimestamps.map((t) => t.toISOString().split('T')[0]).sort();
+    const minDate = dateStrings[0];
+    const maxDate = dateStrings[dateStrings.length - 1];
+    const shiftRows = await query<{ id: number; user_id: number; date: string }>(
+      `SELECT id, user_id, TO_CHAR(date, 'YYYY-MM-DD') AS date FROM shifts
+       WHERE company_id = $1 AND store_id = $2 AND status != 'cancelled'
+         AND date BETWEEN $3 AND $4
+       ORDER BY start_time`,
+      [companyId, storeId, minDate, maxDate],
+    );
+    for (const row of shiftRows) {
+      const key = `${row.user_id}:${row.date}`;
+      if (!shiftMap.has(key)) shiftMap.set(key, row.id); // keep earliest start_time
+    }
+  }
+
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     const rowNum = i + 1;
@@ -523,13 +549,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }
 
     const dateStr = ts.toISOString().split('T')[0];
-    const linkedShift = await queryOne<{ id: number }>(
-      `SELECT id FROM shifts
-       WHERE company_id = $1 AND user_id = $2 AND date = $3
-         AND store_id = $4 AND status != 'cancelled'
-       ORDER BY start_time LIMIT 1`,
-      [companyId, resolvedUserId, dateStr, storeId],
-    );
+    const linkedShiftId = shiftMap.get(`${resolvedUserId}:${dateStr}`) ?? null;
 
     try {
       await queryOne(
@@ -537,7 +557,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
            (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
          VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)`,
         [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(),
-         linkedShift?.id ?? null, ev.notes ?? null],
+         linkedShiftId, ev.notes ?? null],
       );
       synced++;
     } catch {
@@ -570,6 +590,12 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const today = new Date().toISOString().split('T')[0];
   const from = date_from || today;
   const to   = date_to   || today;
+
+  // Cap date range to 14 days to prevent expensive full-table scans
+  const diffDays = (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24);
+  if (diffDays > 14) {
+    badRequest(res, "L'intervallo di date non può superare 14 giorni", 'VALIDATION_ERROR'); return;
+  }
 
   // Resolve managed store IDs once (used for both shifts and events scoping)
   let managedStoreIds: number[] | null = null;

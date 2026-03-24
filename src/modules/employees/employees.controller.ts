@@ -139,9 +139,9 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   const crossCompany = hasCrossCompanyAccess && !targetCompanyId;
 
   // H8: cross-company queries allow up to 500 rows; normal queries cap at 100
-  const pageNum = Math.max(1, parseInt(page, 10));
+  const pageNum = Math.max(1, parseInt(page, 10) || 1);
   const maxLimit = crossCompany ? 500 : 100;
-  const limitNum = Math.min(maxLimit, Math.max(1, parseInt(limit, 10)));
+  const limitNum = Math.min(maxLimit, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
 
   let where: string;
