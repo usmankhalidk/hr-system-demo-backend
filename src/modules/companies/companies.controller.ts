@@ -12,17 +12,28 @@ interface CompanyRow {
   created_at: string;
 }
 
-// GET /api/companies — Admin only, scoped to caller's own company
+// GET /api/companies — admin/hr/area_manager: all companies; others: own company only
 export const listCompanies = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = req.user!.companyId;
-  const companies = await query<CompanyRow>(`
-    SELECT c.id, c.name, c.slug, c.created_at,
-      (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
-      (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
-    FROM companies c
-    WHERE c.id = $1
-    ORDER BY c.id
-  `, [companyId]);
+  const { companyId, role } = req.user!;
+  const hasCrossCompanyAccess = role === 'admin' || role === 'hr' || role === 'area_manager';
+
+  const companies = hasCrossCompanyAccess
+    ? await query<CompanyRow>(`
+        SELECT c.id, c.name, c.slug, c.created_at,
+          (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
+          (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
+        FROM companies c
+        ORDER BY c.id
+      `, [])
+    : await query<CompanyRow>(`
+        SELECT c.id, c.name, c.slug, c.created_at,
+          (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
+          (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
+        FROM companies c
+        WHERE c.id = $1
+        ORDER BY c.id
+      `, [companyId]);
+
   ok(res, companies);
 });
 
@@ -30,6 +41,7 @@ export const listCompanies = asyncHandler(async (req: Request, res: Response) =>
 export const updateCompany = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;
   const companyId = req.user!.companyId;
+  if (isNaN(Number(id))) { notFound(res, 'Azienda non trovata'); return; }
 
   // Scope check — admin can only update their own company
   if (Number(id) !== companyId) {
@@ -88,17 +100,13 @@ export const getCompanySettings = asyncHandler(async (req: Request, res: Respons
 // PATCH /api/companies/settings — admin only, update company-level settings
 export const updateCompanySettings = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
-  const { showLeaveBalanceToEmployee } = req.body as { showLeaveBalanceToEmployee?: boolean };
-
-  if (showLeaveBalanceToEmployee === undefined) {
-    badRequest(res, 'Nessuna impostazione fornita', 'NO_SETTINGS');
-    return;
-  }
+  // Validated by Zod schema in routes (snake_case from Axios interceptor)
+  const { show_leave_balance_to_employee } = req.body as { show_leave_balance_to_employee: boolean };
 
   const company = await queryOne(
     `UPDATE companies SET show_leave_balance_to_employee = $1 WHERE id = $2
      RETURNING id, show_leave_balance_to_employee`,
-    [showLeaveBalanceToEmployee, companyId]
+    [show_leave_balance_to_employee, companyId]
   );
   if (!company) { notFound(res, 'Azienda non trovata'); return; }
   ok(res, company, 'Impostazioni aggiornate');

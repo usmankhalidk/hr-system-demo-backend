@@ -265,6 +265,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
 export const approveLeave = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const leaveId = parseInt(req.params.id, 10);
+  if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
   const { notes } = req.body as { notes?: string };
 
   const leaveRequest = await queryOne<{
@@ -410,6 +411,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const leaveId = parseInt(req.params.id, 10);
+  if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
   const { notes } = req.body as { notes: string };
 
   const leaveRequest = await queryOne<{
@@ -467,6 +469,18 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const { year, user_id } = req.query as Record<string, string>;
 
+  // Check company setting: employees cannot see balance if disabled
+  if (role === 'employee') {
+    const setting = await queryOne<{ show_leave_balance_to_employee: boolean }>(
+      `SELECT show_leave_balance_to_employee FROM companies WHERE id = $1`,
+      [companyId],
+    );
+    if (setting && setting.show_leave_balance_to_employee === false) {
+      ok(res, { balances: [], year: year ? parseInt(year, 10) : new Date().getFullYear(), user_id: userId });
+      return;
+    }
+  }
+
   // Employees and store_managers always see their own balance only.
   // Managers (area_manager, hr, admin) can specify a user_id query param.
   let targetUserId: number;
@@ -518,19 +532,176 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/leave/admin — admin/hr creates leave on behalf of an employee
+// Auto-approved (hr_approved), balance deducted atomically
+// ---------------------------------------------------------------------------
+export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, userId: adminId } = req.user!;
+  const { user_id, leave_type, start_date, end_date, notes } = req.body as {
+    user_id: number;
+    leave_type: 'vacation' | 'sick';
+    start_date: string;
+    end_date: string;
+    notes?: string;
+  };
+
+  if (new Date(start_date) > new Date(end_date)) {
+    badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  // Super admin can create leave for any company — resolve effective company from the target employee
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`, [adminId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
+  // Verify target user and resolve their company
+  const targetUser = await queryOne<{ id: number; store_id: number | null; company_id: number }>(
+    isSuperAdmin
+      ? `SELECT id, store_id, company_id FROM users WHERE id = $1 AND status = 'active'`
+      : `SELECT id, store_id, company_id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+    isSuperAdmin ? [user_id] : [user_id, companyId],
+  );
+  if (!targetUser) {
+    badRequest(res, 'Dipendente non trovato in questa azienda', 'NOT_FOUND');
+    return;
+  }
+
+  const effectiveCompanyId = targetUser.company_id;
+
+  // Overlap check
+  const overlap = await queryOne<{ id: number }>(
+    `SELECT id FROM leave_requests
+     WHERE company_id = $1 AND user_id = $2
+       AND status NOT IN ('rejected')
+       AND start_date <= $3 AND end_date >= $4`,
+    [effectiveCompanyId, user_id, end_date, start_date],
+  );
+  if (overlap) {
+    badRequest(res, 'Il dipendente ha già una richiesta che si sovrappone a queste date', 'LEAVE_OVERLAP');
+    return;
+  }
+
+  const workingDays = countWorkingDays(start_date, end_date);
+  const year = new Date(start_date).getFullYear();
+  const defaultTotal = leave_type === 'vacation' ? 25 : 10;
+
+  const dbClient = await pool.connect();
+  try {
+    await dbClient.query('BEGIN');
+
+    // Auto-upsert balance row
+    await dbClient.query(
+      `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+       VALUES ($1, $2, $3, $4, $5, 0)
+       ON CONFLICT (company_id, user_id, year, leave_type) DO NOTHING`,
+      [effectiveCompanyId, user_id, year, leave_type, defaultTotal],
+    );
+
+    // Lock + check balance
+    const balRes = await dbClient.query(
+      `SELECT total_days, used_days FROM leave_balances
+       WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4 FOR UPDATE`,
+      [effectiveCompanyId, user_id, year, leave_type],
+    );
+    const bal = balRes.rows[0];
+    if (parseFloat(bal.used_days) + workingDays > parseFloat(bal.total_days)) {
+      await dbClient.query('ROLLBACK');
+      res.status(422).json({
+        success: false,
+        error: `Saldo insufficiente: rimangono ${parseFloat(bal.total_days) - parseFloat(bal.used_days)} giorni, richiesti ${workingDays}`,
+        code: 'INSUFFICIENT_BALANCE',
+      });
+      return;
+    }
+
+    // Insert leave as already hr_approved
+    const inserted = await dbClient.query(
+      `INSERT INTO leave_requests
+         (company_id, user_id, store_id, leave_type, start_date, end_date,
+          status, current_approver_role, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, 'hr_approved', NULL, $7)
+       RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 status, current_approver_role, notes, created_at`,
+      [effectiveCompanyId, user_id, targetUser.store_id, leave_type, start_date, end_date, notes ?? null],
+    );
+
+    // Record approval
+    await dbClient.query(
+      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+       VALUES ($1, $2, 'hr', 'approved', $3)`,
+      [inserted.rows[0].id, adminId, 'Approvazione amministrativa'],
+    );
+
+    // Deduct balance
+    await dbClient.query(
+      `UPDATE leave_balances SET used_days = used_days + $1, updated_at = NOW()
+       WHERE company_id = $2 AND user_id = $3 AND year = $4 AND leave_type = $5`,
+      [workingDays, effectiveCompanyId, user_id, year, leave_type],
+    );
+
+    await dbClient.query('COMMIT');
+    created(res, inserted.rows[0], 'Permesso creato e approvato');
+  } catch (err) {
+    await dbClient.query('ROLLBACK');
+    throw err;
+  } finally {
+    dbClient.release();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/leave/:id — hard delete (admin only)
+// ---------------------------------------------------------------------------
+export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const leaveId = parseInt(req.params.id, 10);
+  if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
+
+  const existing = await queryOne<{ id: number; status: string; user_id: number; leave_type: string; start_date: string; end_date: string }>(
+    `SELECT id, status, user_id, leave_type, start_date, end_date FROM leave_requests WHERE id = $1 AND company_id = $2`,
+    [leaveId, companyId],
+  );
+  if (!existing) { notFound(res, 'Richiesta non trovata'); return; }
+
+  // If already approved, reverse the balance deduction
+  if (existing.status === 'hr_approved') {
+    const workingDays = countWorkingDays(existing.start_date, existing.end_date);
+    const year = new Date(existing.start_date).getFullYear();
+    await queryOne(
+      `UPDATE leave_balances SET used_days = GREATEST(0, used_days - $1), updated_at = NOW()
+       WHERE company_id = $2 AND user_id = $3 AND year = $4 AND leave_type = $5`,
+      [workingDays, companyId, existing.user_id, year, existing.leave_type],
+    );
+  }
+
+  await queryOne(`DELETE FROM leave_approvals WHERE leave_request_id = $1`, [leaveId]);
+  await queryOne(`DELETE FROM leave_requests WHERE id = $1 AND company_id = $2`, [leaveId, companyId]);
+
+  ok(res, { id: leaveId }, 'Richiesta eliminata');
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/leave/:id/certificate — download medical certificate (managers only)
 // ---------------------------------------------------------------------------
 export const downloadCertificate = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, userId, role } = req.user!;
   const leaveId = parseInt(req.params.id, 10);
+  if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
+  // Employees can only download their own certificate; managers can download any
+  const isEmployee = role === 'employee';
   const row = await queryOne<{
     medical_certificate_name: string | null;
     medical_certificate_data: Buffer | null;
   }>(
-    `SELECT medical_certificate_name, medical_certificate_data
-     FROM leave_requests WHERE id = $1 AND company_id = $2`,
-    [leaveId, companyId],
+    isEmployee
+      ? `SELECT medical_certificate_name, medical_certificate_data
+         FROM leave_requests WHERE id = $1 AND company_id = $2 AND user_id = $3`
+      : `SELECT medical_certificate_name, medical_certificate_data
+         FROM leave_requests WHERE id = $1 AND company_id = $2`,
+    isEmployee ? [leaveId, companyId, userId] : [leaveId, companyId],
   );
 
   if (!row) { notFound(res, 'Richiesta non trovata'); return; }

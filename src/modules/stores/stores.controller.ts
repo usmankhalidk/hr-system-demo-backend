@@ -6,6 +6,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 interface StoreRow {
   id: number;
   company_id: number;
+  company_name?: string;
   name: string;
   code: string;
   address: string | null;
@@ -17,15 +18,45 @@ interface StoreRow {
 }
 
 // GET /api/stores — scoped by role
+// Super Admin: all stores across all companies (optional ?target_company_id=N filter)
 // Admin/HR: all stores in their company
 // Area Manager: stores where they are supervisor (derived from supervised employees)
 // Store Manager: their own store only
 export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
 
+  // Check super admin status
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`,
+    [userId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
   let stores: StoreRow[];
 
-  if (role === 'admin' || role === 'hr') {
+  if (isSuperAdmin) {
+    // Super admin sees stores across all companies, with company name attached
+    const { target_company_id } = req.query as Record<string, string>;
+    if (target_company_id) {
+      const targetId = parseInt(target_company_id, 10);
+      stores = await query<StoreRow>(`
+        SELECT s.*, c.name AS company_name,
+          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+        FROM stores s
+        JOIN companies c ON c.id = s.company_id
+        WHERE s.company_id = $1
+        ORDER BY s.name
+      `, [targetId]);
+    } else {
+      stores = await query<StoreRow>(`
+        SELECT s.*, c.name AS company_name,
+          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+        FROM stores s
+        JOIN companies c ON c.id = s.company_id
+        ORDER BY c.name, s.name
+      `, []);
+    }
+  } else if (role === 'admin' || role === 'hr') {
     // Admin/HR see all stores (including inactive) to manage them
     stores = await query<StoreRow>(`
       SELECT s.*, (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
@@ -55,6 +86,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
 export const getStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, storeId: userStoreId } = req.user!;
   const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
 
   const store = await queryOne<StoreRow>(
     `SELECT * FROM stores WHERE id = $1 AND company_id = $2`,
@@ -93,6 +125,7 @@ export const createStore = asyncHandler(async (req: Request, res: Response) => {
 export const updateStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
   const { name, code, address, cap, max_staff } = req.body;
 
   // Check code uniqueness (excluding current store)
@@ -115,6 +148,7 @@ export const updateStore = asyncHandler(async (req: Request, res: Response) => {
 export const deactivateStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
 
   const store = await queryOne<StoreRow>(
     `UPDATE stores SET is_active = false WHERE id = $1 AND company_id = $2 RETURNING *`,
@@ -129,6 +163,7 @@ export const deactivateStore = asyncHandler(async (req: Request, res: Response) 
 export const deleteStorePermanent = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
 
   // Verify store exists in company
   const store = await queryOne<StoreRow>(
@@ -155,6 +190,7 @@ export const deleteStorePermanent = asyncHandler(async (req: Request, res: Respo
 export const activateStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato o già attivo'); return; }
 
   const store = await queryOne<StoreRow>(
     `UPDATE stores SET is_active = true WHERE id = $1 AND company_id = $2 AND is_active = false RETURNING *`,

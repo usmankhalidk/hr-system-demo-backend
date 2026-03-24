@@ -13,7 +13,7 @@ const LIST_FIELDS = `
   u.department, u.hire_date, u.contract_end_date,
   u.working_type, u.weekly_hours, u.status,
   u.first_aid_flag, u.marital_status,
-  u.termination_date, u.created_at,
+  u.termination_date, u.termination_type, u.created_at,
   s.name AS store_name,
   CONCAT(sup.name, ' ', sup.surname) AS supervisor_name
 `;
@@ -91,11 +91,14 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   );
   const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
 
-  const targetCompanyId = target_company_id ? parseInt(target_company_id, 10) : null;
-  const effectiveCompanyId = (isSuperAdmin && targetCompanyId) ? targetCompanyId : companyId;
+  // Only super admin gets cross-company visibility
+  const hasCrossCompanyAccess = isSuperAdmin;
 
-  // Super admin with no target company: query all companies (no company filter)
-  const crossCompany = isSuperAdmin && !targetCompanyId;
+  const targetCompanyId = target_company_id ? parseInt(target_company_id, 10) : null;
+  const effectiveCompanyId = (hasCrossCompanyAccess && targetCompanyId) ? targetCompanyId : companyId;
+
+  // Cross-company with no target: query all companies (no company filter)
+  const crossCompany = hasCrossCompanyAccess && !targetCompanyId;
 
   let where: string;
   let params: any[];
@@ -103,7 +106,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   if (crossCompany) {
     where = '1=1';
     params = [];
-  } else if (isSuperAdmin && targetCompanyId) {
+  } else if (hasCrossCompanyAccess && targetCompanyId) {
     where = `u.company_id = $1`;
     params = [effectiveCompanyId];
   } else {
@@ -147,8 +150,9 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   const offset = (pageNum - 1) * limitNum;
 
   const allParams = [...params, ...extraParams];
-  const selectFields = crossCompany ? LIST_FIELDS_WITH_COMPANY : LIST_FIELDS;
-  const joins = crossCompany ? BASE_JOINS_WITH_COMPANY : BASE_JOINS;
+  const needsCompany = hasCrossCompanyAccess && !targetCompanyId;
+  const selectFields = needsCompany ? LIST_FIELDS_WITH_COMPANY : LIST_FIELDS;
+  const joins = needsCompany ? BASE_JOINS_WITH_COMPANY : BASE_JOINS;
 
   const countResult = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count ${joins} WHERE ${where}${extraWhere}`,
@@ -168,6 +172,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
 export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
   // Check super admin status
   const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
@@ -176,17 +181,20 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   );
   const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
 
+  // Only super admin has cross-company visibility
+  const hasCrossCompanyAccess = isSuperAdmin;
+
   // Determine if caller can see sensitive fields
-  const canSeeSensitive = role === 'admin' || role === 'hr' || userId === empId;
+  const canSeeSensitive = role === 'admin' || role === 'hr' || role === 'area_manager' || userId === empId;
 
   const fields = canSeeSensitive ? DETAIL_FIELDS : LIST_FIELDS;
 
-  // Super admins can view employees across companies
+  // Cross-company roles can view employees across companies
   const employee = await queryOne<Record<string, any>>(
-    isSuperAdmin
+    hasCrossCompanyAccess
       ? `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1`
       : `SELECT ${fields} ${BASE_JOINS} WHERE u.id = $1 AND u.company_id = $2`,
-    isSuperAdmin ? [empId] : [empId, companyId],
+    hasCrossCompanyAccess ? [empId] : [empId, companyId],
   );
 
   if (!employee) {
@@ -194,18 +202,14 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Super admins bypass all role-based access checks
-  if (!isSuperAdmin) {
+  // Cross-company roles bypass company/store/supervisor restrictions
+  if (!hasCrossCompanyAccess) {
     // Access control: employee can only see themselves
     if (role === 'employee' && userId !== empId) {
       forbidden(res, 'Accesso negato'); return;
     }
     // store_manager can only see employees in their store
     if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
-      forbidden(res, 'Accesso negato'); return;
-    }
-    // area_manager can only see their direct reports
-    if (role === 'area_manager' && employee.supervisor_id !== userId) {
       forbidden(res, 'Accesso negato'); return;
     }
   }
@@ -249,13 +253,13 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       role, unique_id, department, hire_date, contract_end_date,
       working_type, weekly_hours, personal_email, date_of_birth, nationality,
       gender, iban, address, cap, first_aid_flag, marital_status, status,
-      contract_type, probation_months
+      contract_type, probation_months, termination_type
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
-        contract_type, probation_months`,
+        contract_type, probation_months, termination_type`,
     [
       companyId,
       body.store_id ?? null,
@@ -283,6 +287,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       'active',
       body.contract_type ?? null,
       body.probation_months ?? null,
+      body.termination_type ?? null,
     ],
   );
 
@@ -293,6 +298,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 export const updateEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const body = req.body as Record<string, any>;
 
   // Check unique_id conflict (if provided and changed)
@@ -315,12 +321,13 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       personal_email = $12, date_of_birth = $13, nationality = $14,
       gender = $15, iban = $16, address = $17, cap = $18,
       first_aid_flag = $19, marital_status = $20,
-      contract_type = $21, probation_months = $22, updated_at = NOW()
-    WHERE id = $23 AND company_id = $24
+      contract_type = $21, probation_months = $22,
+      termination_date = $23, termination_type = $24, updated_at = NOW()
+    WHERE id = $25 AND company_id = $26
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
-        contract_type, probation_months`,
+        contract_type, probation_months, termination_date, termination_type`,
     [
       body.store_id ?? null,
       body.supervisor_id ?? null,
@@ -344,6 +351,8 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.marital_status ?? null,
       body.contract_type ?? null,
       body.probation_months ?? null,
+      body.termination_date ?? null,
+      body.termination_type ?? null,
       empId,
       companyId,
     ],
@@ -360,6 +369,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 export const deactivateEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
   const employee = await queryOne(
     `UPDATE users SET status = 'inactive', termination_date = CURRENT_DATE, updated_at = NOW()
@@ -379,6 +389,7 @@ export const deactivateEmployee = asyncHandler(async (req: Request, res: Respons
 export const activateEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
   const employee = await queryOne(
     `UPDATE users SET status = 'active', termination_date = NULL, updated_at = NOW()

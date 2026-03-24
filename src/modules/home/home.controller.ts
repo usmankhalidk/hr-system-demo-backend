@@ -179,7 +179,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
     }
 
     case 'employee': {
-      const [profile, nextShiftRow, leaveBalances, birthdayRow, companySettings] = await Promise.all([
+      const [profile, nextShiftRow, leaveBalances, birthdayRow, companySettings, turniPermission] = await Promise.all([
         queryOne(
           `SELECT u.id, u.name, u.surname, u.role, u.department,
                   s.name AS store_name
@@ -221,6 +221,11 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           `SELECT show_leave_balance_to_employee FROM companies WHERE id = $1`,
           [companyId]
         ),
+        queryOne<{ is_enabled: boolean }>(
+          `SELECT is_enabled FROM role_module_permissions
+           WHERE company_id = $1 AND role = 'employee' AND module_name = 'turni'`,
+          [companyId]
+        ),
       ]);
       ok(res, {
         profile,
@@ -233,6 +238,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         })),
         isBirthday: birthdayRow?.is_birthday ?? false,
         showLeaveBalance: companySettings?.show_leave_balance_to_employee ?? true,
+        showShifts: turniPermission?.is_enabled ?? true,
       });
       break;
     }

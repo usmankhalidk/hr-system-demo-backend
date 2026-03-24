@@ -16,9 +16,10 @@ const storeSchema = z.object({
 });
 
 const allManagers = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
+const storeReaders = ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'] as const;
 
-router.get('/', authenticate, requireRole(...allManagers), enforceCompany, listStores);
-router.get('/:id', authenticate, requireRole(...allManagers), enforceCompany, getStore);
+router.get('/', authenticate, requireRole(...storeReaders), enforceCompany, listStores);
+router.get('/:id', authenticate, requireRole(...storeReaders), enforceCompany, getStore);
 router.post('/', authenticate, requireRole('admin'), enforceCompany, validate(storeSchema), auditLog('store'), createStore);
 router.put('/:id', authenticate, requireRole('admin'), enforceCompany, validate(storeSchema), auditLog('store'), updateStore);
 router.delete('/:id/permanent', authenticate, requireRole('admin'), enforceCompany, auditLog('store'), deleteStorePermanent);

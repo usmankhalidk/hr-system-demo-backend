@@ -32,6 +32,7 @@ async function checkSuperAdmin(userId: number): Promise<boolean> {
 export const listTrainings = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   if (role === 'employee' && userId !== empId) { forbidden(res, 'Accesso negato'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
   const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
@@ -47,6 +48,7 @@ export const listTrainings = asyncHandler(async (req: Request, res: Response) =>
 export const createTraining = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const { training_type, start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
   const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
@@ -70,6 +72,7 @@ export const updateTraining = asyncHandler(async (req: Request, res: Response) =
   const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const trainingId = parseInt(req.params.trainingId, 10);
+  if (isNaN(empId) || isNaN(trainingId)) { notFound(res, 'Record formazione non trovato'); return; }
   const { training_type, start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
   const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
@@ -88,6 +91,7 @@ export const deleteTraining = asyncHandler(async (req: Request, res: Response) =
   const { companyId, userId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   const trainingId = parseInt(req.params.trainingId, 10);
+  if (isNaN(empId) || isNaN(trainingId)) { notFound(res, 'Record formazione non trovato'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
   const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }

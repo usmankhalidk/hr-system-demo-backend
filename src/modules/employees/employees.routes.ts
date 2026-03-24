@@ -39,7 +39,9 @@ const createEmployeeSchema = z.object({
   first_aid_flag: z.boolean().optional(),
   marital_status: z.string().max(50).optional().nullable(),
   contract_type: z.string().max(100).optional().nullable(),
-  probation_months: z.number().int().min(0).optional().nullable(),
+  probation_months: z.number().int().min(0).max(60).optional().nullable(),
+  termination_date: z.string().optional().nullable(),
+  termination_type: z.string().max(100).optional().nullable(),
   password: z.string().min(8).optional(), // initial password
 });
 

@@ -2,14 +2,15 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { checkin, listAttendanceEvents, syncEvents, getAnomalies } from './attendance.controller';
+import { checkin, createManualEvent, listAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent } from './attendance.controller';
 
 const router = Router();
 
 const checkinSchema = z.object({
   qr_token:   z.string().min(1, 'Token QR obbligatorio'),
   event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
-  user_id:    z.number().int().positive('ID dipendente obbligatorio'),
+  user_id:    z.number().int().positive().optional(),
+  unique_id:  z.string().optional(),
   notes:      z.string().max(500).optional(),
 });
 
@@ -35,13 +36,35 @@ router.get(
   listAttendanceEvents,
 );
 
+const manualEventSchema = z.object({
+  user_id:    z.number().int().positive(),
+  store_id:   z.number().int().positive(),
+  event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
+  event_time: z.string().min(1),
+  notes:      z.string().max(500).optional(),
+});
+
+// POST /api/attendance — create manual entry (admin/hr only)
+router.post(
+  '/',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  validate(manualEventSchema),
+  createManualEvent,
+);
+
 const syncSchema = z.object({
   events: z.array(z.object({
     event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
-    user_id:    z.number().int().positive(),
+    user_id:    z.number().int().positive().optional(),
+    unique_id:  z.string().min(1).optional(),
     event_time: z.string().datetime(),
     notes:      z.string().max(500).optional(),
-  })).min(1).max(500),
+  }).refine(
+    (e) => e.user_id != null || (e.unique_id != null && e.unique_id.length > 0),
+    { message: 'user_id o unique_id obbligatorio' },
+  )).min(1).max(500),
 });
 
 // POST /api/attendance/sync — store_terminal only
@@ -61,6 +84,24 @@ router.get(
   requireRole(...managementRoles),
   enforceCompany,
   getAnomalies,
+);
+
+// PUT /api/attendance/:id — admin or hr only
+router.put(
+  '/:id',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  updateAttendanceEvent,
+);
+
+// DELETE /api/attendance/:id — admin only
+router.delete(
+  '/:id',
+  authenticate,
+  requireRole('admin'),
+  enforceCompany,
+  deleteAttendanceEvent,
 );
 
 export default router;

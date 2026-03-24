@@ -104,6 +104,7 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
 
 // GET /api/permissions/my — Returns permission map for current user's role
 // Used by AuthContext on login to load permission map
+// Active modules default to true unless explicitly disabled in DB
 export const getMyPermissions = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role } = req.user!;
 
@@ -113,7 +114,11 @@ export const getMyPermissions = asyncHandler(async (req: Request, res: Response)
     [companyId, role]
   );
 
+  // Default all active modules to enabled — DB rows override the default
   const permissions: Record<string, boolean> = {};
+  for (const mod of ACTIVE_MODULES) {
+    permissions[mod] = true;
+  }
   for (const row of rows) {
     permissions[row.module_name] = row.is_enabled;
   }

@@ -54,15 +54,14 @@ describe('GET /api/employees', () => {
     expect(res.body.data.total).toBeGreaterThanOrEqual(5);
   });
 
-  it('area_manager sees supervised users (romaManager)', async () => {
+  it('area_manager sees all employees (cross-company access)', async () => {
     const token = await login('area@acme-test.com');
     const res = await request.get('/api/employees').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    // area_manager sees users where supervisor_id = areaManager.id → romaManager
+    // area_manager has cross-company access — sees all employees including admin
     const emails = res.body.data.employees.map((e: any) => e.email);
     expect(emails).toContain('manager.roma@acme-test.com');
-    // Should NOT see admin or hr who have no supervisor
-    expect(emails).not.toContain('admin@acme-test.com');
+    expect(emails).toContain('admin@acme-test.com');
   });
 
   it('store_manager sees only employees in their store', async () => {

@@ -48,7 +48,8 @@ function toMins(t: string): number {
 }
 
 function shiftCrossValidate(data: Record<string, any>, ctx: z.RefinementCtx): void {
-  const { start_time, end_time, break_start, break_end, is_split, split_start2, split_end2 } = data;
+  const { start_time, end_time, break_start, break_end, break_type, break_minutes, is_split, split_start2, split_end2 } = data;
+  const isFlexible = break_type === 'flexible';
 
   // end > start
   if (start_time && end_time) {
@@ -57,27 +58,33 @@ function shiftCrossValidate(data: Record<string, any>, ctx: z.RefinementCtx): vo
     }
   }
 
-  // break: both or neither
-  const hasBS = break_start && break_start.length > 0;
-  const hasBE = break_end   && break_end.length   > 0;
-  if (hasBS && !hasBE) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa è obbligatorio" });
-  }
-  if (!hasBS && hasBE) {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: "L'orario di inizio pausa è obbligatorio" });
-  }
-
-  // break order and bounds
-  if (hasBS && hasBE && start_time && end_time) {
-    const sM  = toMins(start_time);
-    const eM  = toMins(end_time);
-    const bsM = toMins(break_start as string);
-    const beM = toMins(break_end   as string);
-    if (beM <= bsM) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa deve essere successivo all'inizio" });
+  if (isFlexible) {
+    // Flexible break: only validate break_minutes
+    if (break_minutes != null && (break_minutes <= 0 || break_minutes > 480)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_minutes'], message: 'La durata della pausa deve essere tra 1 e 480 minuti' });
     }
-    if (bsM < sM || beM > eM) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: 'La pausa deve rientrare nella finestra del turno' });
+  } else {
+    // Fixed break: both or neither
+    const hasBS = break_start && break_start.length > 0;
+    const hasBE = break_end   && break_end.length   > 0;
+    if (hasBS && !hasBE) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa è obbligatorio" });
+    }
+    if (!hasBS && hasBE) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: "L'orario di inizio pausa è obbligatorio" });
+    }
+    // break order and bounds
+    if (hasBS && hasBE && start_time && end_time) {
+      const sM  = toMins(start_time);
+      const eM  = toMins(end_time);
+      const bsM = toMins(break_start as string);
+      const beM = toMins(break_end   as string);
+      if (beM <= bsM) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa deve essere successivo all'inizio" });
+      }
+      if (bsM < sM || beM > eM) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: 'La pausa deve rientrare nella finestra del turno' });
+      }
     }
   }
 
@@ -106,18 +113,20 @@ function shiftCrossValidate(data: Record<string, any>, ctx: z.RefinementCtx): vo
 }
 
 const baseShiftObject = z.object({
-  user_id:      z.number().int().positive(),
-  store_id:     z.number().int().positive(),
-  date:         z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data non valida (YYYY-MM-DD)'),
-  start_time:   z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
-  end_time:     z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
-  break_start:  z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
-  break_end:    z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
-  is_split:     z.boolean().optional(),
-  split_start2: z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
-  split_end2:   z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
-  notes:        z.string().max(500).optional().nullable(),
-  status:       z.enum(['scheduled','confirmed','cancelled']).optional(),
+  user_id:       z.number().int().positive(),
+  store_id:      z.number().int().positive(),
+  date:          z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data non valida (YYYY-MM-DD)'),
+  start_time:    z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
+  end_time:      z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
+  break_type:    z.enum(['fixed', 'flexible']).optional(),
+  break_start:   z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
+  break_end:     z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
+  break_minutes: z.number().int().min(1).max(480).optional().nullable(),
+  is_split:      z.boolean().optional(),
+  split_start2:  z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
+  split_end2:    z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
+  notes:         z.string().max(500).optional().nullable(),
+  status:        z.enum(['scheduled','confirmed','cancelled']).optional(),
 });
 
 const createShiftSchema = baseShiftObject.superRefine(shiftCrossValidate);

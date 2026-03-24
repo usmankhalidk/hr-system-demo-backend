@@ -82,16 +82,21 @@ function parseIsoWeek(week: string): string {
 // ---------------------------------------------------------------------------
 // Helper: compute shift_hours as decimal hours
 // (end_time - start_time) - break_duration
+// For flexible breaks: use break_minutes/60; for fixed: use break_end - break_start
 // ---------------------------------------------------------------------------
 function shiftHoursExpr(): string {
   return `
     ROUND(
       GREATEST(0,
         EXTRACT(EPOCH FROM (s.end_time - s.start_time)) / 3600.0
-        - COALESCE(
-            EXTRACT(EPOCH FROM (s.break_end - s.break_start)) / 3600.0,
-            0
-          )
+        - CASE
+            WHEN s.break_type = 'flexible' AND s.break_minutes IS NOT NULL
+              THEN s.break_minutes / 60.0
+            ELSE COALESCE(
+              EXTRACT(EPOCH FROM (s.break_end - s.break_start)) / 3600.0,
+              0
+            )
+          END
         + CASE WHEN s.is_split AND s.split_start2 IS NOT NULL AND s.split_end2 IS NOT NULL
             THEN EXTRACT(EPOCH FROM (s.split_end2 - s.split_start2)) / 3600.0
             ELSE 0
@@ -104,7 +109,8 @@ function shiftHoursExpr(): string {
 
 const SHIFT_FIELDS = `
   s.id, s.company_id, s.store_id, s.user_id, s.date,
-  s.start_time, s.end_time, s.break_start, s.break_end, -- Phase 2: break_type ('fixed'|'flexible') + break_minutes for flexible break duration
+  s.start_time, s.end_time, s.break_start, s.break_end,
+  s.break_type, s.break_minutes,
   s.is_split, s.split_start2, s.split_end2,
   s.status, s.notes, s.created_by, s.created_at, s.updated_at,
   st.name AS store_name,
@@ -244,8 +250,23 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     forbidden(res, 'Puoi creare turni solo per il tuo negozio'); return;
   }
 
+  // Super admin can create shifts for any company — resolve effective company from the target employee
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`, [callerId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
+  const targetUser = await queryOne<{ id: number; company_id: number }>(
+    isSuperAdmin
+      ? `SELECT id, company_id FROM users WHERE id = $1 AND status = 'active'`
+      : `SELECT id, company_id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+    isSuperAdmin ? [body.user_id] : [body.user_id, companyId],
+  );
+  if (!targetUser) { notFound(res, 'Dipendente non trovato'); return; }
+
+  const effectiveCompanyId = targetUser.company_id;
+
   // Overlap detection: check new main block AND new split block (if any)
-  // against existing main blocks AND existing split second blocks
   const overlapMain = await queryOne<{ id: number }>(
     `SELECT id FROM shifts
      WHERE company_id = $1
@@ -257,7 +278,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
          OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
              AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
        )`,
-    [companyId, body.user_id, body.date, body.end_time, body.start_time],
+    [effectiveCompanyId, body.user_id, body.date, body.end_time, body.start_time],
   );
 
   let overlapSplit = null;
@@ -273,7 +294,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
          )`,
-      [companyId, body.user_id, body.date, body.split_end2, body.split_start2],
+      [effectiveCompanyId, body.user_id, body.date, body.split_end2, body.split_start2],
     );
   }
 
@@ -282,22 +303,26 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const isFlexible = body.break_type === 'flexible';
   const shift = await queryOne(
     `INSERT INTO shifts (
        company_id, store_id, user_id, date, start_time, end_time,
-       break_start, break_end, is_split, split_start2, split_end2,
+       break_start, break_end, break_type, break_minutes,
+       is_split, split_start2, split_end2,
        notes, status, created_by
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      RETURNING *`,
     [
-      companyId,
+      effectiveCompanyId,
       body.store_id,
       body.user_id,
       body.date,
       body.start_time,
       body.end_time,
-      body.break_start ?? null,
-      body.break_end ?? null,
+      isFlexible ? null : (body.break_start ?? null),
+      isFlexible ? null : (body.break_end ?? null),
+      body.break_type ?? 'fixed',
+      isFlexible ? (body.break_minutes ?? null) : null,
       body.is_split ?? false,
       body.split_start2 ?? null,
       body.split_end2 ?? null,
@@ -316,6 +341,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
 export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, storeId: callerStoreId } = req.user!;
   const shiftId = parseInt(req.params.id, 10);
+  if (isNaN(shiftId)) { notFound(res, 'Turno non trovato'); return; }
   const body = req.body as Record<string, any>;
 
   // Fetch existing shift
@@ -378,22 +404,25 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
+  const isFlexible = body.break_type === 'flexible';
   const shift = await queryOne(
     `UPDATE shifts SET
-       store_id    = COALESCE($1, store_id),
-       user_id     = COALESCE($2, user_id),
-       date        = COALESCE($3, date),
-       start_time  = COALESCE($4::TIME, start_time),
-       end_time    = COALESCE($5::TIME, end_time),
-       break_start = $6,
-       break_end   = $7,
-       is_split    = COALESCE($8, is_split),
-       split_start2= $9,
-       split_end2  = $10,
-       notes       = $11,
-       status      = COALESCE($12, status),
-       updated_at  = NOW()
-     WHERE id = $13 AND company_id = $14
+       store_id      = COALESCE($1, store_id),
+       user_id       = COALESCE($2, user_id),
+       date          = COALESCE($3, date),
+       start_time    = COALESCE($4::TIME, start_time),
+       end_time      = COALESCE($5::TIME, end_time),
+       break_start   = $6,
+       break_end     = $7,
+       break_type    = COALESCE($8, break_type),
+       break_minutes = $9,
+       is_split      = COALESCE($10, is_split),
+       split_start2  = $11,
+       split_end2    = $12,
+       notes         = $13,
+       status        = COALESCE($14, status),
+       updated_at    = NOW()
+     WHERE id = $15 AND company_id = $16
      RETURNING *`,
     [
       body.store_id ?? null,
@@ -401,8 +430,10 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
       body.date ?? null,
       body.start_time ?? null,
       body.end_time ?? null,
-      body.break_start ?? null,
-      body.break_end ?? null,
+      body.break_type !== undefined ? (isFlexible ? null : (body.break_start ?? null)) : (body.break_start ?? null),
+      body.break_type !== undefined ? (isFlexible ? null : (body.break_end ?? null)) : (body.break_end ?? null),
+      body.break_type ?? null,
+      body.break_type !== undefined ? (isFlexible ? (body.break_minutes ?? null) : null) : null,
       body.is_split ?? null,
       body.split_start2 ?? null,
       body.split_end2 ?? null,
@@ -423,6 +454,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, storeId: callerStoreId } = req.user!;
   const shiftId = parseInt(req.params.id, 10);
+  if (isNaN(shiftId)) { notFound(res, 'Turno non trovato'); return; }
 
   const existing = await queryOne<{ id: number; store_id: number }>(
     `SELECT id, store_id FROM shifts WHERE id = $1 AND company_id = $2`,
@@ -570,6 +602,7 @@ export const createTemplate = asyncHandler(async (req: Request, res: Response) =
 export const deleteTemplate = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const templateId = parseInt(req.params.id, 10);
+  if (isNaN(templateId)) { notFound(res, 'Template non trovato'); return; }
 
   const template = await queryOne(
     `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 RETURNING id`,

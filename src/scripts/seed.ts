@@ -15,12 +15,14 @@ export async function migrate() {
     const migrationsDir = path.join(__dirname, '../../../database/migrations');
     for (const file of [
       '001_initial_schema.sql',
-      '002_phase1_schema.sql',           // was missing
+      '002_phase1_schema.sql',
       '003_phase2_shifts.sql',
       '004_phase2_attendance.sql',
       '005_phase2_leave.sql',
       '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',  // new
+      '007_phase1_client_feedback.sql',
+      '008_termination_type.sql',
+      '009_flexible_break.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -76,12 +78,14 @@ export async function seed() {
     // 002 is for upgrading legacy deployments — not needed on a fresh seed
     for (const file of [
       '001_initial_schema.sql',
-      '002_phase1_schema.sql',           // was missing
+      '002_phase1_schema.sql',
       '003_phase2_shifts.sql',
       '004_phase2_attendance.sql',
       '005_phase2_leave.sql',
       '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',  // new
+      '007_phase1_client_feedback.sql',
+      '008_termination_type.sql',
+      '009_flexible_break.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);

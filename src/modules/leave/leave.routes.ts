@@ -5,6 +5,8 @@ import { authenticate, requireRole, enforceCompany } from '../../middleware/auth
 import { validate } from '../../middleware/validate';
 import {
   submitLeave,
+  createLeaveAdmin,
+  deleteLeaveRequest,
   listLeaveRequests,
   getPendingApprovals,
   approveLeave,
@@ -42,6 +44,14 @@ const rejectSchema = z.object({
 
 const allRoles      = ['admin', 'hr', 'area_manager', 'store_manager', 'employee'] as const;
 const managersRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
+
+const adminCreateSchema = z.object({
+  user_id:    z.number().int().positive(),
+  leave_type: z.enum(['vacation', 'sick']),
+  start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
+  end_date:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
+  notes:      z.string().max(1000).optional(),
+});
 
 // NOTE: /pending and /balance are declared BEFORE /:id routes to avoid
 // Express matching the literal strings "pending" and "balance" as :id params.
@@ -97,12 +107,32 @@ router.get(
 );
 
 // GET /api/leave/:id/certificate — download medical certificate
+// Managers can download any certificate; employees can download their own
 router.get(
   '/:id/certificate',
   authenticate,
-  requireRole(...managersRoles),
+  requireRole(...allRoles),
   enforceCompany,
   downloadCertificate,
+);
+
+// POST /api/leave/admin — admin/hr creates leave on behalf (auto-approved)
+router.post(
+  '/admin',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  validate(adminCreateSchema),
+  createLeaveAdmin,
+);
+
+// DELETE /api/leave/:id — hard delete (admin only)
+router.delete(
+  '/:id',
+  authenticate,
+  requireRole('admin'),
+  enforceCompany,
+  deleteLeaveRequest,
 );
 
 // PUT /api/leave/:id/approve

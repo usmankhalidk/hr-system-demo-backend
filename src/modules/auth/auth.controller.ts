@@ -36,7 +36,8 @@ async function recordLoginAttempt(email: string, ip: string): Promise<void> {
 }
 
 export const login = asyncHandler(async (req: Request, res: Response) => {
-  const { email, password, rememberMe } = req.body as { email: string; password: string; rememberMe?: boolean };
+  const { email, password, remember_me, rememberMe } = req.body as { email: string; password: string; remember_me?: boolean; rememberMe?: boolean };
+  const isRememberMe = remember_me ?? rememberMe;
   const ip = (req.headers['x-forwarded-for'] as string) || req.socket.remoteAddress || 'unknown';
 
   // Rate limiting check
@@ -84,7 +85,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       storeId: user.store_id,
       supervisorId: user.supervisor_id,
     },
-    rememberMe === true
+    isRememberMe === true
   );
 
   ok(res, {
@@ -99,6 +100,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       companyId: user.company_id,
       storeId: user.store_id,
       supervisorId: user.supervisor_id,
+      isSuperAdmin: user.is_super_admin,
     },
   });
 });
@@ -143,24 +145,25 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
 });
 
 export const changePassword = asyncHandler(async (req: Request, res: Response) => {
-  const { currentPassword, newPassword } = req.body as { currentPassword: string; newPassword: string };
+  // Axios interceptor sends snake_case; Zod schema validated as snake_case
+  const { current_password, new_password } = req.body as { current_password: string; new_password: string };
 
   const user = await queryOne<{ password_hash: string; company_id: number }>(
     `SELECT password_hash, company_id FROM users WHERE id = $1`,
     [req.user!.userId]
   );
 
-  if (!user || !(await bcrypt.compare(currentPassword, user.password_hash))) {
+  if (!user || !(await bcrypt.compare(current_password, user.password_hash))) {
     unauthorized(res, 'Password attuale non corretta', 'INVALID_CURRENT_PASSWORD');
     return;
   }
 
-  if (newPassword.length < 8) {
+  if (new_password.length < 8) {
     badRequest(res, 'La nuova password deve essere di almeno 8 caratteri', 'PASSWORD_TOO_SHORT');
     return;
   }
 
-  const newHash = await bcrypt.hash(newPassword, 12);
+  const newHash = await bcrypt.hash(new_password, 12);
   await query(`UPDATE users SET password_hash = $1, updated_at = NOW() WHERE id = $2`, [newHash, req.user!.userId]);
 
   // Return new token so client stays logged in

@@ -118,9 +118,10 @@ describe('PUT /api/auth/password', () => {
     const loginRes = await request.post('/api/auth/login').send({ email: 'employee1@acme-test.com', password: 'password123' });
     const token = loginRes.body.data.token;
 
+    // Tests send snake_case (matching what the Axios interceptor sends in the real frontend)
     const res = await request.put('/api/auth/password')
       .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: 'password123', newPassword: 'newpassword456' });
+      .send({ current_password: 'password123', new_password: 'newpassword456' });
     expect(res.status).toBe(200);
     expect(res.body.data.token).toBeDefined();
 
@@ -128,7 +129,7 @@ describe('PUT /api/auth/password', () => {
     const newToken = res.body.data.token;
     await request.put('/api/auth/password')
       .set('Authorization', `Bearer ${newToken}`)
-      .send({ currentPassword: 'newpassword456', newPassword: 'password123' });
+      .send({ current_password: 'newpassword456', new_password: 'password123' });
   });
 
   it('returns 401 for wrong current password', async () => {
@@ -137,7 +138,7 @@ describe('PUT /api/auth/password', () => {
 
     const res = await request.put('/api/auth/password')
       .set('Authorization', `Bearer ${token}`)
-      .send({ currentPassword: 'wrongcurrent', newPassword: 'newpassword456' });
+      .send({ current_password: 'wrongcurrent', new_password: 'newpassword456' });
     expect(res.status).toBe(401);
     expect(res.body.code).toBe('INVALID_CURRENT_PASSWORD');
   });

@@ -46,11 +46,18 @@ describe('GET /api/companies', () => {
     expect(company.employee_count).toBeGreaterThanOrEqual(1);
   });
 
-  it('hr → 403', async () => {
+  it('hr → 200 (hr can list companies for cross-company employee access)', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request.get('/api/companies').set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('area_manager → 200 (area_manager can list companies for cross-company employee access)', async () => {
+    const token = await loginAs('area@acme-test.com');
+    const res = await request.get('/api/companies').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
   });
 
   it('unauthenticated → 401', async () => {

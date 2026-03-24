@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { pool, query, queryOne } from '../../config/database';
-import { ok, created, badRequest, conflict, forbidden } from '../../utils/response';
+import { ok, created, badRequest, conflict, forbidden, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 
@@ -129,7 +129,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // 4. Find active shift for this user (optional — link if found)
+  // 4. Find active shift for this user — required for check-in; optional for other events
   const today = new Date().toISOString().split('T')[0];
   const currentShift = await queryOne<{ id: number }>(
     `SELECT id FROM shifts
@@ -138,6 +138,12 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
      ORDER BY start_time LIMIT 1`,
     [companyId, user_id, today, payload.storeId],
   );
+
+  // Reject check-in if no shift scheduled for today at this store
+  if (event_type === 'checkin' && !currentShift) {
+    badRequest(res, 'Nessun turno programmato per oggi in questo negozio', 'NO_ACTIVE_SHIFT');
+    return;
+  }
 
   // 5 & 6: Use transaction — mark nonce used AND insert event atomically
   const client = await pool.connect();
@@ -173,6 +179,78 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   }
 
   created(res, event, 'Evento registrato');
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/attendance  — manual entry (admin/hr only)
+// body: { userId, storeId, eventType, eventTime, notes? }
+// ---------------------------------------------------------------------------
+export const createManualEvent = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, userId: callerId } = req.user!;
+  const { user_id, store_id, event_type, event_time, notes } = req.body as {
+    user_id: number;
+    store_id: number;
+    event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
+    event_time: string;
+    notes?: string;
+  };
+
+  // Super admin can create entries for any company — resolve effective company from the target employee
+  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
+    `SELECT is_super_admin FROM users WHERE id = $1`, [callerId],
+  );
+  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+
+  // Resolve the employee and their company
+  const targetUser = await queryOne<{ id: number; company_id: number }>(
+    isSuperAdmin
+      ? `SELECT id, company_id FROM users WHERE id = $1 AND status = 'active'`
+      : `SELECT id, company_id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+    isSuperAdmin ? [user_id] : [user_id, companyId],
+  );
+  if (!targetUser) {
+    badRequest(res, 'Dipendente non trovato in questa azienda', 'NOT_FOUND');
+    return;
+  }
+
+  // Use the employee's actual company (matters for super admin cross-company)
+  const effectiveCompanyId = targetUser.company_id;
+
+  // Verify store belongs to the same company as the employee
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = $2`,
+    [store_id, effectiveCompanyId],
+  );
+  if (!store) {
+    badRequest(res, 'Negozio non trovato in questa azienda', 'NOT_FOUND');
+    return;
+  }
+
+  const ts = new Date(event_time);
+  if (isNaN(ts.getTime())) {
+    badRequest(res, 'Data/ora non valida', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Try to link to an existing shift for that user/store/date
+  const dateStr = ts.toISOString().split('T')[0];
+  const linkedShift = await queryOne<{ id: number }>(
+    `SELECT id FROM shifts
+     WHERE company_id = $1 AND user_id = $2 AND date = $3
+       AND store_id = $4 AND status != 'cancelled'
+     ORDER BY start_time LIMIT 1`,
+    [effectiveCompanyId, user_id, dateStr, store_id],
+  );
+
+  const event = await queryOne(
+    `INSERT INTO attendance_events
+       (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
+     VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7)
+     RETURNING *`,
+    [effectiveCompanyId, store_id, user_id, event_type, ts.toISOString(), linkedShift?.id ?? null, notes ?? null],
+  );
+
+  created(res, event, 'Evento creato manualmente');
 });
 
 // ---------------------------------------------------------------------------
@@ -660,4 +738,117 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   }
 
   ok(res, { anomalies, total: anomalies.length });
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/attendance/:id
+// body: { event_type?, event_time?, notes? }
+// Requires admin or hr role. Updates a single attendance_events record.
+// ---------------------------------------------------------------------------
+export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const id = parseInt(req.params.id, 10);
+
+  if (!id || isNaN(id)) {
+    badRequest(res, 'ID non valido', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const { event_type, event_time, notes } = req.body as {
+    event_type?: string;
+    event_time?: string;
+    notes?: string;
+  };
+
+  const VALID_EVENT_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
+  if (event_type && !VALID_EVENT_TYPES.has(event_type)) {
+    badRequest(res, 'event_type non valido', 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (event_time) {
+    const ts = new Date(event_time);
+    if (isNaN(ts.getTime())) {
+      badRequest(res, 'event_time non valido', 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
+  // Verify record exists and belongs to this company
+  const existing = await queryOne<{ id: number }>(
+    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  );
+  if (!existing) {
+    notFound(res, 'Evento non trovato');
+    return;
+  }
+
+  // Build dynamic SET clause
+  const setClauses: string[] = [];
+  const params: any[] = [];
+  let idx = 1;
+
+  if (event_type !== undefined) {
+    setClauses.push(`event_type = $${idx}`);
+    params.push(event_type);
+    idx++;
+  }
+  if (event_time !== undefined) {
+    setClauses.push(`event_time = $${idx}::TIMESTAMPTZ`);
+    params.push(event_time);
+    idx++;
+  }
+  if (notes !== undefined) {
+    setClauses.push(`notes = $${idx}`);
+    params.push(notes);
+    idx++;
+  }
+
+  if (setClauses.length === 0) {
+    badRequest(res, 'Nessun campo da aggiornare', 'VALIDATION_ERROR');
+    return;
+  }
+
+  params.push(id, companyId);
+  const updated = await queryOne(
+    `UPDATE attendance_events
+     SET ${setClauses.join(', ')}
+     WHERE id = $${idx} AND company_id = $${idx + 1}
+     RETURNING *`,
+    params,
+  );
+
+  ok(res, updated, 'Evento aggiornato');
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/attendance/:id
+// Requires admin role. Hard-deletes a single attendance_events record.
+// ---------------------------------------------------------------------------
+export const deleteAttendanceEvent = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const id = parseInt(req.params.id, 10);
+
+  if (!id || isNaN(id)) {
+    badRequest(res, 'ID non valido', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Verify record exists and belongs to this company
+  const existing = await queryOne<{ id: number }>(
+    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  );
+  if (!existing) {
+    notFound(res, 'Evento non trovato');
+    return;
+  }
+
+  await queryOne(
+    `DELETE FROM attendance_events WHERE id = $1 AND company_id = $2`,
+    [id, companyId],
+  );
+
+  ok(res, { id }, 'Evento eliminato');
 });
