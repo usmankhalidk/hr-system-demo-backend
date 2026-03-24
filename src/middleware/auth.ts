@@ -30,6 +30,11 @@ export function requireRole(...roles: UserRole[]) {
       res.status(401).json({ success: false, error: 'Non autenticato', code: 'NOT_AUTHENTICATED' });
       return;
     }
+    // Super admins bypass role checks — they have access to every endpoint
+    if (req.user.is_super_admin === true) {
+      next();
+      return;
+    }
     if (!roles.includes(req.user.role)) {
       res.status(403).json({ success: false, error: 'Accesso negato', code: 'FORBIDDEN' });
       return;

@@ -23,6 +23,10 @@ export async function migrate() {
       '007_phase1_client_feedback.sql',
       '008_termination_type.sql',
       '009_flexible_break.sql',
+      '010_qr_tokens_cleanup_index.sql',
+      '011_login_attempts_index.sql',
+      '012_shifts_composite_index.sql',
+      '013_add_ip_index_to_login_attempts.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -74,7 +78,7 @@ export async function seed() {
     // Path from dist/scripts/seed.js: __dirname = /app/dist/scripts
     // Dockerfile copies database/ to /database → resolves to /database/migrations/
     const migrationsDir = path.join(__dirname, '../../../database/migrations');
-    // Apply base schema (001) then Phase 2 migrations (003, 004, 005)
+    // Apply base schema (001) then all migrations in order
     // 002 is for upgrading legacy deployments — not needed on a fresh seed
     for (const file of [
       '001_initial_schema.sql',
@@ -86,6 +90,10 @@ export async function seed() {
       '007_phase1_client_feedback.sql',
       '008_termination_type.sql',
       '009_flexible_break.sql',
+      '010_qr_tokens_cleanup_index.sql',
+      '011_login_attempts_index.sql',
+      '012_shifts_composite_index.sql',
+      '013_add_ip_index_to_login_attempts.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);

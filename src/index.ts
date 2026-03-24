@@ -22,10 +22,21 @@ dotenv.config();
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:5173')
+const rawCorsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
   .map(o => o.trim())
   .filter(Boolean);
+
+let allowedOrigins: string[];
+if (rawCorsOrigins.length > 0) {
+  allowedOrigins = rawCorsOrigins;
+} else if (process.env.NODE_ENV === 'production') {
+  console.error('FATAL: CORS_ORIGIN must be set in production.');
+  process.exit(1);
+} else {
+  allowedOrigins = ['http://localhost:5173'];
+}
+
 app.use(cors({
   origin: (origin, cb) => {
     // Allow requests with no origin (curl, mobile apps, server-to-server)

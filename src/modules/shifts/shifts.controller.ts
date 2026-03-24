@@ -4,6 +4,7 @@ import { query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
+import { validateShiftCrossFields } from './shifts.routes';
 
 // ---------------------------------------------------------------------------
 // Helper: parse a cell value as HH:MM time string (handles Excel fractions, Date, string)
@@ -267,6 +268,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   const effectiveCompanyId = targetUser.company_id;
 
   // Overlap detection: check new main block AND new split block (if any)
+  // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
   const overlapMain = await queryOne<{ id: number }>(
     `SELECT id FROM shifts
      WHERE company_id = $1
@@ -274,9 +276,9 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
        AND date = $3
        AND status != 'cancelled'
        AND (
-         (start_time < $4::TIME AND end_time   > $5::TIME)
+         (start_time <= $4::TIME AND end_time   >= $5::TIME)
          OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-             AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
+             AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
        )`,
     [effectiveCompanyId, body.user_id, body.date, body.end_time, body.start_time],
   );
@@ -290,9 +292,9 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
          AND date = $3
          AND status != 'cancelled'
          AND (
-           (start_time < $4::TIME AND end_time   > $5::TIME)
+           (start_time <= $4::TIME AND end_time   >= $5::TIME)
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-               AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
+               AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
          )`,
       [effectiveCompanyId, body.user_id, body.date, body.split_end2, body.split_start2],
     );
@@ -362,6 +364,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   const targetStart  = body.start_time;
   const targetEnd    = body.end_time;
 
+  // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
   if (targetStart && targetEnd) {
     const overlapMain = await queryOne<{ id: number }>(
       `SELECT id FROM shifts
@@ -371,9 +374,9 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
          AND status != 'cancelled'
          AND id != $4
          AND (
-           (start_time < $5::TIME AND end_time   > $6::TIME)
+           (start_time <= $5::TIME AND end_time   >= $6::TIME)
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-               AND split_start2 < $5::TIME AND split_end2 > $6::TIME)
+               AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
          )`,
       [companyId, targetUserId, targetDate, shiftId, targetEnd, targetStart],
     );
@@ -390,9 +393,9 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
            AND status != 'cancelled'
            AND id != $4
            AND (
-             (start_time < $5::TIME AND end_time   > $6::TIME)
+             (start_time <= $5::TIME AND end_time   >= $6::TIME)
              OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-                 AND split_start2 < $5::TIME AND split_end2 > $6::TIME)
+                 AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
            )`,
         [companyId, targetUserId, targetDate, shiftId, targetSplitEnd, targetSplitStart],
       );
@@ -530,28 +533,36 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
   const source_monday = sourceMondayRow!.source_monday;
   const target_monday = targetMondayRow!.target_monday;
 
-  const insertedShifts: any[] = [];
+  // M5: single multi-row INSERT instead of one query per shift
+  // 15 parameters per row: company_id, store_id, user_id, target_monday, s.date, source_monday,
+  //   start_time, end_time, break_start, break_end, is_split, split_start2, split_end2, notes, created_by
+  const copyParams: any[] = [];
+  const copyPH: string[] = [];
   for (const s of sourceShifts) {
-    const newShift = await queryOne(
-      `INSERT INTO shifts (
-         company_id, store_id, user_id, date, start_time, end_time,
-         break_start, break_end, is_split, split_start2, split_end2,
-         notes, status, created_by
-       ) VALUES ($1, $2, $3,
-         $4::DATE + ($5::DATE - $6::DATE),
-         $7, $8, $9, $10, $11, $12, $13, $14, 'scheduled', $15
-       ) RETURNING *`,
-      [
-        companyId, store_id, s.user_id,
-        target_monday, s.date, source_monday,
-        s.start_time, s.end_time,
-        s.break_start, s.break_end,
-        s.is_split, s.split_start2, s.split_end2,
-        s.notes, callerId,
-      ],
+    const b = copyParams.length + 1;
+    // Date arithmetic: target_monday::DATE + (s.date::DATE - source_monday::DATE)
+    copyPH.push(
+      `($${b},$${b+1},$${b+2},$${b+3}::DATE+($${b+4}::DATE-$${b+5}::DATE),$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11},$${b+12},$${b+13},'scheduled',$${b+14})`,
     );
-    if (newShift) insertedShifts.push(newShift);
+    copyParams.push(
+      companyId, store_id, s.user_id,
+      target_monday, s.date, source_monday,
+      s.start_time, s.end_time,
+      s.break_start ?? null, s.break_end ?? null,
+      s.is_split ?? false, s.split_start2 ?? null, s.split_end2 ?? null,
+      s.notes ?? null,
+      callerId,
+    );
   }
+
+  const insertedShifts = await query<Record<string, any>>(
+    `INSERT INTO shifts (
+       company_id, store_id, user_id, date, start_time, end_time,
+       break_start, break_end, is_split, split_start2, split_end2,
+       notes, status, created_by
+     ) VALUES ${copyPH.join(',')} RETURNING *`,
+    copyParams,
+  );
 
   ok(res, { copied: insertedShifts.length, shifts: insertedShifts }, 'Settimana copiata');
 });
@@ -598,16 +609,27 @@ export const createTemplate = asyncHandler(async (req: Request, res: Response) =
 
 // ---------------------------------------------------------------------------
 // DELETE /api/shifts/templates/:id
+// H2 fix: store_manager may only delete templates belonging to their own store
 // ---------------------------------------------------------------------------
 export const deleteTemplate = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, role, storeId: callerStoreId } = req.user!;
   const templateId = parseInt(req.params.id, 10);
   if (isNaN(templateId)) { notFound(res, 'Template non trovato'); return; }
 
-  const template = await queryOne(
-    `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 RETURNING id`,
-    [templateId, companyId],
-  );
+  let template: { id: number } | null;
+  if (role === 'store_manager') {
+    // Scope deletion to the caller's store to prevent cross-store deletes
+    template = await queryOne(
+      `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 AND store_id = $3 RETURNING id`,
+      [templateId, companyId, callerStoreId],
+    );
+  } else {
+    // admin / hr may delete any template in the company
+    template = await queryOne(
+      `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 RETURNING id`,
+      [templateId, companyId],
+    );
+  }
   if (!template) { notFound(res, 'Template non trovato'); return; }
   ok(res, template, 'Template eliminato');
 });
@@ -636,6 +658,8 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
     extraWhere += ` AND s.date < DATE_TRUNC('week', TO_DATE($${idx - 1}, 'IYYY-IW')) + INTERVAL '7 days'`;
   }
 
+  // M15: hard cap of 10,000 rows to prevent memory exhaustion
+  const EXPORT_ROW_CAP = 10_000;
   const shifts = await query<Record<string, any>>(
     `SELECT TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
             s.start_time, s.end_time, s.break_start, s.break_end,
@@ -648,9 +672,12 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
      LEFT JOIN users u  ON u.id  = s.user_id
      LEFT JOIN stores st ON st.id = s.store_id
      WHERE s.company_id = $1${extraWhere}
-     ORDER BY s.date, s.start_time`,
+     ORDER BY s.date, s.start_time
+     LIMIT ${EXPORT_ROW_CAP + 1}`,
     params,
   );
+  const truncated = shifts.length > EXPORT_ROW_CAP;
+  if (truncated) shifts.splice(EXPORT_ROW_CAP);
 
   const format = (req.query.format as string) === 'xlsx' ? 'xlsx' : 'csv';
   const filename = `turni-${week ?? 'export'}`;
@@ -675,12 +702,14 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
     const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+    if (truncated) res.setHeader('X-Export-Truncated', 'true');
     res.send(buf);
   } else {
     const csvQ = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const csvRows = rowData.map((r) => r.map(csvQ).join(','));
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+    if (truncated) res.setHeader('X-Export-Truncated', 'true');
     res.send(HEADERS.map(csvQ).join(',') + '\n' + csvRows.join('\n'));
   }
 });
@@ -766,6 +795,8 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
 
   let imported = 0, skipped = 0, failed = 0;
   const errors: string[] = [];
+  // M5: accumulate validated rows for a single batched INSERT
+  const validRows: any[][] = [];
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
@@ -798,6 +829,26 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
       }
       if (!startTime || !endTime) {
         errors.push(`Riga ${rowNum}: orari obbligatori mancanti`); failed++; continue;
+      }
+
+      // M3: run the same cross-field validation used by the HTTP create endpoint
+      const breakTypeRaw = String(getField(row, 'break_type', 'tipo_pausa')).trim().toLowerCase();
+      const breakType = ['fixed', 'flexible'].includes(breakTypeRaw) ? breakTypeRaw : 'fixed';
+      const breakMinsRaw = getField(row, 'break_minutes', 'minuti_pausa');
+      const breakMins = breakMinsRaw !== '' && breakMinsRaw != null ? parseInt(String(breakMinsRaw), 10) : null;
+      const crossErrors = validateShiftCrossFields({
+        start_time: startTime,
+        end_time: endTime,
+        break_start: breakStart ?? null,
+        break_end: breakEnd ?? null,
+        break_type: breakType,
+        break_minutes: Number.isNaN(breakMins as number) ? null : breakMins,
+        is_split: isSplit,
+        split_start2: splitStart2 ?? null,
+        split_end2: splitEnd2 ?? null,
+      });
+      if (crossErrors.length > 0) {
+        errors.push(`Riga ${rowNum}: ${crossErrors.join('; ')}`); failed++; continue;
       }
 
       // Multi-tenant + store_manager scope check — look up by unique_id and store code
@@ -836,13 +887,14 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
 
       // Overlap detection — mirrors createShift: check new main block AND new split block
       // against existing main blocks AND existing split second blocks
+      // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
       const overlapMain = await queryOne<{ id: number }>(
         `SELECT id FROM shifts
          WHERE company_id = $1 AND user_id = $2 AND date = $3 AND status != 'cancelled'
            AND (
-             (start_time < $4::TIME AND end_time > $5::TIME)
+             (start_time <= $4::TIME AND end_time >= $5::TIME)
              OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-                 AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
+                 AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
            )`,
         [companyId, userId, dateVal, endTime, startTime],
       );
@@ -852,27 +904,38 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
           `SELECT id FROM shifts
            WHERE company_id = $1 AND user_id = $2 AND date = $3 AND status != 'cancelled'
              AND (
-               (start_time < $4::TIME AND end_time > $5::TIME)
+               (start_time <= $4::TIME AND end_time >= $5::TIME)
                OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-                   AND split_start2 < $4::TIME AND split_end2 > $5::TIME)
+                   AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
              )`,
           [companyId, userId, dateVal, splitEnd2, splitStart2],
         );
       }
       if (overlapMain || overlapSplit) { skipped++; continue; }
 
-      await queryOne(
-        `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time,
-           break_start, break_end, is_split, split_start2, split_end2, notes, status, created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
-        [companyId, storeId, userId, dateVal, startTime, endTime,
-         breakStart, breakEnd, isSplit, splitStart2, splitEnd2, notes, status, callerId],
-      );
-      imported++;
+      // Collect validated rows for batched INSERT (M5)
+      validRows.push([companyId, storeId, userId, dateVal, startTime, endTime,
+        breakStart ?? null, breakEnd ?? null, isSplit, splitStart2 ?? null, splitEnd2 ?? null,
+        notes, status, callerId]);
     } catch {
       errors.push(`Riga ${rowNum}: errore imprevisto`);
       failed++;
     }
+  }
+
+  // M5: single multi-row INSERT for all validated rows
+  if (validRows.length > 0) {
+    const COLS = 14;
+    const placeholders = validRows.map(
+      (_, ri) => `(${Array.from({ length: COLS }, (__, ci) => `$${ri * COLS + ci + 1}`).join(',')})`,
+    ).join(',');
+    await query(
+      `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time,
+         break_start, break_end, is_split, split_start2, split_end2, notes, status, created_by)
+       VALUES ${placeholders}`,
+      validRows.flat(),
+    );
+    imported = validRows.length;
   }
 
   ok(res, { imported, skipped, failed, errors: errors.slice(0, 20), total: rows.length });

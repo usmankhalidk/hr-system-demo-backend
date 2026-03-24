@@ -20,12 +20,22 @@ interface UserRow {
 }
 
 async function isRateLimited(email: string, ip: string): Promise<boolean> {
-  const rows = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM login_attempts
-     WHERE email = $1 AND attempted_at > NOW() - INTERVAL '15 minutes'`,
-    [email]
+  // Check both email-based (>=5 attempts) and IP-based (>=10 attempts) limits within 15 minutes
+  const rows = await query<{ email_count: string; ip_count: string }>(
+    `SELECT
+       (SELECT COUNT(*) FROM login_attempts
+        WHERE email = $1 AND attempted_at > NOW() - INTERVAL '15 minutes') AS email_count,
+       (SELECT COUNT(*) FROM login_attempts
+        WHERE ip_address = $2 AND attempted_at > NOW() - INTERVAL '15 minutes') AS ip_count`,
+    [email, ip]
   );
-  return parseInt(rows[0].count, 10) >= 5;
+  const emailCount = parseInt(rows[0].email_count, 10);
+  const ipCount = parseInt(rows[0].ip_count, 10);
+
+  // Best-effort cleanup of attempts older than 24 hours (M14) — never fails the request
+  query(`DELETE FROM login_attempts WHERE attempted_at < NOW() - INTERVAL '24 hours'`, []).catch(() => {});
+
+  return emailCount >= 5 || ipCount >= 10;
 }
 
 async function recordLoginAttempt(email: string, ip: string): Promise<void> {
@@ -51,7 +61,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const user = await queryOne<UserRow>(
-    `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status
+    `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status, is_super_admin
      FROM users WHERE email = $1`,
     [email]
   );
@@ -76,6 +86,9 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     [user.company_id, user.id, user.id, ip]
   );
 
+  // Clean up this user's login attempt history on successful login (M14)
+  await query(`DELETE FROM login_attempts WHERE email = $1`, [email]);
+
   const token = signAuthToken(
     {
       userId: user.id,
@@ -84,6 +97,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       companyId: user.company_id,
       storeId: user.store_id,
       supervisorId: user.supervisor_id,
+      is_super_admin: user.is_super_admin,
     },
     isRememberMe === true
   );
@@ -168,7 +182,7 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
 
   // Return new token so client stays logged in
   const updatedUser = await queryOne<UserRow>(
-    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status FROM users WHERE id = $1`,
+    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status, is_super_admin FROM users WHERE id = $1`,
     [req.user!.userId]
   );
 
@@ -179,6 +193,7 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
     companyId: updatedUser!.company_id,
     storeId: updatedUser!.store_id,
     supervisorId: updatedUser!.supervisor_id,
+    is_super_admin: updatedUser!.is_super_admin,
   });
 
   ok(res, { token }, 'Password aggiornata con successo');

@@ -8,6 +8,10 @@ export const pool = new Pool({
   // Force all sessions to UTC so DATE() comparisons match the ISO dates
   // sent from the frontend regardless of the server's OS timezone.
   options: '-c timezone=UTC',
+  max: 20,
+  connectionTimeoutMillis: 5000,  // 5s to acquire a connection from the pool
+  idleTimeoutMillis: 30000,       // 30s before idle connections are released
+  query_timeout: 10000,           // 10s max query execution time
 });
 
 pool.on('error', (err) => {

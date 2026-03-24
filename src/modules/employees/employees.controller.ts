@@ -47,6 +47,44 @@ const BASE_JOINS_WITH_COMPANY = `
   LEFT JOIN companies c ON c.id = u.company_id
 `;
 
+// Valid supervisor roles
+const SUPERVISOR_ROLES: UserRole[] = ['admin', 'hr', 'area_manager', 'store_manager'];
+
+// M9: Validate that supervisor_id refers to an active user with a supervisory role
+// in the same company. Returns an error message string, or null if valid.
+async function validateSupervisor(supervisorId: number, companyId: number): Promise<string | null> {
+  const sup = await queryOne<{ id: number; status: string; role: UserRole }>(
+    `SELECT id, status, role FROM users WHERE id = $1 AND company_id = $2`,
+    [supervisorId, companyId],
+  );
+  if (!sup) {
+    return 'Il supervisore specificato non esiste in questa azienda';
+  }
+  if (sup.status !== 'active') {
+    return 'Il supervisore specificato non è attivo';
+  }
+  if (!(SUPERVISOR_ROLES as string[]).includes(sup.role)) {
+    return 'Il supervisore specificato non ha un ruolo valido (richiesto: admin, hr, area_manager o store_manager)';
+  }
+  return null;
+}
+
+// M11: Validate that store_id refers to an active store belonging to the company.
+// Returns an error message string, or null if valid.
+async function validateStore(storeId: number, companyId: number): Promise<string | null> {
+  const store = await queryOne<{ id: number; is_active: boolean }>(
+    `SELECT id, is_active FROM stores WHERE id = $1 AND company_id = $2`,
+    [storeId, companyId],
+  );
+  if (!store) {
+    return 'Il punto vendita specificato non esiste in questa azienda';
+  }
+  if (!store.is_active) {
+    return 'Il punto vendita specificato non è attivo';
+  }
+  return null;
+}
+
 // Build WHERE clause based on role
 function buildScopeWhere(
   role: UserRole,
@@ -100,6 +138,12 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   // Cross-company with no target: query all companies (no company filter)
   const crossCompany = hasCrossCompanyAccess && !targetCompanyId;
 
+  // H8: cross-company queries allow up to 500 rows; normal queries cap at 100
+  const pageNum = Math.max(1, parseInt(page, 10));
+  const maxLimit = crossCompany ? 500 : 100;
+  const limitNum = Math.min(maxLimit, Math.max(1, parseInt(limit, 10)));
+  const offset = (pageNum - 1) * limitNum;
+
   let where: string;
   let params: any[];
 
@@ -145,10 +189,6 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     paramIdx++;
   }
 
-  const pageNum = Math.max(1, parseInt(page, 10));
-  const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10)));
-  const offset = (pageNum - 1) * limitNum;
-
   const allParams = [...params, ...extraParams];
   const needsCompany = hasCrossCompanyAccess && !targetCompanyId;
   const selectFields = needsCompany ? LIST_FIELDS_WITH_COMPANY : LIST_FIELDS;
@@ -184,12 +224,15 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   // Only super admin has cross-company visibility
   const hasCrossCompanyAccess = isSuperAdmin;
 
-  // Determine if caller can see sensitive fields
+  // H3: canSeeSensitive is ALWAYS evaluated from the caller's actual role,
+  // even for super admins. Cross-company access only bypasses the company filter,
+  // never the sensitive-field permission check.
   const canSeeSensitive = role === 'admin' || role === 'hr' || role === 'area_manager' || userId === empId;
 
   const fields = canSeeSensitive ? DETAIL_FIELDS : LIST_FIELDS;
 
-  // Cross-company roles can view employees across companies
+  // Cross-company super admin may view employees across companies but field
+  // selection is still governed by canSeeSensitive (role-based, set above).
   const employee = await queryOne<Record<string, any>>(
     hasCrossCompanyAccess
       ? `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1`
@@ -202,7 +245,7 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Cross-company roles bypass company/store/supervisor restrictions
+  // Cross-company super admins bypass company/store/supervisor scope restrictions only
   if (!hasCrossCompanyAccess) {
     // Access control: employee can only see themselves
     if (role === 'employee' && userId !== empId) {
@@ -244,7 +287,44 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const tempPassword: string = body.password ?? crypto.randomBytes(12).toString('base64url');
+  // M11: Validate store_id if provided
+  if (body.store_id) {
+    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
+    if (storeError) {
+      badRequest(res, storeError, 'INVALID_STORE');
+      return;
+    }
+  }
+
+  // M9: Validate supervisor_id if provided
+  if (body.supervisor_id) {
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
+    if (supError) {
+      badRequest(res, supError, 'INVALID_SUPERVISOR');
+      return;
+    }
+  }
+
+  // M10: Generate a cryptographically strong temp password (min 12 chars,
+  // with uppercase, lowercase, and digits) when not explicitly supplied.
+  // If a password IS supplied in the request body, enforce an 8-char minimum.
+  let tempPassword: string;
+  if (body.password) {
+    if (body.password.length < 8) {
+      badRequest(res, 'La password deve essere di almeno 8 caratteri', 'PASSWORD_TOO_SHORT');
+      return;
+    }
+    tempPassword = body.password;
+  } else {
+    // Build a guaranteed-strong password: 16 base64url chars, then inject one
+    // uppercase, one digit, and one lowercase to satisfy any downstream checks.
+    const base = crypto.randomBytes(16).toString('base64url').slice(0, 12);
+    const upper = String.fromCharCode(65 + (crypto.randomBytes(1)[0] % 26)); // A-Z
+    const digit = String((crypto.randomBytes(1)[0] % 10));                   // 0-9
+    const lower = String.fromCharCode(97 + (crypto.randomBytes(1)[0] % 26)); // a-z
+    const extra = crypto.randomBytes(8).toString('base64url').slice(0, 1);
+    tempPassword = upper + digit + lower + base + extra; // 16 chars total
+  }
   const passwordHash = await bcrypt.hash(tempPassword, 12);
 
   const employee = await queryOne(
@@ -296,10 +376,16 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/employees/:id
 export const updateEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, role: callerRole } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const body = req.body as Record<string, any>;
+
+  // H1: Role escalation prevention — only admin and hr may change the role field
+  if ('role' in body && callerRole !== 'admin' && callerRole !== 'hr') {
+    forbidden(res, 'Non sei autorizzato a modificare il ruolo di un dipendente');
+    return;
+  }
 
   // Check unique_id conflict (if provided and changed)
   if (body.unique_id) {
@@ -309,6 +395,24 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     );
     if (conflictRow) {
       conflict(res, 'ID univoco già in uso in questa azienda', 'UNIQUE_ID_CONFLICT');
+      return;
+    }
+  }
+
+  // M11: Validate store_id if provided
+  if (body.store_id) {
+    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
+    if (storeError) {
+      badRequest(res, storeError, 'INVALID_STORE');
+      return;
+    }
+  }
+
+  // M9: Validate supervisor_id if provided
+  if (body.supervisor_id) {
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
+    if (supError) {
+      badRequest(res, supError, 'INVALID_SUPERVISOR');
       return;
     }
   }

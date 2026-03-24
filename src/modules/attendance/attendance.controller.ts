@@ -178,6 +178,14 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     client.release();
   }
 
+  // Best-effort TTL cleanup: delete expired qr_tokens older than 5 minutes.
+  // Fire-and-forget — do not await, do not fail the request if this errors.
+  pool.query(
+    `DELETE FROM qr_tokens WHERE issued_at < NOW() - INTERVAL '5 minutes'`,
+  ).catch((cleanupErr) => {
+    console.warn('qr_tokens cleanup failed (non-fatal):', cleanupErr?.message);
+  });
+
   created(res, event, 'Evento registrato');
 });
 

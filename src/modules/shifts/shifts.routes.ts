@@ -47,68 +47,83 @@ function toMins(t: string): number {
   return h * 60 + m;
 }
 
-function shiftCrossValidate(data: Record<string, any>, ctx: z.RefinementCtx): void {
+// ---------------------------------------------------------------------------
+// M3: Standalone cross-field validator — returns a list of error strings.
+// Used both by the Zod refinement (HTTP API) and importShifts (CSV/XLSX import).
+// ---------------------------------------------------------------------------
+export function validateShiftCrossFields(data: Record<string, any>): string[] {
   const { start_time, end_time, break_start, break_end, break_type, break_minutes, is_split, split_start2, split_end2 } = data;
   const isFlexible = break_type === 'flexible';
+  const errs: string[] = [];
 
   // end > start
   if (start_time && end_time) {
     if (toMins(end_time) <= toMins(start_time)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['end_time'], message: "L'orario di fine deve essere successivo all'inizio" });
+      errs.push("L'orario di fine deve essere successivo all'inizio");
     }
   }
 
   if (isFlexible) {
-    // Flexible break: only validate break_minutes
+    // M18: flexible break requires break_minutes
+    if (break_minutes == null) {
+      errs.push('La durata della pausa è obbligatoria per il tipo flessibile');
+    }
     if (break_minutes != null && (break_minutes <= 0 || break_minutes > 480)) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_minutes'], message: 'La durata della pausa deve essere tra 1 e 480 minuti' });
+      errs.push('La durata della pausa deve essere tra 1 e 480 minuti');
     }
   } else {
-    // Fixed break: both or neither
-    const hasBS = break_start && break_start.length > 0;
-    const hasBE = break_end   && break_end.length   > 0;
+    const hasBS = break_start && String(break_start).length > 0;
+    const hasBE = break_end   && String(break_end).length   > 0;
     if (hasBS && !hasBE) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa è obbligatorio" });
+      errs.push("L'orario di fine pausa è obbligatorio");
     }
     if (!hasBS && hasBE) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: "L'orario di inizio pausa è obbligatorio" });
+      errs.push("L'orario di inizio pausa è obbligatorio");
     }
-    // break order and bounds
     if (hasBS && hasBE && start_time && end_time) {
       const sM  = toMins(start_time);
       const eM  = toMins(end_time);
       const bsM = toMins(break_start as string);
       const beM = toMins(break_end   as string);
       if (beM <= bsM) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_end'],   message: "L'orario di fine pausa deve essere successivo all'inizio" });
+        errs.push("L'orario di fine pausa deve essere successivo all'inizio");
       }
       if (bsM < sM || beM > eM) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['break_start'], message: 'La pausa deve rientrare nella finestra del turno' });
+        errs.push('La pausa deve rientrare nella finestra del turno');
       }
     }
   }
 
-  // split shift
   if (is_split) {
-    const hasSS2 = split_start2 && split_start2.length > 0;
-    const hasSE2 = split_end2   && split_end2.length   > 0;
+    const hasSS2 = split_start2 && String(split_start2).length > 0;
+    const hasSE2 = split_end2   && String(split_end2).length   > 0;
     if (!hasSS2) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['split_start2'], message: "L'inizio del 2° blocco è obbligatorio" });
+      errs.push("L'inizio del 2° blocco è obbligatorio");
     }
     if (!hasSE2) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['split_end2'],   message: "La fine del 2° blocco è obbligatoria" });
+      errs.push("La fine del 2° blocco è obbligatoria");
     }
     if (hasSS2 && hasSE2 && end_time) {
       const eM   = toMins(end_time);
       const ss2M = toMins(split_start2 as string);
       const se2M = toMins(split_end2   as string);
       if (se2M <= ss2M) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['split_end2'],   message: "La fine del 2° blocco deve essere successiva all'inizio" });
+        errs.push("La fine del 2° blocco deve essere successiva all'inizio");
       }
       if (ss2M < eM) {
-        ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['split_start2'], message: 'Il 2° blocco deve iniziare dopo la fine del 1° blocco' });
+        errs.push('Il 2° blocco deve iniziare dopo la fine del 1° blocco');
       }
     }
+  }
+
+  return errs;
+}
+
+// Zod refinement wrapper — delegates to the shared validator and maps errors to Zod issues
+function shiftCrossValidate(data: Record<string, any>, ctx: z.RefinementCtx): void {
+  const errs = validateShiftCrossFields(data);
+  for (const msg of errs) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: msg });
   }
 }
 

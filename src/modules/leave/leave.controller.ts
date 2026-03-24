@@ -69,8 +69,15 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     notes?: string;
   };
 
-  // Business validation: start_date must not be after end_date
-  if (new Date(start_date) > new Date(end_date)) {
+  // Business validation: require ISO YYYY-MM-DD format
+  const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
+  if (!isoDateRe.test(start_date) || !isoDateRe.test(end_date)) {
+    badRequest(res, 'Formato data non valido (YYYY-MM-DD)', 'INVALID_DATE_FORMAT');
+    return;
+  }
+
+  // start_date must not be after end_date (ISO strings compare lexicographically)
+  if (start_date > end_date) {
     badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
     return;
   }
@@ -116,7 +123,12 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 
 export const listLeaveRequests = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
-  const { status, leave_type, date_from, date_to, user_id } = req.query as Record<string, string>;
+  const { status, leave_type, date_from, date_to, user_id, page: pageStr, limit: limitStr } = req.query as Record<string, string>;
+
+  // Pagination params
+  const page  = Math.max(1, parseInt(pageStr  ?? '1',  10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(limitStr ?? '20', 10) || 20));
+  const offset = (page - 1) * limit;
 
   let scopeWhere: string;
   let scopeParams: any[];
@@ -140,7 +152,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       );
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
-        ok(res, { requests: [], total: 0 });
+        ok(res, { requests: [], total: 0, page, limit, pages: 0 });
         return;
       }
       scopeWhere = `lr.company_id = $1 AND lr.store_id = ANY($2::int[])`;
@@ -187,6 +199,18 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
 
   const allParams = [...scopeParams, ...extraParams];
 
+  // COUNT query to get total rows (same WHERE, no pagination)
+  const countResult = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count
+     FROM leave_requests lr
+     JOIN users u ON u.id = lr.user_id
+     WHERE ${scopeWhere}${extraWhere}`,
+    allParams,
+  );
+  const total = parseInt(countResult?.count ?? '0', 10);
+
+  // Paginated data query
+  const paginatedParams = [...allParams, limit, offset];
   const requests = await query(
     `SELECT
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
@@ -196,11 +220,13 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
      FROM leave_requests lr
      JOIN users u ON u.id = lr.user_id
      WHERE ${scopeWhere}${extraWhere}
-     ORDER BY lr.created_at DESC`,
-    allParams,
+     ORDER BY lr.created_at DESC
+     LIMIT $${allParams.length + 1} OFFSET $${allParams.length + 2}`,
+    paginatedParams,
   );
 
-  ok(res, { requests, total: requests.length });
+  const pages = Math.ceil(total / limit);
+  ok(res, { requests, total, page, limit, pages });
 });
 
 // ---------------------------------------------------------------------------
@@ -549,7 +575,13 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     notes?: string;
   };
 
-  if (new Date(start_date) > new Date(end_date)) {
+  const isoDateReAdmin = /^\d{4}-\d{2}-\d{2}$/;
+  if (!isoDateReAdmin.test(start_date) || !isoDateReAdmin.test(end_date)) {
+    badRequest(res, 'Formato data non valido (YYYY-MM-DD)', 'INVALID_DATE_FORMAT');
+    return;
+  }
+
+  if (start_date > end_date) {
     badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
     return;
   }
@@ -687,28 +719,32 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/leave/:id/certificate — download medical certificate (managers only)
+// GET /api/leave/:id/certificate — download medical certificate
 // ---------------------------------------------------------------------------
 export const downloadCertificate = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, userId, role } = req.user!;
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
-  // Employees can only download their own certificate; managers can download any
-  const isEmployee = role === 'employee';
+  // Always fetch within the caller's company (multi-tenant isolation)
   const row = await queryOne<{
+    user_id: number;
+    company_id: number;
     medical_certificate_name: string | null;
     medical_certificate_data: Buffer | null;
   }>(
-    isEmployee
-      ? `SELECT medical_certificate_name, medical_certificate_data
-         FROM leave_requests WHERE id = $1 AND company_id = $2 AND user_id = $3`
-      : `SELECT medical_certificate_name, medical_certificate_data
-         FROM leave_requests WHERE id = $1 AND company_id = $2`,
-    isEmployee ? [leaveId, companyId, userId] : [leaveId, companyId],
+    `SELECT user_id, company_id, medical_certificate_name, medical_certificate_data
+     FROM leave_requests WHERE id = $1 AND company_id = $2`,
+    [leaveId, companyId],
   );
 
   if (!row) { notFound(res, 'Richiesta non trovata'); return; }
+
+  // Ownership check: employees may only download their own certificate
+  if (role === 'employee' && row.user_id !== userId) {
+    forbidden(res, 'Non sei autorizzato a scaricare questo certificato');
+    return;
+  }
 
   if (!row.medical_certificate_data) {
     notFound(res, 'Nessun certificato allegato a questa richiesta');

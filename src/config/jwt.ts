@@ -16,6 +16,7 @@ export interface JwtPayload {
   companyId: number;
   storeId: number | null;
   supervisorId: number | null;
+  is_super_admin: boolean;
   jti: string;
 }
 

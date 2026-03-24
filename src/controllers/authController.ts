@@ -10,6 +10,7 @@ interface UserRow {
   email: string;
   password_hash: string;
   role: UserRole;
+  is_super_admin: boolean;
 }
 
 export async function login(req: Request, res: Response) {
@@ -21,7 +22,7 @@ export async function login(req: Request, res: Response) {
   }
 
   const user = await queryOne<UserRow>(
-    'SELECT id, company_id, name, email, password_hash, role FROM users WHERE email = $1',
+    'SELECT id, company_id, name, email, password_hash, role, is_super_admin FROM users WHERE email = $1',
     [email.toLowerCase()]
   );
 
@@ -43,6 +44,7 @@ export async function login(req: Request, res: Response) {
     companyId: user.company_id,
     storeId: null,
     supervisorId: null,
+    is_super_admin: user.is_super_admin,
   });
 
   res.json({
@@ -64,7 +66,7 @@ export async function me(req: Request, res: Response) {
   }
 
   const user = await queryOne<UserRow>(
-    'SELECT id, company_id, name, email, role FROM users WHERE id = $1',
+    'SELECT id, company_id, name, email, role, store_id, supervisor_id, is_super_admin FROM users WHERE id = $1',
     [req.user.userId]
   );
 
@@ -79,5 +81,8 @@ export async function me(req: Request, res: Response) {
     email: user.email,
     role: user.role,
     companyId: user.company_id,
+    storeId: (user as any).store_id ?? null,
+    supervisorId: (user as any).supervisor_id ?? null,
+    isSuperAdmin: user.is_super_admin,
   });
 }
