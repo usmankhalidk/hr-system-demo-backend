@@ -16,7 +16,7 @@ export async function clearTestData(): Promise<void> {
   `);
 }
 
-export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; romaStoreId: number; shiftId: number }> {
+export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
   // Companies
   const { rows: [acme] } = await testPool.query(
     `INSERT INTO companies (name, slug) VALUES ('Acme Test', 'acme-test') RETURNING id`
@@ -76,10 +76,17 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     }
   }
 
-  // Seed one shift for employee1 in romaStore (2026-03-10 = week 11)
+  // Seed a past shift for employee1 (used by shifts/anomalies tests querying 2026-W11)
   const { rows: [shift1] } = await testPool.query(
     `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, status, created_by)
      VALUES ($1, $2, $3, '2026-03-10', '09:00', '17:00', 'scheduled', $4) RETURNING id`,
+    [acme.id, romaStore.id, employee1.id, admin.id]
+  );
+
+  // Seed a today shift for employee1 (used by QR checkin tests)
+  const { rows: [todayShift] } = await testPool.query(
+    `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, status, created_by)
+     VALUES ($1, $2, $3, CURRENT_DATE, '09:00', '17:00', 'scheduled', $4) RETURNING id`,
     [acme.id, romaStore.id, employee1.id, admin.id]
   );
 
@@ -94,6 +101,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     terminalId: terminal.id,
     romaStoreId: romaStore.id,
     shiftId: shift1.id,
+    todayShiftId: todayShift.id,
   };
 }
 
