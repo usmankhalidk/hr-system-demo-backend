@@ -71,6 +71,8 @@ export function StoreList() {
   const { showToast } = useToast();
   const { isMobile } = useBreakpoint();
   const isAdmin = user?.role === 'admin';
+  const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
+  const isSuperAdmin = user?.isSuperAdmin === true;
 
   const [stores, setStores] = useState<Store[]>([]);
   const [loading, setLoading] = useState(true);
@@ -133,7 +135,7 @@ export function StoreList() {
       code: store.code,
       address: store.address ?? '',
       cap: store.cap ?? '',
-      maxStaff: String(store.maxStaff),
+      maxStaff: store.maxStaff != null ? String(store.maxStaff) : '',
     });
     setFormErrors({});
     setFormError(null);
@@ -271,6 +273,15 @@ export function StoreList() {
   };
 
   const columns: Column<Store>[] = [
+    ...(isSuperAdmin ? [{
+      key: 'companyName' as keyof Store,
+      label: t('stores.colCompany'),
+      render: (row: Store) => (
+        <span style={{ fontSize: '13px', color: row.companyName ? 'var(--text-secondary)' : 'var(--text-disabled)' }}>
+          {row.companyName ?? '—'}
+        </span>
+      ),
+    }] : []),
     { key: 'name', label: t('stores.colName') },
     { key: 'code', label: t('stores.colCode') },
     { key: 'address', label: t('stores.colAddress'), render: (row) => row.address ?? '—' },
@@ -346,7 +357,7 @@ export function StoreList() {
             </p>
           )}
         </div>
-        {isAdmin && (
+        {isAdminOrHr && (
           <Button onClick={openNewForm}>{t('stores.newStore')}</Button>
         )}
       </div>

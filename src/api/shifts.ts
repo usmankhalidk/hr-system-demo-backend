@@ -14,6 +14,8 @@ export interface Shift {
   endTime: string;       // 'HH:MM:SS'
   breakStart: string | null;
   breakEnd: string | null;
+  breakType: 'fixed' | 'flexible';
+  breakMinutes: number | null;
   isSplit: boolean;
   splitStart2: string | null;
   splitEnd2: string | null;
@@ -55,8 +57,10 @@ export interface CreateShiftPayload {
   date: string;
   start_time: string;
   end_time: string;
+  break_type?: 'fixed' | 'flexible';
   break_start?: string | null;
   break_end?: string | null;
+  break_minutes?: number | null;
   is_split?: boolean;
   split_start2?: string | null;
   split_end2?: string | null;

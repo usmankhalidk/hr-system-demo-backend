@@ -35,6 +35,7 @@ export interface EmployeeHomeData {
   leaveBalance?: LeaveBalance[];
   isBirthday?: boolean;
   showLeaveBalance?: boolean;
+  showShifts?: boolean;
 }
 
 interface EmployeeHomeProps {
@@ -130,7 +131,7 @@ function BalanceBar({ balance, locale }: { balance: LeaveBalance; locale: string
 
 // ── Main component ─────────────────────────────────────────────────────────
 export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
-  const { profile, nextShift, leaveBalance = [], isBirthday = false, showLeaveBalance } = data;
+  const { profile, nextShift, leaveBalance = [], isBirthday = false, showLeaveBalance, showShifts } = data;
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const locale = i18n.language === 'it' ? 'it-IT' : 'en-GB';
@@ -187,6 +188,7 @@ export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
       </Card>
 
       {/* Next shift */}
+      {showShifts !== false && (
       <div style={{
         background: 'var(--surface)', borderRadius: 'var(--radius-lg)',
         border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden',
@@ -276,8 +278,10 @@ export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
           </div>
         )}
       </div>
+      )}
 
       {/* Leave balance */}
+      {showLeaveBalance !== false && (
       <div style={{
         background: 'var(--surface)', borderRadius: 'var(--radius-lg)',
         border: '1px solid var(--border)', boxShadow: 'var(--shadow-sm)', overflow: 'hidden',
@@ -302,11 +306,7 @@ export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
           </button>
         </div>
         <div style={{ padding: '20px 20px 4px' }}>
-          {showLeaveBalance === false ? (
-            <div style={{ paddingBottom: 20, textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-              {t('home.employee.balanceHidden')}
-            </div>
-          ) : leaveBalance.length > 0 ? (
+          {leaveBalance.length > 0 ? (
             leaveBalance.map((b) => (
               <BalanceBar key={b.leaveType} balance={b} locale={locale} />
             ))
@@ -317,6 +317,7 @@ export const EmployeeHome: React.FC<EmployeeHomeProps> = ({ data }) => {
           )}
         </div>
       </div>
+      )}
 
     </div>
   );

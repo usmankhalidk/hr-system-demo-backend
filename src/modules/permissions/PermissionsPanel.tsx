@@ -6,6 +6,7 @@ import { PermissionGrid } from '../../types';
 import { Spinner } from '../../components/ui/Spinner';
 import { Alert } from '../../components/ui/Alert';
 import { Button } from '../../components/ui/Button';
+import { useAuth } from '../../context/AuthContext';
 
 const MODULE_KEYS: { key: string; implemented: boolean }[] = [
   { key: 'dipendenti',  implemented: true },
@@ -31,7 +32,7 @@ const ROLE_COLORS: Record<string, string> = {
 
 type LocalGrid = Record<string, Record<string, boolean>>;
 
-const snakeToCamel = (s: string) => s.replace(/_([a-z])/g, (_, l) => l.toUpperCase());
+const snakeToCamel = (s: string) => s.replace(/_([a-z0-9])/g, (_, l) => l.toUpperCase());
 
 function buildLocalGrid(data: PermissionGrid): LocalGrid {
   const result: LocalGrid = {};
@@ -61,6 +62,7 @@ function hasChanges(local: LocalGrid, server: LocalGrid): boolean {
 
 const PermissionsPanel: React.FC = () => {
   const { t } = useTranslation();
+  const { refreshPermissions } = useAuth();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [serverGrid, setServerGrid] = useState<LocalGrid>({});
@@ -120,7 +122,9 @@ const PermissionsPanel: React.FC = () => {
       await updatePermissions(updates);
       const newServer = JSON.parse(JSON.stringify(localGrid));
       setServerGrid(newServer);
-      setSuccessMsg(t('permissions.successSaveRelogin'));
+      setSuccessMsg(t('permissions.successSave'));
+      // Refresh current user's permissions so sidebar updates immediately
+      await refreshPermissions();
     } catch (err) {
       setErrorMsg(translateApiError(err, t, t('permissions.errorSave')));
     } finally {

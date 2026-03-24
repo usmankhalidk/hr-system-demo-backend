@@ -10,7 +10,7 @@ export interface User {
   email: string;
   role: UserRole;
   status: 'active' | 'inactive';
-  isSuperAdmin?: boolean;
+  isSuperAdmin: boolean;
 }
 
 export interface Company {
@@ -24,6 +24,7 @@ export interface Company {
 export interface Store {
   id: number;
   companyId: number;
+  companyName?: string;   // populated when super admin fetches across companies
   name: string;
   code: string;
   address: string | null;
@@ -66,6 +67,7 @@ export interface Employee {
   cap?: string | null;
   contractType?: string | null;
   probationMonths?: number | null;
+  terminationType?: string | null;
 }
 
 export type TrainingType = 'product' | 'general' | 'low_risk_safety' | 'fire_safety';

@@ -11,6 +11,9 @@ import {
 import { LeaveBalanceCard } from './LeaveBalanceCard';
 import { LeaveRequestDrawer } from './LeaveRequestDrawer';
 import { LeaveApprovalList } from './LeaveApprovalList';
+import AdminLeavePanel from './AdminLeavePanel';
+
+const ADMIN_ROLES = ['admin', 'hr'] as const;
 
 const APPROVER_ROLES = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 type ApproverRole = typeof APPROVER_ROLES[number];
@@ -21,7 +24,20 @@ function isApprover(role: string): role is ApproverRole {
 
 type Tab = 'mine' | 'pending';
 
+// Outer shell: only calls useAuth (one stable hook), then delegates to the
+// appropriate view. This avoids a Rules-of-Hooks violation that would occur
+// if useState/useCallback/useEffect were called after a conditional return.
 export default function LeavePage() {
+  const { user } = useAuth();
+
+  if (user && (ADMIN_ROLES as readonly string[]).includes(user.role)) {
+    return <AdminLeavePanel />;
+  }
+
+  return <PersonalLeavePage />;
+}
+
+function PersonalLeavePage() {
   const { t } = useTranslation();
   const { user } = useAuth();
 

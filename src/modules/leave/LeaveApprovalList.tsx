@@ -277,15 +277,20 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
   }
 
   function formatDate(iso: string): string {
-    const d = new Date(iso);
+    // Strip time component to avoid UTC-vs-local offset issues (DB returns full ISO timestamps)
+    const datePart = (iso ?? '').split('T')[0];
+    const d = new Date(datePart + 'T00:00:00');
     const locale = i18n.language === 'en' ? 'en-GB' : 'it-IT';
     return d.toLocaleDateString(locale, { day: '2-digit', month: 'short', year: 'numeric' });
   }
 
   function getDurationDays(start: string, end: string): number {
-    const s = new Date(start);
-    const e = new Date(end);
-    return Math.round((e.getTime() - s.getTime()) / 86400000) + 1;
+    const s = new Date(start.split('T')[0] + 'T00:00:00');
+    const e = new Date(end.split('T')[0] + 'T00:00:00');
+    let count = 0;
+    const d = new Date(s);
+    while (d <= e) { const w = d.getDay(); if (w !== 0 && w !== 6) count++; d.setDate(d.getDate() + 1); }
+    return count;
   }
 
   function getInitials(surname: string, name: string): string {

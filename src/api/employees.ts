@@ -3,7 +3,7 @@ import { Employee, PaginatedResponse } from '../types';
 
 export interface EmployeeListParams {
   search?: string;
-  store_id?: number;
+  storeId?: number;
   department?: string;
   status?: string;
   role?: string;
@@ -19,7 +19,7 @@ export interface EmployeeListParams {
 export async function getEmployees(params?: EmployeeListParams): Promise<PaginatedResponse<Employee>> {
   const query: Record<string, string | number> = {};
   if (params?.search) query.search = params.search;
-  if (params?.store_id != null) query.store_id = params.store_id;
+  if (params?.storeId != null) query.store_id = params.storeId;
   if (params?.department) query.department = params.department;
   if (params?.status) query.status = params.status;
   if (params?.role) query.role = params.role;

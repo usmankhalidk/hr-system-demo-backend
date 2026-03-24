@@ -23,8 +23,10 @@ interface FormState {
   date: string;
   start_time: string;
   end_time: string;
+  break_type: 'fixed' | 'flexible';
   break_start: string;
   break_end: string;
+  break_minutes: string;
   is_split: boolean;
   split_start2: string;
   split_end2: string;
@@ -33,9 +35,11 @@ interface FormState {
 }
 
 interface FormErrors {
+  start_time?: string;
   end_time?: string;
   break_start?: string;
   break_end?: string;
+  break_minutes?: string;
   split_start2?: string;
   split_end2?: string;
 }
@@ -51,8 +55,10 @@ const EMPTY_FORM: FormState = {
   date: '',
   start_time: '',
   end_time: '',
+  break_type: 'fixed',
   break_start: '',
   break_end: '',
+  break_minutes: '',
   is_split: false,
   split_start2: '',
   split_end2: '',
@@ -75,27 +81,39 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
   function validateForm(f: FormState): FormErrors {
     const errs: FormErrors = {};
 
+    // Required time fields
+    if (!f.start_time) errs.start_time = t('shifts.validation.startRequired');
+    if (!f.end_time)   errs.end_time   = t('shifts.validation.endRequired');
+
     // end > start
     if (f.start_time && f.end_time && toMins(f.end_time) <= toMins(f.start_time)) {
       errs.end_time = t('shifts.validation.endAfterStart');
     }
 
-    // break: both or neither
-    const hasBS = f.break_start.length > 0;
-    const hasBE = f.break_end.length   > 0;
-    if (hasBS && !hasBE) errs.break_end   = t('shifts.validation.breakBothRequired');
-    if (!hasBS && hasBE) errs.break_start = t('shifts.validation.breakBothRequired');
+    if (f.break_type === 'flexible') {
+      // Flexible break: validate break_minutes
+      const mins = parseInt(f.break_minutes, 10);
+      if (f.break_minutes && (isNaN(mins) || mins <= 0 || mins > 480)) {
+        errs.break_minutes = t('shifts.validation.breakMinutesInvalid');
+      }
+    } else {
+      // Fixed break: both or neither
+      const hasBS = f.break_start.length > 0;
+      const hasBE = f.break_end.length   > 0;
+      if (hasBS && !hasBE) errs.break_end   = t('shifts.validation.breakBothRequired');
+      if (!hasBS && hasBE) errs.break_start = t('shifts.validation.breakBothRequired');
 
-    if (hasBS && hasBE) {
-      if (toMins(f.break_end) <= toMins(f.break_start)) {
-        errs.break_end = t('shifts.validation.breakEndAfterStart');
-      } else if (f.start_time && f.end_time) {
-        const sM  = toMins(f.start_time);
-        const eM  = toMins(f.end_time);
-        const bsM = toMins(f.break_start);
-        const beM = toMins(f.break_end);
-        if (bsM < sM || beM > eM) {
-          errs.break_start = t('shifts.validation.breakWithinShift');
+      if (hasBS && hasBE) {
+        if (toMins(f.break_end) <= toMins(f.break_start)) {
+          errs.break_end = t('shifts.validation.breakEndAfterStart');
+        } else if (f.start_time && f.end_time) {
+          const sM  = toMins(f.start_time);
+          const eM  = toMins(f.end_time);
+          const bsM = toMins(f.break_start);
+          const beM = toMins(f.break_end);
+          if (bsM < sM || beM > eM) {
+            errs.break_start = t('shifts.validation.breakWithinShift');
+          }
         }
       }
     }
@@ -132,7 +150,7 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
     }).catch(() => {});
 
     if (shift) {
-      // API returns HH:MM:SS — slice to HH:MM so <input type="time"> and backend both accept it
+      // API returns HH:MM:SS — slice to HH:MM so TimePicker and backend both accept it
       const t5 = (v: string | null | undefined) => (v ?? '').slice(0, 5);
       setForm({
         user_id: String(shift.userId),
@@ -140,8 +158,10 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
         date: shift.date.split('T')[0],
         start_time: t5(shift.startTime),
         end_time: t5(shift.endTime),
+        break_type: shift.breakType ?? 'fixed',
         break_start: t5(shift.breakStart),
         break_end: t5(shift.breakEnd),
+        break_minutes: shift.breakMinutes != null ? String(shift.breakMinutes) : '',
         is_split: Boolean(shift.isSplit),
         split_start2: t5(shift.splitStart2),
         split_end2: t5(shift.splitEnd2),
@@ -176,7 +196,7 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
     e.preventDefault();
     setError(null);
     if (!form.date) {
-      setError(t('shifts.validation.dateRequired', 'Seleziona una data per il turno'));
+      setError(t('shifts.validation.dateRequired'));
       return;
     }
     const errs = validateForm(form);
@@ -188,14 +208,17 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
     setOverlapConflict(false);
     setSaving(true);
     try {
+      const isFlexible = form.break_type === 'flexible';
       const payload: CreateShiftPayload = {
         user_id: parseInt(form.user_id, 10),
         store_id: parseInt(form.store_id, 10),
         date: form.date,
         start_time: form.start_time,
         end_time: form.end_time,
-        break_start: form.break_start || null,
-        break_end: form.break_end || null,
+        break_type: form.break_type,
+        break_start: isFlexible ? null : (form.break_start || null),
+        break_end: isFlexible ? null : (form.break_end || null),
+        break_minutes: isFlexible ? (form.break_minutes ? parseInt(form.break_minutes, 10) : null) : null,
         is_split: form.is_split,
         split_start2: form.is_split ? (form.split_start2 || null) : null,
         split_end2: form.is_split ? (form.split_end2 || null) : null,
@@ -276,7 +299,7 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
             fontFamily: 'var(--font-display)', fontSize: '1.15rem',
             color: 'var(--primary)', margin: 0,
           }}>
-            {shift ? t('shifts.editShift', 'Modifica turno') : t('shifts.newShift', 'Nuovo turno')}
+            {shift ? t('shifts.editShift') : t('shifts.newShift')}
           </h2>
           <button
             onClick={() => onClose(false)}
@@ -346,7 +369,9 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
               onFocus={focusHandler} onBlur={blurHandler}>
               <option value="">{t('shifts.form.selectStore')}</option>
               {stores.map((store) => (
-                <option key={store.id} value={String(store.id)}>{store.name}</option>
+                <option key={store.id} value={String(store.id)}>
+                  {store.companyName ? `${store.name} (${store.companyName})` : store.name}
+                </option>
               ))}
             </select>
           </div>
@@ -366,7 +391,11 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
             <TimePicker
               label={t('shifts.form.startTime')}
               value={form.start_time}
-              onChange={(v) => setForm((p) => ({ ...p, start_time: v }))}
+              onChange={(v) => {
+                setForm((p) => ({ ...p, start_time: v }));
+                setFormErrors((fe) => { const n = { ...fe }; delete n.start_time; return n; });
+              }}
+              error={formErrors.start_time}
               required
             />
             <TimePicker
@@ -383,26 +412,85 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
 
           {/* ─── Section: Pausa ─────────────── */}
           <SectionDivider label={t('shifts.sectionBreak')} optional />
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
-            <TimePicker
-              label={t('shifts.form.breakStart')}
-              value={form.break_start}
-              onChange={(v) => {
-                setForm((p) => ({ ...p, break_start: v }));
-                setFormErrors((fe) => { const n = { ...fe }; delete n.break_start; return n; });
-              }}
-              error={formErrors.break_start}
-            />
-            <TimePicker
-              label={t('shifts.form.breakEnd')}
-              value={form.break_end}
-              onChange={(v) => {
-                setForm((p) => ({ ...p, break_end: v }));
-                setFormErrors((fe) => { const n = { ...fe }; delete n.break_end; return n; });
-              }}
-              error={formErrors.break_end}
-            />
+
+          {/* Break type toggle: Fissa / Flessibile */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 12 }}>
+            {(['fixed', 'flexible'] as const).map((bt) => {
+              const active = form.break_type === bt;
+              return (
+                <button
+                  key={bt} type="button"
+                  onClick={() => {
+                    setForm((p) => ({ ...p, break_type: bt }));
+                    setFormErrors((fe) => { const n = { ...fe }; delete n.break_start; delete n.break_end; delete n.break_minutes; return n; });
+                  }}
+                  style={{
+                    flex: 1, padding: '7px 4px', borderRadius: 8, fontSize: 12,
+                    fontWeight: 600, cursor: 'pointer', transition: 'all 0.12s',
+                    border: `1.5px solid ${active ? 'var(--accent)' : 'var(--border)'}`,
+                    background: active ? 'rgba(201,151,58,0.09)' : 'transparent',
+                    color: active ? 'var(--accent)' : 'var(--text-muted)',
+                    fontFamily: 'var(--font-body)',
+                  }}
+                >
+                  {t(`shifts.form.breakType_${bt}`)}
+                </button>
+              );
+            })}
           </div>
+
+          {form.break_type === 'flexible' ? (
+            <div style={{ marginBottom: 4 }}>
+              <label style={fLabel}>
+                {t('shifts.form.breakMinutes')}
+                <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>({t('common.optional')})</span>
+              </label>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <input
+                  type="number"
+                  min={1}
+                  max={480}
+                  placeholder="30"
+                  value={form.break_minutes}
+                  onChange={(e) => {
+                    setForm((p) => ({ ...p, break_minutes: e.target.value }));
+                    setFormErrors((fe) => { const n = { ...fe }; delete n.break_minutes; return n; });
+                  }}
+                  onFocus={focusHandler}
+                  onBlur={blurHandler}
+                  style={{ ...fInput, width: 100 }}
+                />
+                <span style={{ fontSize: 13, color: 'var(--text-muted)' }}>{t('shifts.form.breakMinutesUnit')}</span>
+              </div>
+              {formErrors.break_minutes && (
+                <div style={{ fontSize: 11, color: 'var(--danger)', marginTop: 4 }}>{formErrors.break_minutes}</div>
+              )}
+              <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, lineHeight: 1.5 }}>
+                {t('shifts.form.breakFlexHint')}
+              </div>
+            </div>
+          ) : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 4 }}>
+              <TimePicker
+                label={t('shifts.form.breakStart')}
+                value={form.break_start}
+                onChange={(v) => {
+                  setForm((p) => ({ ...p, break_start: v }));
+                  setFormErrors((fe) => { const n = { ...fe }; delete n.break_start; return n; });
+                }}
+                error={formErrors.break_start}
+              />
+              <TimePicker
+                label={t('shifts.form.breakEnd')}
+                value={form.break_end}
+                onChange={(v) => {
+                  setForm((p) => ({ ...p, break_end: v }));
+                  setFormErrors((fe) => { const n = { ...fe }; delete n.break_end; return n; });
+                }}
+                error={formErrors.break_end}
+              />
+            </div>
+          )}
 
           {/* ─── Section: Turno spezzato ─────── */}
           <SectionDivider label={t('shifts.sectionSplit')} optional />
@@ -445,11 +533,11 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
             </div>
             <div>
               <span style={{ fontSize: 13, fontWeight: 600, color: form.is_split ? 'var(--primary)' : 'var(--text-secondary)' }}>
-                {form.is_split ? t('shifts.form.splitEnabled', 'Turno spezzato attivo') : t('shifts.form.splitDisabled', 'Abilita turno spezzato')}
+                {form.is_split ? t('shifts.form.splitEnabled') : t('shifts.form.splitDisabled')}
               </span>
               {!form.is_split && (
                 <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 1 }}>
-                  {t('shifts.form.splitHint', 'Attiva per aggiungere un 2° blocco orario')}
+                  {t('shifts.form.splitHint')}
                 </div>
               )}
             </div>
@@ -508,7 +596,7 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
           <div style={fieldRow}>
             <label style={fLabel}>
               {t('shifts.form.notes')}
-              <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>({t('common.optional', 'opzionale')})</span>
+              <span style={{ fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }}>({t('common.optional')})</span>
             </label>
             <textarea value={form.notes} onChange={set('notes')} rows={3}
               style={{ ...fInput, resize: 'vertical', lineHeight: 1.5 }} />
@@ -530,14 +618,14 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
                 disabled={deleting}
                 style={{ marginRight: 'auto' }}
               >
-                {deleting ? t('common.loading', '...') : t('shifts.cancel', 'Annulla turno')}
+                {deleting ? t('common.loading') : t('shifts.cancel')}
               </button>
             )}
             <button type="button" className="btn btn-secondary" onClick={() => onClose(false)}>
-              {t('common.close', 'Chiudi')}
+              {t('common.close')}
             </button>
             <button type="submit" className="btn btn-primary" disabled={saving}>
-              {saving ? t('common.saving', 'Salvataggio...') : t('common.save', 'Salva')}
+              {saving ? t('common.saving') : t('common.save')}
             </button>
           </div>
         </form>
@@ -550,10 +638,10 @@ export default function ShiftDrawer({ open, shift, prefillDate, prefillUserId, o
       {createPortal(panel, document.body)}
       <ConfirmModal
         open={confirmOpen}
-        title={t('shifts.cancelShiftTitle', 'Annulla turno')}
-        message={t('shifts.cancelShiftMsg', 'Sei sicuro di voler annullare questo turno? L\'operazione può essere invertita modificando lo stato.')}
-        confirmLabel={t('shifts.cancel', 'Annulla turno')}
-        cancelLabel={t('common.close', 'Chiudi')}
+        title={t('shifts.cancelShiftTitle')}
+        message={t('shifts.cancelShiftMsg')}
+        confirmLabel={t('shifts.cancel')}
+        cancelLabel={t('common.close')}
         variant="danger"
         onConfirm={doDelete}
         onCancel={() => setConfirmOpen(false)}
@@ -614,7 +702,7 @@ function SectionDivider({ label, optional }: { label: string; optional?: boolean
           background: 'var(--surface-warm)', border: '1px solid var(--border)',
           borderRadius: 4, padding: '1px 5px', fontWeight: 500,
         }}>
-          {t('common.optionalAbbr', 'opz.')}
+          {t('common.optionalAbbr')}
         </span>
       )}
       <div style={{ flex: 1, height: 1, background: 'var(--border)' }} />

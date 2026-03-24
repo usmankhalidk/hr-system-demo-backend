@@ -2,9 +2,12 @@ import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
 import { listAttendanceEvents, AttendanceEvent, EventType, AttendanceListParams } from '../../api/attendance';
+import { getEmployees } from '../../api/employees';
+import { getStores } from '../../api/stores';
 import client from '../../api/client';
 import { formatLocalDate } from '../../utils/date';
 import { DatePicker } from '../../components/ui/DatePicker';
+import { TimePicker } from '../../components/ui/TimePicker';
 import { WeekPicker } from '../../components/ui/WeekPicker';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import AnomalyList from './AnomalyList';
@@ -52,14 +55,144 @@ const EVENT_TYPE_LABEL_KEYS: Record<string, string> = {
 
 export default function AttendanceLogsPage() {
   const { t, i18n } = useTranslation();
-  const { user: _user } = useAuth();
-  void _user;
+  const { user } = useAuth();
   const { isMobile, isTablet } = useBreakpoint();
+
+  const canEdit   = user?.role === 'admin' || user?.role === 'hr';
+  const canDelete = user?.role === 'admin';
 
   const [events, setEvents]       = useState<AttendanceEvent[]>([]);
   const [total, setTotal]         = useState(0);
   const [loading, setLoading]     = useState(false);
   const [error, setError]         = useState<string | null>(null);
+
+  // ── Edit modal state ───────────────────────────────────────────────────────
+  const [editingEvent, setEditingEvent]         = useState<AttendanceEvent | null>(null);
+  const [editType, setEditType]                 = useState('');
+  const [editDate, setEditDate]                 = useState('');   // YYYY-MM-DD
+  const [editTimeOnly, setEditTimeOnly]         = useState('');   // HH:mm
+  const [editNotes, setEditNotes]               = useState('');
+  const [editSaving, setEditSaving]             = useState(false);
+  const [editError, setEditError]               = useState<string | null>(null);
+
+  // ── Delete confirmation state ──────────────────────────────────────────────
+  const [deletingEvent, setDeletingEvent]       = useState<AttendanceEvent | null>(null);
+  const [deleteConfirming, setDeleteConfirming] = useState(false);
+
+  // ── Create manual entry state ──────────────────────────────────────────────
+  const [createOpen, setCreateOpen]         = useState(false);
+  const [createUserId, setCreateUserId]     = useState('');
+  const [createStoreId, setCreateStoreId]   = useState('');
+  const [createType, setCreateType]         = useState('checkin');
+  const [createDate, setCreateDate]         = useState('');
+  const [createTimeOnly, setCreateTimeOnly] = useState('');
+  const [createNotes, setCreateNotes]       = useState('');
+  const [createSaving, setCreateSaving]     = useState(false);
+  const [createError, setCreateError]       = useState<string | null>(null);
+  const [createSuccess, setCreateSuccess]   = useState(false);
+  const [empList, setEmpList]               = useState<Array<{ id: number; name: string; surname: string; storeId?: number | null }>>([]);
+  const [storeList, setStoreList]           = useState<Array<{ id: number; name: string; companyName?: string }>>([]);
+
+  function openCreateModal() {
+    setCreateOpen(true);
+    setCreateUserId('');
+    setCreateStoreId('');
+    setCreateType('checkin');
+    setCreateDate(formatLocalDate(new Date()));
+    setCreateTimeOnly('');
+    setCreateNotes('');
+    setCreateError(null);
+    setCreateSuccess(false);
+    // Load dropdowns if not yet loaded
+    if (empList.length === 0) {
+      getEmployees({ limit: 200, status: 'active' }).then((res) =>
+        setEmpList(res.employees.map((e) => ({ id: e.id, name: e.name, surname: e.surname, storeId: e.storeId ?? null })))
+      ).catch(() => {});
+    }
+    if (storeList.length === 0) {
+      getStores().then((stores) =>
+        setStoreList(stores.map((s) => ({ id: s.id, name: s.name, companyName: s.companyName })))
+      ).catch(() => {});
+    }
+  }
+
+  async function handleCreateSave() {
+    if (!createUserId || !createStoreId || !createTimeOnly) {
+      setCreateError(t('common.required'));
+      return;
+    }
+    setCreateSaving(true);
+    setCreateError(null);
+    try {
+      await client.post('/attendance', {
+        user_id:    parseInt(createUserId, 10),
+        store_id:   parseInt(createStoreId, 10),
+        event_type: createType,
+        event_time: new Date(`${createDate}T${createTimeOnly}`).toISOString(),
+        notes:      createNotes || undefined,
+      });
+      setCreateSuccess(true);
+      await fetchEvents();
+      setTimeout(() => { setCreateOpen(false); setCreateSuccess(false); }, 1200);
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setCreateError(axiosErr?.response?.data?.error ?? t('common.error'));
+    } finally {
+      setCreateSaving(false);
+    }
+  }
+
+  function openEditModal(ev: AttendanceEvent) {
+    setEditingEvent(ev);
+    setEditType(ev.eventType);
+    const d = new Date(ev.eventTime);
+    const pad = (n: number) => String(n).padStart(2, '0');
+    setEditDate(`${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`);
+    setEditTimeOnly(`${pad(d.getHours())}:${pad(d.getMinutes())}`);
+    setEditNotes(ev.notes ?? '');
+    setEditError(null);
+  }
+
+  function closeEditModal() {
+    setEditingEvent(null);
+    setEditError(null);
+  }
+
+  async function handleEditSave() {
+    if (!editingEvent) return;
+    setEditSaving(true);
+    setEditError(null);
+    try {
+      await client.put(`/attendance/${editingEvent.id}`, {
+        event_type: editType,
+        event_time: new Date(`${editDate}T${editTimeOnly}`).toISOString(),
+        notes: editNotes,
+      });
+      closeEditModal();
+      await fetchEvents();
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setEditError(axiosErr?.response?.data?.error ?? t('common.error'));
+    } finally {
+      setEditSaving(false);
+    }
+  }
+
+  async function handleDeleteConfirm() {
+    if (!deletingEvent) return;
+    setDeleteConfirming(true);
+    try {
+      await client.delete(`/attendance/${deletingEvent.id}`);
+      setDeletingEvent(null);
+      await fetchEvents();
+    } catch (err: unknown) {
+      const axiosErr = err as { response?: { data?: { error?: string } } };
+      setError(axiosErr?.response?.data?.error ?? t('common.error'));
+      setDeletingEvent(null);
+    } finally {
+      setDeleteConfirming(false);
+    }
+  }
 
   const today       = formatLocalDate(new Date());
   const weekAgoDate = new Date();
@@ -192,8 +325,29 @@ export default function AttendanceLogsPage() {
             )}
           </div>
 
-          {/* Export buttons */}
-          <div style={{ display: 'flex', gap: 8, flexShrink: 0 }}>
+          {/* Header right: New Entry + Export buttons */}
+          <div style={{ display: 'flex', gap: 8, flexShrink: 0, alignItems: 'center' }}>
+            {/* New manual entry — admin/hr only */}
+            {canEdit && (
+              <button
+                onClick={openCreateModal}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 6,
+                  padding: isMobile ? '7px 12px' : '8px 14px',
+                  borderRadius: 8,
+                  background: 'rgba(13,33,55,0.75)', border: '1px solid rgba(255,255,255,0.18)',
+                  color: '#fff', fontWeight: 700,
+                  fontSize: isMobile ? 11 : 12,
+                  cursor: 'pointer', transition: 'background 0.15s', letterSpacing: 0.3,
+                }}
+                onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(13,33,55,0.95)'; }}
+                onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(13,33,55,0.75)'; }}
+              >
+                <span style={{ fontSize: 15, lineHeight: 1 }}>+</span>
+                {t('attendance.newEntry')}
+              </button>
+            )}
+            {/* Export buttons */}
             {(['csv', 'xlsx'] as const).map((fmt) => (
               <button
                 key={fmt}
@@ -530,6 +684,37 @@ export default function AttendanceLogsPage() {
                             {dt.time}
                           </span>
                         </div>
+                        {/* Row 4: action buttons (admin/hr only) */}
+                        {canEdit && (
+                          <div style={{ display: 'flex', gap: 8, marginTop: 10, paddingTop: 10, borderTop: '1px solid var(--border)' }}>
+                            <button
+                              onClick={() => openEditModal(ev)}
+                              style={{
+                                flex: 1, padding: '6px 0', borderRadius: 6,
+                                border: '1px solid rgba(13,33,55,0.25)',
+                                background: 'rgba(13,33,55,0.06)',
+                                color: 'var(--primary)', fontSize: 12, fontWeight: 700,
+                                cursor: 'pointer',
+                              }}
+                            >
+                              {t('common.edit')}
+                            </button>
+                            {canDelete && (
+                              <button
+                                onClick={() => setDeletingEvent(ev)}
+                                style={{
+                                  flex: 1, padding: '6px 0', borderRadius: 6,
+                                  border: '1px solid rgba(220,38,38,0.25)',
+                                  background: 'rgba(220,38,38,0.06)',
+                                  color: '#dc2626', fontSize: 12, fontWeight: 700,
+                                  cursor: 'pointer',
+                                }}
+                              >
+                                {t('common.delete')}
+                              </button>
+                            )}
+                          </div>
+                        )}
                       </div>
                     </div>
                   );
@@ -573,8 +758,9 @@ export default function AttendanceLogsPage() {
                           t('attendance.eventType'),
                           t('common.date'),
                           t('attendance.source'),
+                          ...(canEdit ? [t('common.actions')] : []),
                         ].map((h, i) => (
-                          <th key={h} style={{
+                          <th key={`${h}-${i}`} style={{
                             padding: isTablet ? '9px 12px' : '10px 16px',
                             textAlign: 'left',
                             fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
@@ -655,6 +841,44 @@ export default function AttendanceLogsPage() {
                                 {srcBadge.label}
                               </span>
                             </td>
+                            {canEdit && (
+                              <td style={{ padding: '11px 16px', whiteSpace: 'nowrap' }}>
+                                <div style={{ display: 'flex', gap: 6 }}>
+                                  <button
+                                    onClick={() => openEditModal(ev)}
+                                    title={t('attendance.editEvent')}
+                                    style={{
+                                      padding: '4px 10px', borderRadius: 6,
+                                      border: '1px solid rgba(13,33,55,0.25)',
+                                      background: 'rgba(13,33,55,0.06)',
+                                      color: 'var(--primary)', fontSize: 11, fontWeight: 700,
+                                      cursor: 'pointer', transition: 'all 0.15s',
+                                    }}
+                                    onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(13,33,55,0.14)'; }}
+                                    onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(13,33,55,0.06)'; }}
+                                  >
+                                    {t('common.edit')}
+                                  </button>
+                                  {canDelete && (
+                                    <button
+                                      onClick={() => setDeletingEvent(ev)}
+                                      title={t('attendance.deleteEvent')}
+                                      style={{
+                                        padding: '4px 10px', borderRadius: 6,
+                                        border: '1px solid rgba(220,38,38,0.25)',
+                                        background: 'rgba(220,38,38,0.06)',
+                                        color: '#dc2626', fontSize: 11, fontWeight: 700,
+                                        cursor: 'pointer', transition: 'all 0.15s',
+                                      }}
+                                      onMouseEnter={(e) => { e.currentTarget.style.background = 'rgba(220,38,38,0.14)'; }}
+                                      onMouseLeave={(e) => { e.currentTarget.style.background = 'rgba(220,38,38,0.06)'; }}
+                                    >
+                                      {t('common.delete')}
+                                    </button>
+                                  )}
+                                </div>
+                              </td>
+                            )}
                           </tr>
                         );
                       })}
@@ -693,6 +917,449 @@ export default function AttendanceLogsPage() {
         </div>
       ) : (
         <AnomalyList dateFrom={dateFrom} dateTo={dateTo} />
+      )}
+
+      {/* ── Edit Event Modal ──────────────────────────────────────────────── */}
+      {editingEvent && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.45)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeEditModal(); }}
+        >
+          <div style={{
+            background: 'var(--surface)', borderRadius: 16,
+            boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
+            width: '100%', maxWidth: 440,
+            border: '1px solid var(--border)',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '20px 24px 16px',
+              borderBottom: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                  {t('attendance.moduleLabel')}
+                </div>
+                <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+                  {t('attendance.editEvent')}
+                </h2>
+              </div>
+              <button
+                onClick={closeEditModal}
+                style={{
+                  width: 32, height: 32, borderRadius: 8,
+                  border: '1px solid var(--border)', background: 'var(--background)',
+                  color: 'var(--text-secondary)', fontSize: 18,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '20px 24px' }}>
+              {editError && (
+                <div style={{
+                  background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)',
+                  borderLeft: '4px solid #dc2626', borderRadius: 8,
+                  padding: '10px 14px', marginBottom: 16,
+                  color: '#dc2626', fontSize: 13, fontWeight: 500,
+                }}>
+                  {editError}
+                </div>
+              )}
+
+              {/* Employee info (read-only) */}
+              <div style={{ marginBottom: 16, padding: '10px 14px', background: 'var(--background)', borderRadius: 8, border: '1px solid var(--border)' }}>
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px', marginBottom: 4 }}>
+                  {t('employees.colName')}
+                </div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: 'var(--text)' }}>
+                  {editingEvent.userSurname} {editingEvent.userName}
+                </div>
+                {editingEvent.storeName && (
+                  <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
+                    {editingEvent.storeName}
+                  </div>
+                )}
+              </div>
+
+              {/* Event type select */}
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('attendance.eventType')}
+                </label>
+                <select
+                  value={editType}
+                  onChange={(e) => setEditType(e.target.value)}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none',
+                    appearance: 'none',
+                  }}
+                >
+                  <option value="checkin">{t('attendance.checkin')}</option>
+                  <option value="checkout">{t('attendance.checkout')}</option>
+                  <option value="break_start">{t('attendance.breakStart')}</option>
+                  <option value="break_end">{t('attendance.breakEnd')}</option>
+                </select>
+              </div>
+
+              {/* Event date + time */}
+              <div style={{ display: 'flex', gap: 10, marginBottom: 16 }}>
+                <div style={{ flex: 1 }}>
+                  <DatePicker
+                    label={t('common.date')}
+                    value={editDate}
+                    onChange={setEditDate}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <TimePicker
+                    label={t('common.time')}
+                    value={editTimeOnly}
+                    onChange={setEditTimeOnly}
+                  />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('common.notes')}
+                </label>
+                <textarea
+                  value={editNotes}
+                  onChange={(e) => setEditNotes(e.target.value)}
+                  rows={2}
+                  placeholder="—"
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none', resize: 'vertical',
+                    boxSizing: 'border-box', fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+
+              {/* Footer buttons */}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={closeEditModal}
+                  disabled={editSaving}
+                  style={{
+                    flex: 1, padding: '10px 0', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text-secondary)', fontSize: 14, fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  onClick={handleEditSave}
+                  disabled={editSaving}
+                  style={{
+                    flex: 2, padding: '10px 0', borderRadius: 8,
+                    border: 'none', background: 'var(--primary)',
+                    color: '#fff', fontSize: 14, fontWeight: 700,
+                    cursor: editSaving ? 'not-allowed' : 'pointer',
+                    opacity: editSaving ? 0.7 : 1,
+                  }}
+                >
+                  {editSaving ? t('common.loading') : t('common.save')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Create Manual Entry Modal ─────────────────────────────────────── */}
+      {createOpen && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.45)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget && !createSaving) setCreateOpen(false); }}
+        >
+          <div style={{
+            background: 'var(--surface)', borderRadius: 16,
+            boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
+            width: '100%', maxWidth: 480,
+            border: '1px solid var(--border)',
+          }}>
+            {/* Header */}
+            <div style={{
+              padding: '20px 24px 16px',
+              borderBottom: '1px solid var(--border)',
+              display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+            }}>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, letterSpacing: '2px', color: 'var(--text-muted)', textTransform: 'uppercase', marginBottom: 4 }}>
+                  {t('attendance.moduleLabel')}
+                </div>
+                <h2 style={{ margin: 0, fontSize: '1.1rem', fontWeight: 800, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+                  {t('attendance.createEntry')}
+                </h2>
+              </div>
+              <button
+                onClick={() => setCreateOpen(false)}
+                disabled={createSaving}
+                style={{
+                  width: 32, height: 32, borderRadius: 8,
+                  border: '1px solid var(--border)', background: 'var(--background)',
+                  color: 'var(--text-secondary)', fontSize: 18,
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  lineHeight: 1,
+                }}
+              >
+                ×
+              </button>
+            </div>
+
+            {/* Body */}
+            <div style={{ padding: '20px 24px' }}>
+              {createSuccess && (
+                <div style={{
+                  background: 'rgba(22,163,74,0.08)', border: '1px solid rgba(22,163,74,0.25)',
+                  borderLeft: '4px solid #16a34a', borderRadius: 8,
+                  padding: '10px 14px', marginBottom: 16,
+                  color: '#16a34a', fontSize: 13, fontWeight: 600,
+                }}>
+                  {t('attendance.createEntrySuccess')}
+                </div>
+              )}
+              {createError && (
+                <div style={{
+                  background: 'rgba(220,38,38,0.08)', border: '1px solid rgba(220,38,38,0.25)',
+                  borderLeft: '4px solid #dc2626', borderRadius: 8,
+                  padding: '10px 14px', marginBottom: 16,
+                  color: '#dc2626', fontSize: 13, fontWeight: 500,
+                }}>
+                  {createError}
+                </div>
+              )}
+
+              {/* Employee select */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('attendance.selectEmployee')} *
+                </label>
+                <select
+                  value={createUserId}
+                  onChange={(e) => {
+                    const uid = e.target.value;
+                    setCreateUserId(uid);
+                    // Auto-populate store from the selected employee's store
+                    const emp = empList.find((em) => String(em.id) === uid);
+                    if (emp?.storeId) setCreateStoreId(String(emp.storeId));
+                    else setCreateStoreId('');
+                  }}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none', appearance: 'none',
+                  }}
+                >
+                  <option value="">{t('attendance.selectEmployee')}</option>
+                  {empList.map((e) => (
+                    <option key={e.id} value={e.id}>{e.surname} {e.name}</option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Store select — pre-filled from employee's store, still overridable */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('attendance.selectStore')} *
+                </label>
+                <select
+                  value={createStoreId}
+                  onChange={(e) => setCreateStoreId(e.target.value)}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: `1.5px solid ${createStoreId ? 'var(--accent)' : 'var(--border)'}`,
+                    background: createStoreId ? 'var(--accent-light)' : 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none', appearance: 'none',
+                  }}
+                >
+                  <option value="">{t('attendance.selectStore')}</option>
+                  {storeList.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.companyName ? `${s.name} (${s.companyName})` : s.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {/* Event type */}
+              <div style={{ marginBottom: 14 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('attendance.selectEventType')} *
+                </label>
+                <select
+                  value={createType}
+                  onChange={(e) => setCreateType(e.target.value)}
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none', appearance: 'none',
+                  }}
+                >
+                  <option value="checkin">{t('attendance.checkin')}</option>
+                  <option value="checkout">{t('attendance.checkout')}</option>
+                  <option value="break_start">{t('attendance.breakStart')}</option>
+                  <option value="break_end">{t('attendance.breakEnd')}</option>
+                </select>
+              </div>
+
+              {/* Date + Time */}
+              <div style={{ display: 'flex', gap: 10, marginBottom: 14 }}>
+                <div style={{ flex: 1 }}>
+                  <DatePicker
+                    label={`${t('common.date')} *`}
+                    value={createDate}
+                    onChange={setCreateDate}
+                  />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <TimePicker
+                    label={`${t('common.time')} *`}
+                    value={createTimeOnly}
+                    onChange={setCreateTimeOnly}
+                  />
+                </div>
+              </div>
+
+              {/* Notes */}
+              <div style={{ marginBottom: 24 }}>
+                <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: 'var(--text-secondary)', marginBottom: 6, textTransform: 'uppercase', letterSpacing: '0.8px' }}>
+                  {t('common.notes')}
+                </label>
+                <textarea
+                  value={createNotes}
+                  onChange={(e) => setCreateNotes(e.target.value)}
+                  rows={2}
+                  placeholder="—"
+                  style={{
+                    width: '100%', padding: '9px 12px', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text)', fontSize: 14, outline: 'none', resize: 'vertical',
+                    boxSizing: 'border-box', fontFamily: 'inherit',
+                  }}
+                />
+              </div>
+
+              {/* Footer buttons */}
+              <div style={{ display: 'flex', gap: 10 }}>
+                <button
+                  onClick={() => setCreateOpen(false)}
+                  disabled={createSaving}
+                  style={{
+                    flex: 1, padding: '10px 0', borderRadius: 8,
+                    border: '1.5px solid var(--border)', background: 'var(--background)',
+                    color: 'var(--text-secondary)', fontSize: 14, fontWeight: 700,
+                    cursor: 'pointer',
+                  }}
+                >
+                  {t('common.cancel')}
+                </button>
+                <button
+                  onClick={handleCreateSave}
+                  disabled={createSaving || createSuccess}
+                  style={{
+                    flex: 2, padding: '10px 0', borderRadius: 8,
+                    border: 'none', background: 'var(--primary)',
+                    color: '#fff', fontSize: 14, fontWeight: 700,
+                    cursor: (createSaving || createSuccess) ? 'not-allowed' : 'pointer',
+                    opacity: (createSaving || createSuccess) ? 0.7 : 1,
+                  }}
+                >
+                  {createSaving ? t('common.saving') : t('common.create')}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ── Delete Confirmation Dialog ────────────────────────────────────── */}
+      {deletingEvent && (
+        <div
+          style={{
+            position: 'fixed', inset: 0, zIndex: 1000,
+            background: 'rgba(0,0,0,0.45)', display: 'flex',
+            alignItems: 'center', justifyContent: 'center',
+            padding: '16px',
+          }}
+          onClick={(e) => { if (e.target === e.currentTarget && !deleteConfirming) setDeletingEvent(null); }}
+        >
+          <div style={{
+            background: 'var(--surface)', borderRadius: 16,
+            boxShadow: '0 24px 64px rgba(0,0,0,0.3)',
+            width: '100%', maxWidth: 400,
+            border: '1px solid var(--border)',
+            padding: '28px 24px',
+          }}>
+            <div style={{
+              width: 48, height: 48, borderRadius: 12,
+              background: 'rgba(220,38,38,0.1)', border: '1px solid rgba(220,38,38,0.25)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              fontSize: 22, marginBottom: 16,
+            }}>
+              ⚠
+            </div>
+            <h3 style={{ margin: '0 0 8px', fontSize: '1rem', fontWeight: 800, color: 'var(--text)', fontFamily: 'var(--font-display)' }}>
+              {t('attendance.confirmDelete')}
+            </h3>
+            <p style={{ margin: '0 0 8px', fontSize: 13, color: 'var(--text-secondary)', lineHeight: 1.5 }}>
+              {t('attendance.confirmDeleteMsg')}
+            </p>
+            <p style={{ margin: '0 0 24px', fontSize: 12, color: 'var(--text-muted)' }}>
+              {deletingEvent.userSurname} {deletingEvent.userName} — {formatDateTime(deletingEvent.eventTime).date} {formatDateTime(deletingEvent.eventTime).time}
+            </p>
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                onClick={() => setDeletingEvent(null)}
+                disabled={deleteConfirming}
+                style={{
+                  flex: 1, padding: '10px 0', borderRadius: 8,
+                  border: '1.5px solid var(--border)', background: 'var(--background)',
+                  color: 'var(--text-secondary)', fontSize: 14, fontWeight: 700,
+                  cursor: 'pointer',
+                }}
+              >
+                {t('common.cancel')}
+              </button>
+              <button
+                onClick={handleDeleteConfirm}
+                disabled={deleteConfirming}
+                style={{
+                  flex: 2, padding: '10px 0', borderRadius: 8,
+                  border: 'none', background: '#dc2626',
+                  color: '#fff', fontSize: 14, fontWeight: 700,
+                  cursor: deleteConfirming ? 'not-allowed' : 'pointer',
+                  opacity: deleteConfirming ? 0.7 : 1,
+                }}
+              >
+                {deleteConfirming ? t('common.loading') : t('attendance.deleteEvent')}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );

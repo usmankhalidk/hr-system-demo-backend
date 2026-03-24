@@ -9,6 +9,7 @@ interface AuthContextValue {
   loading: boolean;
   login: (email: string, password: string, rememberMe?: boolean) => Promise<void>;
   logout: () => Promise<void>;
+  refreshPermissions: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextValue | undefined>(undefined);
@@ -37,7 +38,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const resInterceptor = apiClient.interceptors.response.use(
       (res) => res,
       (error) => {
-        if (error.response?.status === 401) {
+        // Skip redirect if the error came from the login endpoint itself
+        // (wrong credentials returns 401 — we want the catch block to handle that)
+        const requestUrl = (error.config?.url ?? '') as string;
+        const isLoginRequest = requestUrl.includes('/auth/login');
+        if (error.response?.status === 401 && !isLoginRequest) {
           localStorage.removeItem(TOKEN_KEY);
           sessionStorage.removeItem(TOKEN_KEY);
           setUser(null);
@@ -104,8 +109,13 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setPermissions({});
   };
 
+  const refreshPermissions = async () => {
+    const perms = await getMyPermissions();
+    setPermissions(perms);
+  };
+
   return (
-    <AuthContext.Provider value={{ user, permissions, loading, login, logout }}>
+    <AuthContext.Provider value={{ user, permissions, loading, login, logout, refreshPermissions }}>
       {children}
     </AuthContext.Provider>
   );

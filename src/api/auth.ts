@@ -6,8 +6,8 @@ export interface LoginResponse {
   user: User & { companyId: number; storeId: number | null; supervisorId: number | null };
 }
 
-export async function login(email: string, password: string, rememberMe = false): Promise<LoginResponse> {
-  const { data } = await apiClient.post('/auth/login', { email, password, rememberMe });
+export async function login(email: string, password: string, _rememberMe = false): Promise<LoginResponse> {
+  const { data } = await apiClient.post('/auth/login', { email, password });
   return data.data;
 }
 

@@ -529,7 +529,9 @@ export default function ShiftsPage() {
               >
                 <option value="">{t('shifts.allStores', 'Tutti i negozi')}</option>
                 {stores.map((s) => (
-                  <option key={s.id} value={s.id}>{s.name}</option>
+                  <option key={s.id} value={s.id}>
+                    {s.companyName ? `${s.name} (${s.companyName})` : s.name}
+                  </option>
                 ))}
               </select>
             )}

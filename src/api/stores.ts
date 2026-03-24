@@ -1,8 +1,10 @@
 import apiClient from './client';
 import { Store } from '../types';
 
-export async function getStores(): Promise<Store[]> {
-  const { data } = await apiClient.get('/stores');
+export async function getStores(params?: { targetCompanyId?: number }): Promise<Store[]> {
+  const { data } = await apiClient.get('/stores', {
+    params: params?.targetCompanyId ? { target_company_id: params.targetCompanyId } : undefined,
+  });
   return data.data;
 }
 

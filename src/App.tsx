@@ -19,6 +19,8 @@ import QRPage from './modules/attendance/QRPage';
 import TerminalPage from './modules/attendance/TerminalPage';
 import LeavePage from './modules/leave/LeavePage';
 import SettingsPage from './modules/settings/SettingsPage';
+import EmployeeCheckinPage from './modules/attendance/EmployeeCheckinPage';
+import ScanPage from './modules/attendance/ScanPage';
 
 // Terminal role gets a bare full-screen view — no header or sidebar
 function HomeRoute() {
@@ -104,6 +106,19 @@ function AppRoutes() {
       <Route path="/terminale" element={
         <ProtectedRoute roles={['store_terminal']}>
           <TerminalPage />
+        </ProtectedRoute>
+      } />
+
+      <Route path="/presenze/checkin" element={
+        <ProtectedRoute roles={['employee']}>
+          <Layout title={t('checkin.title')}><EmployeeCheckinPage /></Layout>
+        </ProtectedRoute>
+      } />
+
+      {/* QR scan landing page — opened by scanning the store terminal QR code */}
+      <Route path="/presenze/scan" element={
+        <ProtectedRoute roles={['employee']}>
+          <ScanPage />
         </ProtectedRoute>
       } />
 

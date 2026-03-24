@@ -43,6 +43,8 @@ interface FormData {
   maritalStatus: string;
   contractType: string;
   probationMonths: string;
+  terminationDate: string;
+  terminationType: string;
 }
 
 const initialFormData: FormData = {
@@ -51,7 +53,7 @@ const initialFormData: FormData = {
   hireDate: '', contractEndDate: '', workingType: '', weeklyHours: '',
   personalEmail: '', dateOfBirth: '', nationality: '', gender: '',
   iban: '', address: '', cap: '', firstAidFlag: false, maritalStatus: '',
-  contractType: '', probationMonths: '',
+  contractType: '', probationMonths: '', terminationDate: '', terminationType: '',
 };
 
 function generateUniqueId(): string {
@@ -168,6 +170,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
           maritalStatus: emp.maritalStatus ?? '',
           contractType: emp.contractType ?? '',
           probationMonths: emp.probationMonths != null ? String(emp.probationMonths) : '',
+          terminationDate: emp.terminationDate ? emp.terminationDate.split('T')[0] : '',
+          terminationType: emp.terminationType ?? '',
         });
       })
       .catch(() => {
@@ -204,15 +208,46 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   const handleNext = () => { if (validateStep1()) setStep(2); };
   const handleBack = () => setStep(1);
 
-  const handleSubmit = async () => {
-    // Validate weekly hours if provided
+  const validateStep2 = (): string | null => {
+    // Weekly hours
     if (formData.weeklyHours) {
       const hours = parseFloat(formData.weeklyHours);
-      if (isNaN(hours) || hours < 0 || hours > 80) {
-        setError(t('employees.weeklyHoursInvalid'));
-        return;
-      }
+      if (isNaN(hours) || hours < 0 || hours > 80) return t('employees.weeklyHoursInvalid');
     }
+    // Probation months max
+    if (formData.probationMonths) {
+      const months = parseInt(formData.probationMonths, 10);
+      if (isNaN(months) || months < 0 || months > 60) return t('employees.probationInvalid');
+    }
+    // Personal email format
+    if (formData.personalEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.personalEmail)) {
+      return t('employees.emailInvalid');
+    }
+    // Italian CAP: exactly 5 digits
+    if (formData.cap && !/^\d{5}$/.test(formData.cap.trim())) {
+      return t('employees.capInvalid');
+    }
+    // IBAN basic check: 15–34 alphanumeric chars
+    if (formData.iban && !/^[A-Z]{2}\d{2}[A-Z0-9]{11,30}$/.test(formData.iban.trim().toUpperCase())) {
+      return t('employees.ibanInvalid');
+    }
+    // contractEndDate must be after hireDate
+    if (formData.hireDate && formData.contractEndDate && formData.contractEndDate < formData.hireDate) {
+      return t('employees.contractEndBeforeHire');
+    }
+    // Termination date/type must both be set or neither
+    if (formData.terminationDate && !formData.terminationType) return t('employees.terminationTypeMissing');
+    if (formData.terminationType && !formData.terminationDate) return t('employees.terminationDateMissing');
+    // Termination date must not be before hire date
+    if (formData.hireDate && formData.terminationDate && formData.terminationDate < formData.hireDate) {
+      return t('employees.terminationBeforeHire');
+    }
+    return null;
+  };
+
+  const handleSubmit = async () => {
+    const step2Error = validateStep2();
+    if (step2Error) { setError(step2Error); return; }
     setLoading(true);
     setError(null);
     try {
@@ -240,6 +275,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
         maritalStatus: formData.maritalStatus || null,
         contractType: formData.contractType || null,
         probationMonths: formData.probationMonths ? parseInt(formData.probationMonths, 10) : null,
+        terminationDate: formData.terminationDate || null,
+        terminationType: formData.terminationType || null,
       };
       if (isEditMode && employeeId) {
         await updateEmployee(employeeId, payload);
@@ -554,7 +591,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       label={t('employees.ibanField')}
                       value={formData.iban}
                       onChange={(e) => set('iban', e.target.value)}
-                      placeholder="IT00X0000000000000000000000"
+                      placeholder={t('employees.ibanPlaceholder')}
                     />
                   </div>
 
@@ -611,12 +648,19 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                     </div>
                   </div>
                   <div style={row2}>
-                    <Input
+                    <Select
                       label={t('employees.contractTypeField')}
                       value={formData.contractType}
                       onChange={(e) => set('contractType', e.target.value)}
-                      placeholder={t('employees.contractTypePlaceholder')}
-                    />
+                    >
+                      <option value="">{t('employees.selectOption')}</option>
+                      <option value="Tempo Indeterminato">{t('employees.contractType_indeterminato')}</option>
+                      <option value="Tempo Determinato">{t('employees.contractType_determinato')}</option>
+                      <option value="Apprendistato">{t('employees.contractType_apprendistato')}</option>
+                      <option value="Stage / Tirocinio">{t('employees.contractType_stage')}</option>
+                      <option value="Partita IVA / Collaborazione">{t('employees.contractType_partita_iva')}</option>
+                      <option value="Altro">{t('employees.contractType_altro')}</option>
+                    </Select>
                     <Input
                       label={t('employees.probationField')}
                       type="number"
@@ -625,6 +669,26 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                       onChange={(e) => set('probationMonths', e.target.value)}
                       placeholder={t('employees.probationPlaceholder')}
                     />
+                  </div>
+                  <div style={row2}>
+                    <DatePicker
+                      label={t('employees.terminationDateField')}
+                      value={formData.terminationDate}
+                      onChange={(v) => set('terminationDate', v)}
+                    />
+                    <Select
+                      label={t('employees.terminationTypeField')}
+                      value={formData.terminationType}
+                      onChange={(e) => set('terminationType', e.target.value)}
+                    >
+                      <option value="">{t('employees.selectOption')}</option>
+                      <option value="Dimissioni volontarie">{t('employees.terminationType_dimissioni')}</option>
+                      <option value="Fine contratto">{t('employees.terminationType_fine_contratto')}</option>
+                      <option value="Licenziamento">{t('employees.terminationType_licenziamento')}</option>
+                      <option value="Pensionamento">{t('employees.terminationType_pensionamento')}</option>
+                      <option value="Risoluzione consensuale">{t('employees.terminationType_consensuale')}</option>
+                      <option value="Altro">{t('employees.terminationType_altro')}</option>
+                    </Select>
                   </div>
                 </div>
               )}

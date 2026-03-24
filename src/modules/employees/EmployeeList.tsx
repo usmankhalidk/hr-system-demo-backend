@@ -65,7 +65,7 @@ export function EmployeeList() {
   const limit = 20;
 
   const { isMobile } = useBreakpoint();
-  const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
+  const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr' || user?.role === 'area_manager';
   const isSuperAdmin = user?.isSuperAdmin === true;
   const tRole = (roleKey: string) => (t as (k: string) => string)(`roles.${roleKey}`);
   const hasActiveFilters = !!(search || storeId || department || status || role || companyFilter);
@@ -82,28 +82,30 @@ export function EmployeeList() {
     [setSearchParams]
   );
 
+  // Re-fetch stores whenever the company filter changes (super admin viewing a different company)
   useEffect(() => {
-    getStores().then(setStores).catch(() => {});
-  }, []);
+    const targetId = companyFilter ? parseInt(companyFilter, 10) : undefined;
+    getStores(targetId ? { targetCompanyId: targetId } : undefined).then(setStores).catch(() => {});
+  }, [companyFilter]);
 
   useEffect(() => {
-    if (!isSuperAdmin) return;
-    apiClient.get('/companies')
+    if (!isAdminOrHr && !isSuperAdmin) return;
+    apiClient.get<{ data: CompanyOption[] }>('/companies')
       .then((res) => {
         const data = res.data?.data;
         if (Array.isArray(data)) {
-          setCompanies(data.map((c: any) => ({ id: c.id, name: c.name })));
+          setCompanies(data.map((c) => ({ id: c.id, name: c.name })));
         }
       })
       .catch(() => {});
-  }, [isSuperAdmin]);
+  }, [isAdminOrHr, isSuperAdmin]);
 
   useEffect(() => {
     setLoading(true);
     setError(null);
     getEmployees({
       search: search || undefined,
-      store_id: storeId ? parseInt(storeId, 10) : undefined,
+      storeId: storeId ? parseInt(storeId, 10) : undefined,
       department: department || undefined,
       status: status || undefined,
       role: role || undefined,
@@ -116,8 +118,8 @@ export function EmployeeList() {
       .finally(() => setLoading(false));
   }, [search, storeId, department, status, role, companyFilter, page]);
 
-  // Show company column when super admin is viewing all companies (no specific company filter)
-  const showCompanyColumn = isSuperAdmin && !companyFilter;
+  // Show company column when admin/hr/super admin is viewing all companies (no specific company filter)
+  const showCompanyColumn = (isAdminOrHr || isSuperAdmin) && !companyFilter;
 
   const columns: Column<Employee>[] = [
     {
@@ -293,7 +295,7 @@ export function EmployeeList() {
             onChange={(e) => updateParam('search', e.target.value)}
           />
         </div>
-        {isSuperAdmin && (
+        {(isAdminOrHr || isSuperAdmin) && companies.length > 0 && (
           <div style={{ flex: '1 1 175px', minWidth: '140px', maxWidth: '240px' }}>
             <Select value={companyFilter} onChange={(e) => updateParam('company_id', e.target.value)}>
               <option value="">{t('employees.allCompanies')}</option>
@@ -304,7 +306,11 @@ export function EmployeeList() {
         <div style={{ flex: '1 1 155px', minWidth: '130px', maxWidth: '220px' }}>
           <Select value={storeId} onChange={(e) => updateParam('store_id', e.target.value)}>
             <option value="">{t('employees.allStores')}</option>
-            {stores.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+            {stores.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.companyName ? `${s.name} (${s.companyName})` : s.name}
+              </option>
+            ))}
           </Select>
         </div>
         <div style={{ flex: '1 1 155px', minWidth: '130px', maxWidth: '220px' }}>

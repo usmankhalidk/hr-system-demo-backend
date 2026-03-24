@@ -19,9 +19,11 @@ export interface AttendanceEvent {
   shiftId: number | null;
   notes: string | null;
   createdAt: string;
-  userName: string;
-  userSurname: string;
-  storeName: string;
+  // Note: joined fields (userName, userSurname, storeName) are only present on
+  // list responses (GET /attendance), not on the checkin response (POST /attendance/checkin).
+  userName?: string;
+  userSurname?: string;
+  storeName?: string;
 }
 
 export interface QrTokenResponse {

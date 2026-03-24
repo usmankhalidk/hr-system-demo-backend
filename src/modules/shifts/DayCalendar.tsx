@@ -111,8 +111,8 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-muted)', marginTop: 2 }}>
             {shifts.filter(s => s.date.split('T')[0] === dateStr && s.status !== 'cancelled').length > 0
-              ? `${shifts.filter(s => s.date.split('T')[0] === dateStr && s.status !== 'cancelled').length} ${t('shifts.shiftsLoaded', 'turni')}`
-              : t('shifts.noShiftsToday', 'Nessun turno oggi')}
+              ? `${shifts.filter(s => s.date.split('T')[0] === dateStr && s.status !== 'cancelled').length} ${t('shifts.shiftsLoaded')}`
+              : t('shifts.noShiftsToday')}
           </div>
         </div>
       </div>
@@ -120,10 +120,10 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
       {users.length === 0 ? (
         <div style={{ padding: '48px 24px', textAlign: 'center', color: 'var(--text-muted)' }}>
           <div style={{ marginBottom: 10, opacity: 0.25, display: 'flex', justifyContent: 'center' }}><CalendarDays size={32} /></div>
-          <div style={{ fontWeight: 600 }}>{t('shifts.noShiftsToday', 'Nessun turno oggi')}</div>
+          <div style={{ fontWeight: 600 }}>{t('shifts.noShiftsToday')}</div>
           {canEdit && (
             <div style={{ fontSize: 12, marginTop: 4 }}>
-              {t('shifts.clickToAdd', 'Clicca su una cella nel calendario settimanale per aggiungere un turno')}
+              {t('shifts.clickToAdd')}
             </div>
           )}
         </div>
@@ -251,11 +251,13 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
 
                   // Build rich tooltip
                   const mainRange = `${shift.startTime.slice(0, 5)}–${shift.endTime.slice(0, 5)}`;
-                  const breakInfo = shift.breakStart && shift.breakEnd
-                    ? ` · ${t('shifts.form.breakStart', 'Pausa')}: ${shift.breakStart.slice(0, 5)}–${shift.breakEnd.slice(0, 5)}`
+                  const breakInfo = shift.breakType === 'flexible' && shift.breakMinutes
+                    ? ` · ${t('shifts.form.breakMinutes')}: ${shift.breakMinutes} min (${t('shifts.form.breakType_flexible')})`
+                    : shift.breakStart && shift.breakEnd
+                    ? ` · ${t('shifts.form.breakStart')}: ${shift.breakStart.slice(0, 5)}–${shift.breakEnd.slice(0, 5)}`
                     : '';
                   const splitInfo = shift.isSplit && shift.splitStart2 && shift.splitEnd2
-                    ? ` · ${t('shifts.form.isSplit', 'Spezzato')}: ${shift.splitStart2.slice(0, 5)}–${shift.splitEnd2.slice(0, 5)}`
+                    ? ` · ${t('shifts.form.isSplit')}: ${shift.splitStart2.slice(0, 5)}–${shift.splitEnd2.slice(0, 5)}`
                     : '';
                   const hoursInfo = shift.shiftHours ? ` (${shift.shiftHours}h)` : '';
                   const shiftTitle = `${t(colors.labelKey, colors.labelFb)} — ${mainRange}${hoursInfo}${breakInfo}${splitInfo}`;
@@ -353,7 +355,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                           {!isSecondBlock && shift.shiftHours && (
                             <span style={{ marginLeft: 3, opacity: 0.75, fontSize: '0.65rem' }}>({shift.shiftHours}h)</span>
                           )}
-                          {/* Break time inline label — only if block is wide enough */}
+                          {/* Break inline label */}
                           {hasBreakOverlay && (
                             <span style={{
                               marginLeft: 5, opacity: 0.7, fontSize: 9,
@@ -362,6 +364,16 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                               borderRadius: 3, padding: '1px 4px',
                             }}>
                               <Coffee size={9} strokeWidth={2.5} /> {shift.breakStart!.slice(0, 5)}
+                            </span>
+                          )}
+                          {!hasBreakOverlay && !isSecondBlock && shift.breakType === 'flexible' && shift.breakMinutes && (
+                            <span style={{
+                              marginLeft: 5, opacity: 0.7, fontSize: 9,
+                              position: 'relative', zIndex: 2,
+                              background: 'rgba(255,255,255,0.12)',
+                              borderRadius: 3, padding: '1px 4px',
+                            }}>
+                              <Coffee size={9} strokeWidth={2.5} /> {shift.breakMinutes}m flex
                             </span>
                           )}
                         </span>
@@ -399,7 +411,7 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
             fontSize: 10, fontWeight: 700, color: 'var(--text-muted)',
             letterSpacing: 0.6, textTransform: 'uppercase', marginRight: 4, flexShrink: 0,
           }}>
-            {t('shifts.legend', 'Legenda')}:
+            {t('shifts.legend')}:
           </span>
           {Object.entries(STATUS_META).map(([status, meta]) => (
             <div key={status} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
@@ -447,10 +459,10 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                 border: '1px solid rgba(255,255,255,0.25)',
                 flexShrink: 0,
               }} />
-              <Coffee size={11} strokeWidth={2.5} /> {t('shifts.form.breakStart', 'Pausa')}
+              <Coffee size={11} strokeWidth={2.5} /> {t('shifts.form.breakStart')}
             </span>
             <span style={{ fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-              {t('shifts.breakLegend', 'Break period shown as hatched section')}
+              {t('shifts.breakLegend')}
             </span>
             <span style={{ color: 'var(--border)', fontSize: 14, lineHeight: 1 }}>·</span>
           </div>
@@ -471,10 +483,10 @@ export default function DayCalendar({ shifts, date, onShiftClick, onSlotClick, c
                 display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
                 fontSize: '0.6rem', fontWeight: 800, color: 'rgba(255,255,255,0.9)',
               }}>2</span>
-              {t('shifts.form.isSplit', 'Spezzato')}
+              {t('shifts.form.isSplit')}
             </span>
             <span style={{ fontSize: 10, color: 'var(--text-muted)', fontStyle: 'italic' }}>
-              {t('shifts.splitLegend', 'Second block of a split shift')}
+              {t('shifts.splitLegend')}
             </span>
           </div>
         </div>

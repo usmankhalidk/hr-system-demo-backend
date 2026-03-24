@@ -109,9 +109,9 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.employees',  path: '/dipendenti',            icon: <IconUsers />, permissionKey: 'dipendenti' },
       { labelKey: 'nav.turni',      path: '/turni',                 icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',   path: '/presenze',              icon: <IconClock />, permissionKey: 'presenze' },
-      { labelKey: 'nav.qr',         path: '/qr',                    icon: <IconQr />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',   path: '/permessi',              icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.permissions',path: '/impostazioni/permessi', icon: <IconShield />, permissionKey: 'impostazioni' },
+      { labelKey: 'nav.settings',   path: '/impostazioni',          icon: <IconSettings /> },
     ],
     hr: [
       { labelKey: 'nav.dashboard', path: '/',           icon: <IconDashboard /> },
@@ -119,7 +119,6 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.stores',    path: '/negozi',     icon: <IconStore /> },
       { labelKey: 'nav.turni',     path: '/turni',      icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',  path: '/presenze',   icon: <IconClock />, permissionKey: 'presenze' },
-      { labelKey: 'nav.qr',        path: '/qr',         icon: <IconQr />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',   icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.settings',  path: '/impostazioni', icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
@@ -128,7 +127,6 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.employees', path: '/dipendenti', icon: <IconUsers />, permissionKey: 'dipendenti' },
       { labelKey: 'nav.turni',     path: '/turni',      icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',  path: '/presenze',   icon: <IconClock />, permissionKey: 'presenze' },
-      { labelKey: 'nav.qr',        path: '/qr',         icon: <IconQr />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',   icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.settings',  path: '/impostazioni', icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
@@ -137,15 +135,15 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.employees', path: '/dipendenti', icon: <IconUsers />, permissionKey: 'dipendenti' },
       { labelKey: 'nav.turni',     path: '/turni',      icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',  path: '/presenze',   icon: <IconClock />, permissionKey: 'presenze' },
-      { labelKey: 'nav.qr',        path: '/qr',         icon: <IconQr />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',   icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.settings',  path: '/impostazioni', icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
     employee: [
-      { labelKey: 'nav.dashboard', path: '/',           icon: <IconDashboard /> },
-      { labelKey: 'nav.myProfile', path: '/profilo',    icon: <IconPerson /> },
-      { labelKey: 'nav.turni',     path: '/turni',      icon: <IconCalendar /> },
-      { labelKey: 'nav.permessi',  path: '/permessi',   icon: <IconUmbrella />, permissionKey: 'permessi' },
+      { labelKey: 'nav.dashboard', path: '/',                  icon: <IconDashboard /> },
+      { labelKey: 'nav.myProfile', path: '/profilo',           icon: <IconPerson /> },
+      { labelKey: 'nav.turni',     path: '/turni',             icon: <IconCalendar />, permissionKey: 'turni' },
+      { labelKey: 'nav.checkin',   path: '/presenze/checkin',  icon: <IconQr /> },
+      { labelKey: 'nav.permessi',  path: '/permessi',          icon: <IconUmbrella />, permissionKey: 'permessi' },
     ],
     store_terminal: [],
   };
@@ -261,7 +259,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
           <NavLink
             key={item.path}
             to={item.path}
-            end={item.path === '/'}
+            end={item.path === '/' || item.path === '/impostazioni'}
             className="sidebar-item"
             title={collapsed ? t(item.labelKey) : undefined}
             onClick={() => { if (isMobileView && onMobileClose) onMobileClose(); }}

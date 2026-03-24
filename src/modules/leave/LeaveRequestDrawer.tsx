@@ -45,10 +45,9 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
       setError(t('leave.error_dates_required'));
       return;
     }
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    if (new Date(startDate + 'T00:00:00') < today) {
-      setError(t('leave.error_past_date', 'Non è possibile richiedere un permesso per una data passata'));
+    const todayStr = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD in local timezone
+    if (startDate < todayStr) {
+      setError(t('leave.error_past_date'));
       return;
     }
     if (new Date(startDate + 'T00:00:00') > new Date(endDate + 'T00:00:00')) {

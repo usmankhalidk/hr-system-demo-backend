@@ -135,7 +135,7 @@ export default function ShiftTemplatesPanel({ open, onClose }: ShiftTemplatesPan
     setApplyWeek('');
     setApplyEmployeeIds([]);
     setEmployees([]); // clear stale list immediately before async fetch
-    getEmployees({ store_id: tmpl.storeId, status: 'active', limit: 100 })
+    getEmployees({ storeId: tmpl.storeId, status: 'active', limit: 100 })
       .then((d) => setEmployees(d.employees.sort((a, b) => a.surname.localeCompare(b.surname))))
       .catch(() => {});
   }
@@ -404,7 +404,11 @@ export default function ShiftTemplatesPanel({ open, onClose }: ShiftTemplatesPan
                 onBlur={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; }}
               >
                 <option value="">{t('shifts.selectStore', '— Negozio —')}</option>
-                {stores.map((s) => <option key={s.id} value={String(s.id)}>{s.name}</option>)}
+                {stores.map((s) => (
+                  <option key={s.id} value={String(s.id)}>
+                    {s.companyName ? `${s.name} (${s.companyName})` : s.name}
+                  </option>
+                ))}
               </select>
               <button type="submit" className="btn btn-primary" disabled={saving} style={{ fontSize: 13 }}>
                 {saving ? '...' : t('common.create', 'Crea')}

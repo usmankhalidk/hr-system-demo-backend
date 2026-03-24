@@ -143,6 +143,31 @@ export interface LeaveBlock {
   status: string;
 }
 
+export interface AdminCreateLeavePayload {
+  userId: number;
+  leaveType: LeaveType;
+  startDate: string;
+  endDate: string;
+  notes?: string;
+}
+
+/** Admin/HR creates a leave on behalf of an employee (auto-approved, balance deducted). */
+export async function createLeaveOnBehalf(payload: AdminCreateLeavePayload): Promise<LeaveRequest> {
+  const { data } = await apiClient.post('/leave/admin', {
+    user_id:    payload.userId,
+    leave_type: payload.leaveType,
+    start_date: payload.startDate,
+    end_date:   payload.endDate,
+    notes:      payload.notes,
+  });
+  return data.data as LeaveRequest;
+}
+
+/** Delete a leave request (admin only). */
+export async function deleteLeaveRequest(id: number): Promise<void> {
+  await apiClient.delete(`/leave/${id}`);
+}
+
 /** Return approved/pending leave requests in a date range as block objects. */
 export async function getLeaveBlocks(dateFrom: string, dateTo: string): Promise<LeaveBlock[]> {
   const res = await getLeaveRequests({ dateFrom, dateTo });

@@ -33,6 +33,39 @@ function getAvatarColor(name: string): string {
   return AVATAR_PALETTE[Math.abs(hash) % AVATAR_PALETTE.length];
 }
 
+// ── Translation lookup maps ────────────────────────────────────────────────────
+const MARITAL_STATUS_KEYS: Record<string, string> = {
+  'Celibe': 'employees.marital_celibe',
+  'Nubile': 'employees.marital_nubile',
+  'Coniugato': 'employees.marital_coniugato',
+  'Coniugata': 'employees.marital_coniugata',
+  'Divorziato': 'employees.marital_divorziato',
+  'Divorziata': 'employees.marital_divorziata',
+  'Vedovo': 'employees.marital_vedovo',
+  'Vedova': 'employees.marital_vedova',
+  'Separato': 'employees.marital_separato',
+  'Separata': 'employees.marital_separata',
+  'Unione Civile': 'employees.marital_unione_civile',
+};
+
+const CONTRACT_TYPE_KEYS: Record<string, string> = {
+  'Tempo Indeterminato': 'employees.contractType_indeterminato',
+  'Tempo Determinato': 'employees.contractType_determinato',
+  'Apprendistato': 'employees.contractType_apprendistato',
+  'Stage / Tirocinio': 'employees.contractType_stage',
+  'Partita IVA / Collaborazione': 'employees.contractType_partita_iva',
+  'Altro': 'employees.contractType_altro',
+};
+
+const TERMINATION_TYPE_KEYS: Record<string, string> = {
+  'Dimissioni volontarie': 'employees.terminationType_dimissioni',
+  'Fine contratto': 'employees.terminationType_fine_contratto',
+  'Licenziamento': 'employees.terminationType_licenziamento',
+  'Pensionamento': 'employees.terminationType_pensionamento',
+  'Risoluzione consensuale': 'employees.terminationType_consensuale',
+  'Altro': 'employees.terminationType_altro',
+};
+
 // ── Helpers ────────────────────────────────────────────────────────────────────
 function formatDate(dateStr: string | null | undefined, lang: string): string {
   if (!dateStr) return '—';
@@ -159,7 +192,11 @@ export function EmployeeDetail() {
   const [editingTraining, setEditingTraining] = useState<{ trainingType?: TrainingType; startDate?: string | null; endDate?: string | null; editing?: number | null }>({});
   const [editingMedical, setEditingMedical] = useState<{ startDate?: string | null; endDate?: string | null; editing?: number | null }>({});
   const [trainingFormOpen, setTrainingFormOpen] = useState(false);
+  const [trainingModalSaving, setTrainingModalSaving] = useState(false);
+  const [trainingModalError, setTrainingModalError] = useState<string | null>(null);
   const [medicalFormOpen, setMedicalFormOpen] = useState(false);
+  const [medicalModalSaving, setMedicalModalSaving] = useState(false);
+  const [medicalModalError, setMedicalModalError] = useState<string | null>(null);
 
   const employeeId = id && !isNaN(parseInt(id, 10)) ? parseInt(id, 10) : undefined;
   const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
@@ -333,25 +370,23 @@ export function EmployeeDetail() {
         </div>
 
         {/* Actions */}
-        {(isAdminOrHr || (isAdmin && employee.status === 'active')) && (
+        {isAdminOrHr && (
           <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
-            {isAdminOrHr && (
-              <button
-                onClick={() => setShowEditForm(true)}
-                className="btn btn-secondary"
-                style={{
-                  display: 'inline-flex', alignItems: 'center', gap: '6px',
-                  padding: '8px 16px', borderRadius: 'var(--radius-sm)',
-                  border: '1px solid rgba(255,255,255,0.20)',
-                  background: 'rgba(255,255,255,0.08)',
-                  color: '#FFFFFF', fontSize: '13px', fontWeight: 600,
-                  fontFamily: 'var(--font-body)', cursor: 'pointer',
-                }}
-              >
-                <IconEdit /> {t('common.edit')}
-              </button>
-            )}
-            {isAdmin && employee.status === 'active' && (
+            <button
+              onClick={() => setShowEditForm(true)}
+              className="btn btn-secondary"
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: '6px',
+                padding: '8px 16px', borderRadius: 'var(--radius-sm)',
+                border: '1px solid rgba(255,255,255,0.20)',
+                background: 'rgba(255,255,255,0.08)',
+                color: '#FFFFFF', fontSize: '13px', fontWeight: 600,
+                fontFamily: 'var(--font-body)', cursor: 'pointer',
+              }}
+            >
+              <IconEdit /> {t('common.edit')}
+            </button>
+            {isAdminOrHr && employee.status === 'active' && (
               <button
                 onClick={() => setShowDeactivateModal(true)}
                 className="btn btn-danger"
@@ -367,7 +402,7 @@ export function EmployeeDetail() {
                 <IconOff /> {t('common.deactivate')}
               </button>
             )}
-            {isAdmin && employee.status === 'inactive' && (
+            {isAdminOrHr && employee.status === 'inactive' && (
               <button
                 onClick={() => setShowActivateModal(true)}
                 style={{
@@ -429,16 +464,23 @@ export function EmployeeDetail() {
                 : '—'
             } />
             <InfoRow label={t('employees.nationalityField')} value={employee.nationality ?? '—'} />
-            <InfoRow label={t('employees.genderField')} value={employee.gender ?? '—'} />
+            <InfoRow label={t('employees.genderField')} value={
+              employee.gender === 'M' ? t('employees.genderMale')
+              : employee.gender === 'F' ? t('employees.genderFemale')
+              : employee.gender === 'other' ? t('employees.genderOther')
+              : '—'
+            } />
             <InfoRow label={t('employees.addressField')} value={employee.address ? `${employee.address}${employee.cap ? `, ${employee.cap}` : ''}` : '—'} />
             <InfoRow label={t('employees.firstAidField')} value={
               <span style={{ color: employee.firstAidFlag ? 'var(--success)' : 'var(--text-muted)', fontWeight: 600 }}>
                 {employee.firstAidFlag ? t('common.yes') : t('common.no')}
               </span>
             } />
-            <InfoRow label={t('employees.maritalStatusField')} value={employee.maritalStatus ?? '—'} />
-            <InfoRow label={t('employees.contractTypeField')} value={employee.contractType ?? '—'} />
-            <InfoRow label={t('employees.probationField')} value={employee.probationMonths != null ? `${employee.probationMonths} ${t('employees.months')}` : '—'} last />
+            <InfoRow label={t('employees.maritalStatusField')} value={employee.maritalStatus ? t(MARITAL_STATUS_KEYS[employee.maritalStatus] ?? 'employees.maritalStatusField', { defaultValue: employee.maritalStatus }) : '—'} />
+            <InfoRow label={t('employees.contractTypeField')} value={employee.contractType ? t(CONTRACT_TYPE_KEYS[employee.contractType] ?? 'employees.contractTypeField', { defaultValue: employee.contractType }) : '—'} />
+            <InfoRow label={t('employees.probationField')} value={employee.probationMonths != null ? `${employee.probationMonths} ${t('employees.months')}` : '—'} />
+            <InfoRow label={t('employees.terminationDateField')} value={formatDate(employee.terminationDate, i18n.language)} />
+            <InfoRow label={t('employees.terminationTypeField')} value={employee.terminationType ? t(TERMINATION_TYPE_KEYS[employee.terminationType] ?? 'employees.terminationTypeField', { defaultValue: employee.terminationType }) : '—'} last />
           </SectionPanel>
         )}
       </div>
@@ -527,33 +569,49 @@ export function EmployeeDetail() {
       {/* Training Edit Modal */}
       <Modal
         open={trainingFormOpen}
-        onClose={() => setTrainingFormOpen(false)}
-        title={editingTraining.editing ? t('common.edit') : t('employees.addTraining')}
+        onClose={() => { setTrainingFormOpen(false); setTrainingModalError(null); }}
+        title={editingTraining.editing != null ? t('common.edit') : t('employees.addTraining')}
         footer={
           <>
-            <Button variant="secondary" onClick={() => setTrainingFormOpen(false)}>{t('common.cancel')}</Button>
-            <Button onClick={async () => {
+            <Button variant="secondary" onClick={() => { setTrainingFormOpen(false); setTrainingModalError(null); }} disabled={trainingModalSaving}>{t('common.cancel')}</Button>
+            <Button loading={trainingModalSaving} onClick={async () => {
               if (!employeeId) return;
-              const payload = {
-                trainingType: editingTraining.trainingType,
-                startDate: editingTraining.startDate,
-                endDate: editingTraining.endDate,
-              };
-              // Always check current state — prevents duplicates if modal state is stale
-              const existing = trainings.find(tr => tr.trainingType === editingTraining.trainingType);
-              if (existing) {
-                await updateTraining(employeeId, existing.id, payload);
-              } else {
-                await createTraining(employeeId, payload);
+              if (!editingTraining.startDate) {
+                setTrainingModalError(t('employees.trainingStartDateRequired', 'La data di inizio è obbligatoria'));
+                return;
               }
-              const tr = await getTrainings(employeeId);
-              setTrainings(tr);
-              setTrainingFormOpen(false);
+              setTrainingModalSaving(true);
+              setTrainingModalError(null);
+              try {
+                const payload = {
+                  trainingType: editingTraining.trainingType,
+                  startDate: editingTraining.startDate,
+                  endDate: editingTraining.endDate,
+                };
+                if (editingTraining.editing != null) {
+                  await updateTraining(employeeId, editingTraining.editing, payload);
+                } else {
+                  await createTraining(employeeId, payload);
+                }
+                const tr = await getTrainings(employeeId);
+                setTrainings(tr);
+                setTrainingFormOpen(false);
+                setTrainingModalError(null);
+              } catch (err: unknown) {
+                setTrainingModalError(translateApiError(err, t, t('employees.errorSave')));
+              } finally {
+                setTrainingModalSaving(false);
+              }
             }}>{t('common.save')}</Button>
           </>
         }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {trainingModalError && (
+            <Alert variant="danger" title={t('common.error')} onClose={() => setTrainingModalError(null)}>
+              {trainingModalError}
+            </Alert>
+          )}
           <DatePicker
             label={t('employees.trainingStartDate')}
             value={editingTraining.startDate ?? ''}
@@ -570,27 +628,45 @@ export function EmployeeDetail() {
       {/* Medical Edit Modal */}
       <Modal
         open={medicalFormOpen}
-        onClose={() => setMedicalFormOpen(false)}
-        title={editingMedical.editing ? t('common.edit') : t('employees.addMedical')}
+        onClose={() => { setMedicalFormOpen(false); setMedicalModalError(null); }}
+        title={editingMedical.editing != null ? t('common.edit') : t('employees.addMedical')}
         footer={
           <>
-            <Button variant="secondary" onClick={() => setMedicalFormOpen(false)}>{t('common.cancel')}</Button>
-            <Button onClick={async () => {
+            <Button variant="secondary" onClick={() => { setMedicalFormOpen(false); setMedicalModalError(null); }} disabled={medicalModalSaving}>{t('common.cancel')}</Button>
+            <Button loading={medicalModalSaving} onClick={async () => {
               if (!employeeId) return;
-              const payload = { startDate: editingMedical.startDate, endDate: editingMedical.endDate };
-              if (editingMedical.editing) {
-                await updateMedical(employeeId, editingMedical.editing, payload);
-              } else {
-                await createMedical(employeeId, payload);
+              if (!editingMedical.startDate) {
+                setMedicalModalError(t('employees.medicalStartDateRequired', 'La data di inizio è obbligatoria'));
+                return;
               }
-              const med = await getMedicals(employeeId);
-              setMedicals(med);
-              setMedicalFormOpen(false);
+              setMedicalModalSaving(true);
+              setMedicalModalError(null);
+              try {
+                const payload = { startDate: editingMedical.startDate, endDate: editingMedical.endDate };
+                if (editingMedical.editing != null) {
+                  await updateMedical(employeeId, editingMedical.editing, payload);
+                } else {
+                  await createMedical(employeeId, payload);
+                }
+                const med = await getMedicals(employeeId);
+                setMedicals(med);
+                setMedicalFormOpen(false);
+                setMedicalModalError(null);
+              } catch (err: unknown) {
+                setMedicalModalError(translateApiError(err, t, t('employees.errorSave')));
+              } finally {
+                setMedicalModalSaving(false);
+              }
             }}>{t('common.save')}</Button>
           </>
         }
       >
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+          {medicalModalError && (
+            <Alert variant="danger" title={t('common.error')} onClose={() => setMedicalModalError(null)}>
+              {medicalModalError}
+            </Alert>
+          )}
           <DatePicker
             label={t('employees.medicalStartDate')}
             value={editingMedical.startDate ?? ''}
