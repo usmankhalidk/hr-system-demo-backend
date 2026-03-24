@@ -264,6 +264,8 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
 
 export const approveLeave = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
+  // admin acts as hr in the approval chain
+  const effectiveRole = role === 'admin' ? 'hr' : role;
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
   const { notes } = req.body as { notes?: string };
@@ -289,20 +291,20 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
-  // The caller's role must match the current_approver_role
-  if (leaveRequest.current_approver_role !== role) {
+  // The caller's effective role must match the current_approver_role
+  if (leaveRequest.current_approver_role !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta");
     return;
   }
 
-  const transition = TRANSITIONS[role];
+  const transition = TRANSITIONS[effectiveRole];
   if (!transition) {
     forbidden(res, 'Ruolo non autorizzato ad approvare');
     return;
   }
 
-  // HR approval: final step — check balance and update atomically
-  if (role === 'hr') {
+  // HR/admin approval: final step — check balance and update atomically
+  if (effectiveRole === 'hr') {
     const workingDays = countWorkingDays(leaveRequest.start_date, leaveRequest.end_date);
     const year = new Date(leaveRequest.start_date).getFullYear();
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
@@ -353,7 +355,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
       await client.query(
         `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
          VALUES ($1, $2, $3, 'approved', $4)`,
-        [leaveId, userId, role, notes ?? null],
+        [leaveId, userId, effectiveRole, notes ?? null],
       );
 
       await client.query(
@@ -391,7 +393,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     await client.query(
       `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
        VALUES ($1, $2, $3, 'approved', $4)`,
-      [leaveId, userId, role, notes ?? null],
+      [leaveId, userId, effectiveRole, notes ?? null],
     );
 
     await client.query('COMMIT');
@@ -410,6 +412,8 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 
 export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId } = req.user!;
+  // admin acts as hr in the approval chain
+  const effectiveRole = role === 'admin' ? 'hr' : role;
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
   const { notes } = req.body as { notes: string };
@@ -437,7 +441,7 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Must be the current approver for this request
-  if (leaveRequest.current_approver_role !== role) {
+  if (leaveRequest.current_approver_role !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta");
     return;
   }
@@ -455,7 +459,7 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
     `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
      VALUES ($1, $2, $3, 'rejected', $4)
      RETURNING id`,
-    [leaveId, userId, role, notes],
+    [leaveId, userId, effectiveRole, notes],
   );
 
   ok(res, updated, 'Richiesta rifiutata');
