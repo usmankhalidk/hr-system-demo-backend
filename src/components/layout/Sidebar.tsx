@@ -92,7 +92,6 @@ const IconSettings = () => (
 const ROLE_ACCENT: Record<UserRole, string> = {
   admin: '#C9973A', hr: '#0284C7', area_manager: '#15803D',
   store_manager: '#7C3AED', employee: '#64748B', store_terminal: '#64748B',
-  system_admin: '#C9973A',
 };
 
 const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose }) => {
@@ -108,7 +107,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       getUnreadCount().then(setUnreadMessages).catch(() => {});
     }, 60_000);
     return () => clearInterval(interval);
-  }, [user?.role]);
+  }, [user?.id, user?.role]);
 
   if (!user || user.role === 'store_terminal') return null;
 
@@ -118,7 +117,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
     admin: [
       { labelKey: 'nav.dashboard',  path: '/',                      icon: <IconDashboard /> },
       { labelKey: 'nav.companies',  path: '/aziende',               icon: <IconBuilding /> },
-      { labelKey: 'nav.stores',     path: '/negozi',                icon: <IconStore /> },
+      { labelKey: 'nav.stores',     path: '/negozi',                icon: <IconStore />, permissionKey: 'negozi' },
       { labelKey: 'nav.employees',  path: '/dipendenti',            icon: <IconUsers />, permissionKey: 'dipendenti' },
       { labelKey: 'nav.turni',      path: '/turni',                 icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',   path: '/presenze',              icon: <IconClock />, permissionKey: 'presenze' },
@@ -129,7 +128,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
     hr: [
       { labelKey: 'nav.dashboard', path: '/',           icon: <IconDashboard /> },
       { labelKey: 'nav.employees', path: '/dipendenti', icon: <IconUsers />, permissionKey: 'dipendenti' },
-      { labelKey: 'nav.stores',    path: '/negozi',     icon: <IconStore /> },
+      { labelKey: 'nav.stores',    path: '/negozi',     icon: <IconStore />, permissionKey: 'negozi' },
       { labelKey: 'nav.turni',     path: '/turni',      icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',  path: '/presenze',   icon: <IconClock />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',   icon: <IconUmbrella />, permissionKey: 'permessi' },
@@ -159,10 +158,6 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.permessi',  path: '/permessi',          icon: <IconUmbrella />, permissionKey: 'permessi' },
     ],
     store_terminal: [],
-    system_admin: [
-      { labelKey: 'nav.systemPermissions', path: '/sistema/permessi', icon: <IconShield /> },
-      { labelKey: 'nav.systemCompanies', path: '/sistema/aziende', icon: <IconBuilding /> },
-    ],
   };
 
   const navItems = NAV_ITEMS[user.role].filter((item) => {
@@ -269,7 +264,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       <nav style={{ flex: 1, overflowY: 'auto', padding: '10px 8px' }}>
         {!collapsed && (
           <div style={{ fontSize: '10px', color: 'rgba(255,255,255,0.28)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.08em', padding: '6px 10px 4px', marginBottom: '2px' }}>
-            {user.role === 'system_admin' ? t('nav.sistema') : t('nav.navigation')}
+            {t('nav.navigation')}
           </div>
         )}
         {navItems.map((item) => (

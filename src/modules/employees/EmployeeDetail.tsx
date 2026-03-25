@@ -26,7 +26,6 @@ const ROLE_BADGE_VARIANT: Record<UserRole, 'accent' | 'primary' | 'info' | 'succ
   store_manager: 'warning',
   employee: 'neutral',
   store_terminal: 'neutral',
-  system_admin: 'accent',
 };
 
 const AVATAR_PALETTE = ['#0D2137', '#163352', '#8B6914', '#1B4D3E', '#2C5282', '#5B2333'];
@@ -219,7 +218,7 @@ export function EmployeeDetail() {
     try {
       const result = await uploadEmployeeAvatar(employeeId, file);
       showToast(t('employees.avatarSuccess'), 'success');
-      setEmployee(prev => prev ? { ...prev, avatarFilename: result.avatarUrl.split('/').pop() ?? null } : prev);
+      await loadEmployee();
     } catch {
       showToast(t('employees.avatarError'), 'error');
     } finally {

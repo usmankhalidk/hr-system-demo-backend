@@ -76,6 +76,7 @@ export function ComposeMessage({ recipientId, recipientName, onClose, onSent }: 
             type="text"
             value={subject}
             onChange={e => setSubject(e.target.value)}
+            disabled={saving}
             placeholder={t('messages.subjectPlaceholder')}
             style={{
               width: '100%', padding: '8px 12px',
@@ -96,6 +97,7 @@ export function ComposeMessage({ recipientId, recipientName, onClose, onSent }: 
           <textarea
             value={body}
             onChange={e => setBody(e.target.value)}
+            disabled={saving}
             placeholder={t('messages.bodyPlaceholder')}
             rows={5}
             style={{

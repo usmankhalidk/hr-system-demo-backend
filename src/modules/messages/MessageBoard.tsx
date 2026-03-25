@@ -44,10 +44,8 @@ export function MessageBoard() {
     const isExpanding = expanded !== msg.id;
     setExpanded(isExpanding ? msg.id : null);
     if (isExpanding && !msg.isRead) {
-      try {
-        await markMessageAsRead(msg.id);
-        setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isRead: true } : m));
-      } catch { /* non-critical */ }
+      setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isRead: true } : m));
+      markMessageAsRead(msg.id).catch(() => { /* non-critical */ });
     }
   };
 
