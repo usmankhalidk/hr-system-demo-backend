@@ -12,6 +12,7 @@ import EmployeeDetail from './modules/employees/EmployeeDetail';
 import StoreList from './modules/stores/StoreList';
 import CompanyList from './modules/companies/CompanyList';
 import PermissionsPanel from './modules/permissions/PermissionsPanel';
+import SystemPermissionsPanel from './modules/permissions/SystemPermissionsPanel';
 import ProfilePage from './modules/profile/ProfilePage';
 import ShiftsPage from './modules/shifts/ShiftsPage';
 import AttendanceLogsPage from './modules/attendance/AttendanceLogsPage';
@@ -27,6 +28,7 @@ function HomeRoute() {
   const { user } = useAuth();
   const { t } = useTranslation();
   if (user?.role === 'store_terminal') return <HomePage />;
+  if (user?.role === 'system_admin') return <Navigate to="/sistema/permessi" replace />;
   return <Layout title={t('nav.dashboard')}><HomePage /></Layout>;
 }
 
@@ -70,6 +72,12 @@ function AppRoutes() {
       <Route path="/impostazioni/permessi" element={
         <ProtectedRoute roles={['admin']}>
           <Layout title={t('nav.permissions')}><PermissionsPanel /></Layout>
+        </ProtectedRoute>
+      } />
+
+      <Route path="/sistema/permessi" element={
+        <ProtectedRoute roles={['system_admin']}>
+          <Layout title={t('nav.systemPermissions')}><SystemPermissionsPanel /></Layout>
         </ProtectedRoute>
       } />
 

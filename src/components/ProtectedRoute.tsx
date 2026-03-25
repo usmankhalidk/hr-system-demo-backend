@@ -30,6 +30,11 @@ export default function ProtectedRoute({ children, roles }: Props) {
 
   if (!user) return <Navigate to="/login" replace />;
 
+  // system_admin has no company context — only the system permissions route is valid for them
+  if (user.role === 'system_admin' && (!roles || !roles.includes('system_admin'))) {
+    return <Navigate to="/sistema/permessi" replace />;
+  }
+
   if (roles && !roles.includes(user.role)) {
     return <Navigate to="/" replace />;
   }
