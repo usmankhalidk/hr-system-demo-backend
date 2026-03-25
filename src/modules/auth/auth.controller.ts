@@ -7,7 +7,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 
 interface UserRow {
   id: number;
-  company_id: number;
+  company_id: number | null;
   name: string;
   surname: string | null;
   email: string;
@@ -162,7 +162,7 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
   // Axios interceptor sends snake_case; Zod schema validated as snake_case
   const { current_password, new_password } = req.body as { current_password: string; new_password: string };
 
-  const user = await queryOne<{ password_hash: string; company_id: number }>(
+  const user = await queryOne<{ password_hash: string; company_id: number | null }>(
     `SELECT password_hash, company_id FROM users WHERE id = $1`,
     [req.user!.userId]
   );

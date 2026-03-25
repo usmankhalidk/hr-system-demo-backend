@@ -28,6 +28,7 @@ export async function migrate() {
       '012_shifts_composite_index.sql',
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
+      '015_system_admin_role.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -96,6 +97,7 @@ export async function seed() {
       '012_shifts_composite_index.sql',
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
+      '015_system_admin_role.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -159,8 +161,14 @@ export async function seed() {
         (13, 2, 'Marco',    'Bruno',   'marco@beta.com',   $1, 'employee',       3,    11,   'Cassa',            '2025-12-05', '2026-09-30', 'part_time', 24,   'active', 'BE-EMP-002','marco.bruno2000@gmail.com',         '2000-01-30', 'Italiana', 'M', 'IT60X0542811101000001223344', 'Via Mergellina 8',   '80122', false, 'Celibe')
     `, [HASH]);
 
+    // ── System admin (no company binding) ────────────────────────────────────
+    await client.query(`
+      INSERT INTO users (company_id, name, surname, email, password_hash, role, status, is_super_admin)
+      VALUES (NULL, 'System', 'Admin', 'sysadmin@sistema.com', $1, 'system_admin', 'active', false)
+    `, [HASH]);
+
     await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
-    console.log('✓ Users seeded (13 users)');
+    console.log('✓ Users seeded (14 users, incl. system_admin)');
 
     // ── Phase 1 feedback: is_super_admin ──────────────────────────────────────
     await client.query(`
