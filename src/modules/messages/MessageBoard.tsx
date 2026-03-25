@@ -22,11 +22,7 @@ const IconMessage = () => (
   </svg>
 );
 
-interface Props {
-  employeeId: number;
-}
-
-export function MessageBoard({ employeeId: _employeeId }: Props) {
+export function MessageBoard() {
   const { t, i18n } = useTranslation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(true);
@@ -45,8 +41,9 @@ export function MessageBoard({ employeeId: _employeeId }: Props) {
   useEffect(() => { loadMessages(); }, [loadMessages]);
 
   const handleExpand = async (msg: Message) => {
-    setExpanded(expanded === msg.id ? null : msg.id);
-    if (!msg.isRead) {
+    const isExpanding = expanded !== msg.id;
+    setExpanded(isExpanding ? msg.id : null);
+    if (isExpanding && !msg.isRead) {
       try {
         await markMessageAsRead(msg.id);
         setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isRead: true } : m));

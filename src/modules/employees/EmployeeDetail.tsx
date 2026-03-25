@@ -759,7 +759,7 @@ export function EmployeeDetail() {
 
       {/* Communication board — only for own profile */}
       {isOwnProfile && employeeId && (
-        <MessageBoard employeeId={employeeId} />
+        <MessageBoard />
       )}
 
       {/* Compose message modal */}
