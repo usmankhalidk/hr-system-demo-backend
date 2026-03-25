@@ -83,7 +83,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   await query(
     `INSERT INTO audit_logs (company_id, user_id, action, entity_type, entity_id, ip_address)
      VALUES ($1, $2, 'LOGIN', 'user', $3, $4)`,
-    [user.company_id, user.id, user.id, ip]
+    [user.company_id ?? null, user.id, user.id, ip]
   );
 
   // Clean up this user's login attempt history on successful login (M14)
@@ -128,7 +128,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
     await query(
       `INSERT INTO audit_logs (company_id, user_id, action, entity_type, entity_id, ip_address)
        VALUES ($1, $2, 'LOGOUT', 'user', $3, $4)`,
-      [req.user.companyId, req.user.userId, req.user.userId, ip]
+      [req.user.companyId ?? null, req.user.userId, req.user.userId, ip]
     );
   }
   ok(res, null, 'Disconnessione effettuata');
