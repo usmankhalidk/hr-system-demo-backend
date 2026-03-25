@@ -17,6 +17,7 @@ const ROLE_COLORS: Record<UserRole, { bg: string; color: string }> = {
   store_manager:  { bg: 'rgba(124,58,237,0.10)',  color: '#7C3AED' },
   employee:       { bg: 'rgba(107,114,128,0.10)', color: '#6B7280' },
   store_terminal: { bg: 'rgba(107,114,128,0.10)', color: '#6B7280' },
+  system_admin:   { bg: '#C9973A22',               color: '#C9973A' },
 };
 
 const MenuIcon = () => (
