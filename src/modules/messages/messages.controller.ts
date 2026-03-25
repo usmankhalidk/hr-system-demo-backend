@@ -62,7 +62,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
 
 // GET /api/messages — inbox for current user
 export const listMessages = asyncHandler(async (req: Request, res: Response) => {
-  const { userId } = req.user!;
+  const { userId, companyId } = req.user!;
 
   const messages = await query(
     `SELECT m.id, m.subject, m.body, m.is_read, m.created_at,
@@ -71,10 +71,10 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
             s.role AS sender_role
      FROM messages m
      JOIN users s ON s.id = m.sender_id
-     WHERE m.recipient_id = $1
+     WHERE m.recipient_id = $1 AND m.company_id = $2
      ORDER BY m.created_at DESC
      LIMIT 100`,
-    [userId],
+    [userId, companyId],
   );
 
   ok(res, messages);
@@ -82,23 +82,23 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 
 // GET /api/messages/unread-count
 export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
-  const { userId } = req.user!;
-  const row = await queryOne<{ count: string }>(
-    `SELECT COUNT(*)::int AS count FROM messages WHERE recipient_id = $1 AND is_read = FALSE`,
-    [userId],
+  const { userId, companyId } = req.user!;
+  const row = await queryOne<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM messages WHERE recipient_id = $1 AND company_id = $2 AND is_read = FALSE`,
+    [userId, companyId],
   );
-  ok(res, { unreadCount: parseInt(row?.count ?? '0', 10) });
+  ok(res, { unreadCount: row?.count ?? 0 });
 });
 
 // PATCH /api/messages/:id/read
 export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
-  const { userId } = req.user!;
+  const { userId, companyId } = req.user!;
   const msgId = parseInt(req.params.id, 10);
   if (isNaN(msgId)) { notFound(res, 'Messaggio non trovato'); return; }
 
   const msg = await queryOne<{ id: number; recipient_id: number }>(
-    `SELECT id, recipient_id FROM messages WHERE id = $1`,
-    [msgId],
+    `SELECT id, recipient_id FROM messages WHERE id = $1 AND company_id = $2`,
+    [msgId, companyId],
   );
   if (!msg) { notFound(res, 'Messaggio non trovato'); return; }
   if (msg.recipient_id !== userId) {
@@ -107,9 +107,9 @@ export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const updated = await queryOne(
-    `UPDATE messages SET is_read = TRUE WHERE id = $1
+    `UPDATE messages SET is_read = TRUE WHERE id = $1 AND company_id = $2
      RETURNING id, subject, body, is_read, created_at, sender_id, recipient_id`,
-    [msgId],
+    [msgId, companyId],
   );
 
   ok(res, updated);

@@ -32,8 +32,8 @@ router.get(
 router.post(
   '/',
   authenticate,
-  requireRole('admin', 'hr', 'area_manager', 'store_manager'),
   enforceCompany,
+  requireRole('admin', 'hr', 'area_manager', 'store_manager'),
   validate(sendMessageSchema),
   sendMessage,
 );
