@@ -25,7 +25,7 @@ export const listMedicals = asyncHandler(async (req: Request, res: Response) => 
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   if (role === 'employee' && userId !== empId) { forbidden(res, 'Accesso negato'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const rows = await query<MedicalRow>(
     `SELECT * FROM employee_medical_checks WHERE user_id = $1 AND company_id = $2 ORDER BY start_date DESC`,
@@ -40,7 +40,7 @@ export const createMedical = asyncHandler(async (req: Request, res: Response) =>
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const { start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const emp = await queryOne<{ id: number }>(
     `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
@@ -62,7 +62,7 @@ export const updateMedical = asyncHandler(async (req: Request, res: Response) =>
   if (isNaN(empId) || isNaN(medId)) { notFound(res, 'Visita medica non trovata'); return; }
   const { start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne<MedicalRow>(
     `UPDATE employee_medical_checks SET start_date = $1, end_date = $2, notes = $3, updated_at = NOW()
@@ -79,7 +79,7 @@ export const deleteMedical = asyncHandler(async (req: Request, res: Response) =>
   const medId = parseInt(req.params.medicalId, 10);
   if (isNaN(empId) || isNaN(medId)) { notFound(res, 'Visita medica non trovata'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne(
     `DELETE FROM employee_medical_checks WHERE id = $1 AND user_id = $2 AND company_id = $3 RETURNING id`,

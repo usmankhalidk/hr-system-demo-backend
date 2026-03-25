@@ -47,7 +47,7 @@ export async function generateQr(req: Request, res: Response) {
   const ttl = parseInt(process.env.QR_TOKEN_TTL || '60', 10);
 
   // Sign token: { companyId, shiftId, iat, exp }
-  const qrToken = signQrToken(companyId, shiftId);
+  const qrToken = signQrToken(companyId!, shiftId);
 
   // QR payload — the employee's app will read this JSON when scanning
   const payload = JSON.stringify({ qrToken });

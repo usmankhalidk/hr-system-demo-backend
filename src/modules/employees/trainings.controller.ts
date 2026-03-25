@@ -35,7 +35,7 @@ export const listTrainings = asyncHandler(async (req: Request, res: Response) =>
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   if (role === 'employee' && userId !== empId) { forbidden(res, 'Accesso negato'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const rows = await query<TrainingRow>(
     `SELECT * FROM employee_trainings WHERE user_id = $1 AND company_id = $2 ORDER BY training_type, start_date DESC`,
@@ -51,7 +51,7 @@ export const createTraining = asyncHandler(async (req: Request, res: Response) =
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const { training_type, start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   // Verify employee belongs to the resolved company
   const emp = await queryOne<{ id: number }>(
@@ -75,7 +75,7 @@ export const updateTraining = asyncHandler(async (req: Request, res: Response) =
   if (isNaN(empId) || isNaN(trainingId)) { notFound(res, 'Record formazione non trovato'); return; }
   const { training_type, start_date, end_date, notes } = req.body;
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne<TrainingRow>(
     `UPDATE employee_trainings SET training_type = $1, start_date = $2, end_date = $3, notes = $4, updated_at = NOW()
@@ -93,7 +93,7 @@ export const deleteTraining = asyncHandler(async (req: Request, res: Response) =
   const trainingId = parseInt(req.params.trainingId, 10);
   if (isNaN(empId) || isNaN(trainingId)) { notFound(res, 'Record formazione non trovato'); return; }
   const isSuperAdmin = await checkSuperAdmin(userId);
-  const effectiveCompanyId = await resolveCompanyId(empId, companyId, isSuperAdmin);
+  const effectiveCompanyId = await resolveCompanyId(empId, companyId!, isSuperAdmin);
   if (effectiveCompanyId === null) { notFound(res, 'Dipendente non trovato'); return; }
   const row = await queryOne(
     `DELETE FROM employee_trainings WHERE id = $1 AND user_id = $2 AND company_id = $3 RETURNING id`,

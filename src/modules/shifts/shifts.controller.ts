@@ -183,7 +183,7 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
   const { week, month, store_id, user_id } = req.query as Record<string, string>;
 
-  const { where, params } = await buildShiftScope(role, companyId, userId, storeId);
+  const { where, params } = await buildShiftScope(role, companyId!, userId, storeId);
   let extraWhere = '';
   const extra: any[] = [];
   let idx = params.length + 1;

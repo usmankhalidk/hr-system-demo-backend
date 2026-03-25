@@ -154,7 +154,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     where = `u.company_id = $1`;
     params = [effectiveCompanyId];
   } else {
-    const scope = buildScopeWhere(role, companyId, userId, storeId);
+    const scope = buildScopeWhere(role, companyId!, userId, storeId);
     where = scope.where;
     params = scope.params;
   }
@@ -289,7 +289,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M11: Validate store_id if provided
   if (body.store_id) {
-    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
+    const storeError = await validateStore(parseInt(body.store_id, 10), companyId!);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
@@ -298,7 +298,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M9: Validate supervisor_id if provided
   if (body.supervisor_id) {
-    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId!);
     if (supError) {
       badRequest(res, supError, 'INVALID_SUPERVISOR');
       return;
@@ -401,7 +401,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M11: Validate store_id if provided
   if (body.store_id) {
-    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
+    const storeError = await validateStore(parseInt(body.store_id, 10), companyId!);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
@@ -410,7 +410,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M9: Validate supervisor_id if provided
   if (body.supervisor_id) {
-    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId!);
     if (supError) {
       badRequest(res, supError, 'INVALID_SUPERVISOR');
       return;

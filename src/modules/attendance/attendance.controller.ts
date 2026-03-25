@@ -45,7 +45,7 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
     [companyId, storeId, nonce],
   );
 
-  const token = signQrToken2(companyId, storeId, nonce);
+  const token = signQrToken2(companyId!, storeId, nonce);
   const expiresIn = parseInt(process.env.QR_TOKEN_TTL || '60', 10);
 
   ok(res, {
