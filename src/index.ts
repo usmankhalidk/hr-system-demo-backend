@@ -1,6 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
+import path from 'path';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
@@ -12,6 +13,7 @@ import permissionsRoutes from './modules/permissions/permissions.routes';
 import homeRoutes from './modules/home/home.routes';
 
 // Phase 2 modules
+import messagesRoutes from './modules/messages/messages.routes';
 import shiftsRoutes from './modules/shifts/shifts.routes';
 import attendanceRoutes from './modules/attendance/attendance.routes';
 import qrRoutes from './modules/attendance/qr.routes';
@@ -47,6 +49,11 @@ app.use(cors({
 }));
 app.use(express.json());
 
+// Serve uploaded files (avatars)
+app.use('/uploads', express.static(process.env.UPLOADS_DIR
+  ? path.dirname(process.env.UPLOADS_DIR)
+  : '/uploads'));
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -65,6 +72,9 @@ app.use('/api/shifts', shiftsRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/leave', leaveRoutes);
+
+// Communication board
+app.use('/api/messages', messagesRoutes);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
