@@ -44,6 +44,8 @@ export function MessageBoard() {
     const isExpanding = expanded !== msg.id;
     setExpanded(isExpanding ? msg.id : null);
     if (isExpanding && !msg.isRead) {
+      // Optimistic: update local state immediately for responsiveness.
+      // If the API call fails, the message reverts to unread on next load (intentional).
       setMessages(prev => prev.map(m => m.id === msg.id ? { ...m, isRead: true } : m));
       markMessageAsRead(msg.id).catch(() => { /* non-critical */ });
     }
