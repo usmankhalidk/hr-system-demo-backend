@@ -1,10 +1,11 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { NavLink } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
 import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 import { UserRole } from '../../types';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { getUnreadCount } from '../../api/messages';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -98,6 +99,17 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
   const { user, permissions, logout } = useAuth();
   const { t } = useTranslation();
 
+  const [unreadMessages, setUnreadMessages] = useState(0);
+
+  useEffect(() => {
+    if (user?.role !== 'employee') return;
+    getUnreadCount().then(setUnreadMessages).catch(() => {});
+    const interval = setInterval(() => {
+      getUnreadCount().then(setUnreadMessages).catch(() => {});
+    }, 60_000);
+    return () => clearInterval(interval);
+  }, [user?.role]);
+
   if (!user || user.role === 'store_terminal') return null;
 
   type NavItem = { labelKey: string; path: string; icon: React.ReactNode; permissionKey?: string };
@@ -149,6 +161,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
     store_terminal: [],
     system_admin: [
       { labelKey: 'nav.systemPermissions', path: '/sistema/permessi', icon: <IconShield /> },
+      { labelKey: 'nav.systemCompanies', path: '/sistema/aziende', icon: <IconBuilding /> },
     ],
   };
 
@@ -285,6 +298,22 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
           >
             <span style={{ flexShrink: 0, display: 'flex', alignItems: 'center' }}>{item.icon}</span>
             {!collapsed && <span style={{ overflow: 'hidden', textOverflow: 'ellipsis' }}>{t(item.labelKey)}</span>}
+            {!collapsed && item.labelKey === 'nav.myProfile' && unreadMessages > 0 && (
+              <span style={{
+                background: 'var(--accent)',
+                color: 'white',
+                fontSize: '10px',
+                fontWeight: 700,
+                borderRadius: '99px',
+                padding: '1px 6px',
+                marginLeft: 'auto',
+                fontFamily: 'var(--font-display)',
+                minWidth: 16,
+                textAlign: 'center' as const,
+              }}>
+                {unreadMessages > 99 ? '99+' : unreadMessages}
+              </span>
+            )}
           </NavLink>
         ))}
       </nav>

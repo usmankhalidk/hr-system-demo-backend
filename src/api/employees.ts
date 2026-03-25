@@ -54,3 +54,16 @@ export async function activateEmployee(id: number): Promise<Employee> {
   const { data } = await apiClient.patch(`/employees/${id}/activate`);
   return data.data;
 }
+
+export async function uploadEmployeeAvatar(id: number, file: File): Promise<{ avatarUrl: string }> {
+  const formData = new FormData();
+  formData.append('avatar', file);
+  const { data } = await apiClient.post(`/employees/${id}/avatar`, formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  });
+  return data.data;
+}
+
+export async function deleteEmployeeAvatar(id: number): Promise<void> {
+  await apiClient.delete(`/employees/${id}/avatar`);
+}

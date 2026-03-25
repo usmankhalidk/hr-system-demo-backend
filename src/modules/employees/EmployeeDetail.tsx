@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
-import { getEmployee, deactivateEmployee, activateEmployee } from '../../api/employees';
+import { getEmployee, deactivateEmployee, activateEmployee, uploadEmployeeAvatar } from '../../api/employees';
 import { getTrainings, getMedicals, createTraining, updateTraining, createMedical, updateMedical } from '../../api/trainings';
 import { translateApiError } from '../../utils/apiErrors';
 import { useAuth } from '../../context/AuthContext';
@@ -15,6 +15,8 @@ import { Alert } from '../../components/ui/Alert';
 import { Modal } from '../../components/ui/Modal';
 import { DatePicker } from '../../components/ui/DatePicker';
 import { EmployeeForm } from './EmployeeForm';
+import { MessageBoard } from '../messages/MessageBoard';
+import { ComposeMessage } from '../messages/ComposeMessage';
 
 // ── Types & constants ──────────────────────────────────────────────────────────
 const ROLE_BADGE_VARIANT: Record<UserRole, 'accent' | 'primary' | 'info' | 'success' | 'warning' | 'neutral'> = {
@@ -199,6 +201,9 @@ export function EmployeeDetail() {
   const [medicalModalSaving, setMedicalModalSaving] = useState(false);
   const [medicalModalError, setMedicalModalError] = useState<string | null>(null);
 
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const [showCompose, setShowCompose] = useState(false);
+
   const employeeId = id && !isNaN(parseInt(id, 10)) ? parseInt(id, 10) : undefined;
   const isAdminOrHr = user?.role === 'admin' || user?.role === 'hr';
   const isAdmin = user?.role === 'admin';
@@ -206,6 +211,23 @@ export function EmployeeDetail() {
   const canViewSensitive = isAdminOrHr || isOwnProfile;
 
   const tRole = (roleKey: string) => (t as (k: string) => string)(`roles.${roleKey}`);
+
+  const handleAvatarUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !employeeId) return;
+    setAvatarUploading(true);
+    try {
+      const result = await uploadEmployeeAvatar(employeeId, file);
+      showToast(t('employees.avatarSuccess'), 'success');
+      setEmployee(prev => prev ? { ...prev, avatarFilename: result.avatarUrl.split('/').pop() ?? null } : prev);
+    } catch {
+      showToast(t('employees.avatarError'), 'error');
+    } finally {
+      setAvatarUploading(false);
+      const input = document.getElementById('avatar-upload') as HTMLInputElement;
+      if (input) input.value = '';
+    }
+  };
 
   const loadEmployee = () => {
     if (!employeeId) return;
@@ -326,17 +348,53 @@ export function EmployeeDetail() {
         gap: '24px',
         flexWrap: 'wrap',
       }}>
-        {/* Avatar */}
-        <div style={{
-          width: 72, height: 72, borderRadius: '50%',
-          background: avatarBg,
-          border: '3px solid rgba(201,151,58,0.40)',
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          fontSize: '24px', fontWeight: 700, color: '#fff',
-          fontFamily: 'var(--font-display)', letterSpacing: '0.04em',
-          flexShrink: 0, boxShadow: '0 4px 16px rgba(0,0,0,0.24)',
-        }}>
-          {initials}
+        {/* Avatar with upload */}
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <div style={{
+            width: 72, height: 72, borderRadius: '50%',
+            background: employee.avatarFilename ? 'transparent' : avatarBg,
+            border: '3px solid rgba(201,151,58,0.40)',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '24px', fontWeight: 700, color: '#fff',
+            fontFamily: 'var(--font-display)', letterSpacing: '0.04em',
+            boxShadow: '0 4px 16px rgba(0,0,0,0.24)',
+            overflow: 'hidden',
+          }}>
+            {employee.avatarFilename ? (
+              <img
+                src={`/uploads/avatars/${employee.avatarFilename}`}
+                alt={fullName}
+                style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              />
+            ) : initials}
+          </div>
+          {(isOwnProfile || isAdminOrHr) && (
+            <>
+              <input
+                id="avatar-upload"
+                type="file"
+                accept="image/jpeg,image/png,image/webp"
+                style={{ display: 'none' }}
+                onChange={handleAvatarUpload}
+              />
+              <label
+                htmlFor="avatar-upload"
+                title={t('employees.changeAvatar')}
+                style={{
+                  position: 'absolute', bottom: 0, right: 0,
+                  width: 24, height: 24, borderRadius: '50%',
+                  background: 'var(--accent)', border: '2px solid var(--primary)',
+                  display: 'flex', alignItems: 'center', justifyContent: 'center',
+                  cursor: avatarUploading ? 'not-allowed' : 'pointer',
+                  opacity: avatarUploading ? 0.6 : 1,
+                }}
+              >
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+                </svg>
+              </label>
+            </>
+          )}
         </div>
 
         {/* Identity */}
@@ -387,6 +445,24 @@ export function EmployeeDetail() {
             >
               <IconEdit /> {t('common.edit')}
             </button>
+            {isAdminOrHr && !isOwnProfile && (
+              <button
+                onClick={() => setShowCompose(true)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: '6px',
+                  padding: '8px 16px', borderRadius: 'var(--radius-sm)',
+                  border: '1px solid rgba(201,151,58,0.30)',
+                  background: 'rgba(201,151,58,0.12)',
+                  color: 'rgba(201,151,58,0.9)', fontSize: '13px', fontWeight: 600,
+                  fontFamily: 'var(--font-body)', cursor: 'pointer',
+                }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+                </svg>
+                {t('employees.sendMessage')}
+              </button>
+            )}
             {isAdminOrHr && employee.status === 'active' && (
               <button
                 onClick={() => setShowDeactivateModal(true)}
@@ -680,6 +756,21 @@ export function EmployeeDetail() {
           />
         </div>
       </Modal>
+
+      {/* Communication board — only for own profile */}
+      {isOwnProfile && employeeId && (
+        <MessageBoard employeeId={employeeId} />
+      )}
+
+      {/* Compose message modal */}
+      {showCompose && employee && (
+        <ComposeMessage
+          recipientId={employee.id}
+          recipientName={fullName}
+          onClose={() => setShowCompose(false)}
+          onSent={() => showToast(t('messages.successSent'), 'success')}
+        />
+      )}
 
       {/* Edit drawer */}
       {showEditForm && employeeId && (
