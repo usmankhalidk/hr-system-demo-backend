@@ -115,7 +115,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   const certificateName = file?.originalname ?? null;
   const certificateData = file?.buffer ?? null;
 
-  const firstApprover = await determineFirstApprover(companyId, storeId ?? null);
+  const firstApprover = await determineFirstApprover(companyId!, storeId ?? null);
 
   const leaveRequest = await queryOne(
     `INSERT INTO leave_requests
@@ -701,6 +701,61 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
   } finally {
     dbClient.release();
   }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/leave/balance — upsert leave balance allocation (admin/hr only)
+// ---------------------------------------------------------------------------
+
+export const setBalance = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const { user_id, year, leave_type, total_days } = req.body as {
+    user_id: number;
+    year: number;
+    leave_type: 'vacation' | 'sick';
+    total_days: number;
+  };
+
+  // Validate that the target user belongs to the caller's company
+  const targetUser = await queryOne<{ id: number }>(
+    `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
+    [user_id, companyId],
+  );
+  if (!targetUser) {
+    notFound(res, 'Dipendente non trovato');
+    return;
+  }
+
+  // Guard: used_days must not exceed the new total_days
+  const existing = await queryOne<{ used_days: string }>(
+    `SELECT used_days FROM leave_balances
+     WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
+    [companyId, user_id, year, leave_type],
+  );
+  if (existing) {
+    const usedDays = parseFloat(existing.used_days);
+    if (usedDays > total_days) {
+      res.status(422).json({
+        success: false,
+        error: `Il totale non può essere inferiore ai giorni già utilizzati (${usedDays})`,
+        code: 'BALANCE_BELOW_USED',
+      });
+      return;
+    }
+  }
+
+  // Upsert the balance row
+  const row = await queryOne(
+    `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+     VALUES ($1, $2, $3, $4, $5, 0)
+     ON CONFLICT (company_id, user_id, year, leave_type)
+     DO UPDATE SET total_days = EXCLUDED.total_days, updated_at = NOW()
+     RETURNING id, company_id, user_id, year, leave_type, total_days, used_days,
+               (total_days - used_days) AS remaining_days, updated_at`,
+    [companyId, user_id, year, leave_type, total_days],
+  );
+
+  ok(res, row, 'Saldo aggiornato con successo');
 });
 
 // ---------------------------------------------------------------------------

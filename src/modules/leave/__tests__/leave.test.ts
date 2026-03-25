@@ -502,3 +502,115 @@ describe('GET /api/leave/balance', () => {
     await testPool.query('DELETE FROM leave_requests WHERE id=$1', [lr.id]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// PUT /api/leave/balance — upsert leave balance allocation
+// ---------------------------------------------------------------------------
+
+describe('PUT /api/leave/balance', () => {
+  afterEach(async () => {
+    await cleanLeave();
+  });
+
+  it('admin can set total_days for an employee → 200 with correct total_days', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put('/api/leave/balance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id:    seeds.employee1Id,
+        year:       2026,
+        leave_type: 'vacation',
+        total_days: 30,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(parseFloat(res.body.data.total_days)).toBe(30);
+    expect(res.body.data.user_id).toBe(seeds.employee1Id);
+    expect(res.body.data.leave_type).toBe('vacation');
+    expect(res.body.data.year).toBe(2026);
+  });
+
+  it('hr can set total_days for an employee → 200', async () => {
+    const token = await login('hr@acme-test.com');
+    const res = await request
+      .put('/api/leave/balance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id:    seeds.employee1Id,
+        year:       2026,
+        leave_type: 'sick',
+        total_days: 15,
+      });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(parseFloat(res.body.data.total_days)).toBe(15);
+  });
+
+  it('employee role gets 403', async () => {
+    const token = await login('employee1@acme-test.com');
+    const res = await request
+      .put('/api/leave/balance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id:    seeds.employee1Id,
+        year:       2026,
+        leave_type: 'vacation',
+        total_days: 20,
+      });
+    expect(res.status).toBe(403);
+  });
+
+  it('total_days below existing used_days → 422 with code BALANCE_BELOW_USED', async () => {
+    // Pre-insert a balance row with used_days = 5
+    await testPool.query(
+      `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
+       VALUES ($1, $2, 2026, 'vacation', 25, 5)
+       ON CONFLICT (company_id, user_id, year, leave_type)
+       DO UPDATE SET used_days = 5, total_days = 25`,
+      [seeds.acmeId, seeds.employee1Id],
+    );
+
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put('/api/leave/balance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id:    seeds.employee1Id,
+        year:       2026,
+        leave_type: 'vacation',
+        total_days: 3,
+      });
+    expect(res.status).toBe(422);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('BALANCE_BELOW_USED');
+  });
+
+  it('user_id not in same company → 404', async () => {
+    // Create an employee in the Beta company
+    const { rows: [betaEmployee] } = await testPool.query(
+      `INSERT INTO users (company_id, name, surname, email, password_hash, role, status)
+       VALUES ($1, 'Beta', 'Employee', 'beta.emp@beta-test.com',
+               '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG',
+               'employee', 'active')
+       RETURNING id`,
+      [seeds.betaId],
+    );
+
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put('/api/leave/balance')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id:    betaEmployee.id,
+        year:       2026,
+        leave_type: 'vacation',
+        total_days: 20,
+      });
+    expect(res.status).toBe(404);
+    expect(res.body.success).toBe(false);
+
+    // Cleanup
+    await testPool.query('DELETE FROM users WHERE id = $1', [betaEmployee.id]);
+  });
+});

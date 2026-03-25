@@ -12,6 +12,7 @@ import {
   approveLeave,
   rejectLeave,
   getBalance,
+  setBalance,
   downloadCertificate,
 } from './leave.controller';
 
@@ -51,6 +52,13 @@ const adminCreateSchema = z.object({
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
   end_date:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
   notes:      z.string().max(1000).optional(),
+});
+
+const setBalanceSchema = z.object({
+  user_id:    z.number().int().positive(),
+  year:       z.number().int().min(2020).max(2100),
+  leave_type: z.enum(['vacation', 'sick']),
+  total_days: z.number().min(0).max(365),
 });
 
 // NOTE: /pending and /balance are declared BEFORE /:id routes to avoid
@@ -95,6 +103,16 @@ router.get(
   requireRole(...allRoles),
   enforceCompany,
   getBalance,
+);
+
+// PUT /api/leave/balance — upsert leave balance allocation (admin/hr only)
+router.put(
+  '/balance',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  validate(setBalanceSchema),
+  setBalance,
 );
 
 // GET /api/leave — list leave requests (scoped by role)
