@@ -428,6 +428,7 @@ const it = {
     successSaveRelogin: 'Permessi salvati. Gli utenti interessati devono eseguire un nuovo accesso per vedere le modifiche.',
     errorLoad: 'Errore nel caricamento dei permessi.',
     errorSave: 'Errore nel salvataggio dei permessi. Riprova.',
+    systemSubtitle: 'Gestisci i moduli per ruolo su tutte le aziende',
     modules: {
       dipendenti: 'Dipendenti',
       turni: 'Turni',

@@ -428,6 +428,7 @@ const en = {
     successSaveRelogin: 'Permissions saved. Affected users must log out and back in to see changes.',
     errorLoad: 'Error loading permissions.',
     errorSave: 'Error saving permissions. Please try again.',
+    systemSubtitle: 'Manage module access per role across all companies',
     modules: {
       dipendenti: 'Employees',
       turni: 'Shifts',
