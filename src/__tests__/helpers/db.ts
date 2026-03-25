@@ -16,7 +16,7 @@ export async function clearTestData(): Promise<void> {
   `);
 }
 
-export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
+export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; sysAdminId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
   // Companies
   const { rows: [acme] } = await testPool.query(
     `INSERT INTO companies (name, slug) VALUES ('Acme Test', 'acme-test') RETURNING id`
@@ -62,8 +62,15 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     [acme.id, HASH, romaStore.id]
   );
 
+  const { rows: [sysAdmin] } = await testPool.query(
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status, is_super_admin)
+     VALUES (NULL, 'System', 'Admin', 'sysadmin@test.com', $1, 'system_admin', 'active', false)
+     RETURNING id`,
+    [HASH]
+  );
+
   // Seed module permissions for acme
-  const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
+  const modules = ['dipendenti','turni','presenze','permessi','negozi','documenti','ats','report','impostazioni'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
   for (const role of roles) {
     for (const mod of modules) {
@@ -99,6 +106,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     romaManagerId: romaManager.id,
     employee1Id: employee1.id,
     terminalId: terminal.id,
+    sysAdminId: sysAdmin.id,
     romaStoreId: romaStore.id,
     shiftId: shift1.id,
     todayShiftId: todayShift.id,
