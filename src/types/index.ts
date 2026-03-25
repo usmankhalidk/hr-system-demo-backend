@@ -68,6 +68,7 @@ export interface Employee {
   contractType?: string | null;
   probationMonths?: number | null;
   terminationType?: string | null;
+  avatarFilename?: string | null;
 }
 
 export type TrainingType = 'product' | 'general' | 'low_risk_safety' | 'fire_safety';
@@ -91,6 +92,19 @@ export interface MedicalCheck {
   endDate: string | null;
   notes: string | null;
   createdAt: string;
+}
+
+export interface Message {
+  id: number;
+  companyId: number;
+  senderId: number;
+  recipientId: number;
+  subject: string;
+  body: string;
+  isRead: boolean;
+  createdAt: string;
+  senderName?: string;
+  senderRole?: UserRole;
 }
 
 export interface PermissionGrid {
