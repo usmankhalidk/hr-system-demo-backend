@@ -13,6 +13,7 @@ import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
 import trainingsRoutes from './trainings.routes';
 import medicalsRoutes from './medicals.routes';
+import { uploadMiddleware, uploadAvatar, deleteAvatar } from './avatar.controller';
 
 const router = Router();
 
@@ -106,5 +107,23 @@ router.patch(
 
 router.use('/:id/trainings', trainingsRoutes);
 router.use('/:id/medicals', medicalsRoutes);
+
+// Avatar upload/delete — employee can do their own; managers/admin/hr can do any in company
+router.post(
+  '/:id/avatar',
+  authenticate,
+  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
+  enforceCompany,
+  uploadMiddleware,
+  uploadAvatar,
+);
+
+router.delete(
+  '/:id/avatar',
+  authenticate,
+  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
+  enforceCompany,
+  deleteAvatar,
+);
 
 export default router;

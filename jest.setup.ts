@@ -6,3 +6,7 @@ process.env.TEST_DATABASE_URL = process.env.TEST_DATABASE_URL || TEST_DB;
 process.env.DATABASE_URL = process.env.TEST_DATABASE_URL;
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'test-jwt-secret';
 process.env.QR_SECRET = process.env.QR_SECRET || 'test-qr-secret';
+// Use a writable temp directory for avatar uploads during tests
+import os from 'os';
+import path from 'path';
+process.env.UPLOADS_DIR = process.env.UPLOADS_DIR || path.join(os.tmpdir(), 'hr-test-uploads', 'avatars');
