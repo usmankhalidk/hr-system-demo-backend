@@ -8,6 +8,12 @@ import { asyncHandler } from '../../utils/asyncHandler';
 
 const UPLOAD_DIR = process.env.UPLOADS_DIR || '/uploads/avatars';
 
+function cleanupUploadedFile(req: Request): void {
+  if (req.file?.path) {
+    try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+  }
+}
+
 // Ensure upload directory exists at startup
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
@@ -59,6 +65,7 @@ export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => 
 
   // Access control: employee can only update own avatar
   if (role === 'employee' && userId !== empId) {
+    cleanupUploadedFile(req);
     forbidden(res, 'Puoi aggiornare solo il tuo avatar');
     return;
   }
@@ -68,7 +75,7 @@ export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => 
     `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
     [empId, companyId!],
   );
-  if (!emp) { notFound(res, 'Dipendente non trovato'); return; }
+  if (!emp) { cleanupUploadedFile(req); notFound(res, 'Dipendente non trovato'); return; }
 
   if (!req.file) {
     badRequest(res, 'Nessun file ricevuto', 'NO_FILE');
