@@ -4,9 +4,9 @@ import { ok, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
 
-const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
+const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
 const ACTIVE_MODULES = new Set([
-  'dipendenti', 'turni', 'presenze', 'permessi', 'impostazioni',
+  'dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'impostazioni',
 ]); // Phase 2 active modules
 
 type ModuleName = typeof ALL_MODULES[number];
@@ -106,6 +106,13 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
 // Used by AuthContext on login to load permission map
 // Active modules default to true unless explicitly disabled in DB
 export const getMyPermissions = asyncHandler(async (req: Request, res: Response) => {
+  // system_admin has no company — return all active modules as enabled
+  if (req.user!.role === 'system_admin') {
+    const allActive: Record<string, boolean> = {};
+    for (const mod of ACTIVE_MODULES) allActive[mod] = true;
+    return ok(res, allActive);
+  }
+
   const { companyId, role } = req.user!;
 
   const rows = await query<{ module_name: string; is_enabled: boolean }>(
