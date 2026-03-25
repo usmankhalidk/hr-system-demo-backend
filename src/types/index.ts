@@ -1,8 +1,8 @@
-export type UserRole = 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal';
+export type UserRole = 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal' | 'system_admin';
 
 export interface User {
   id: number;
-  companyId: number;
+  companyId: number | null;
   storeId: number | null;
   supervisorId: number | null;
   name: string;

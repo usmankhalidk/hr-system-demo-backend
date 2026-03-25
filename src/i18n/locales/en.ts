@@ -67,6 +67,7 @@ const en = {
     store_manager_full: 'Store Manager',
     employee: 'Employee',
     store_terminal: 'Terminal',
+    system_admin: 'System Admin',
   },
 
   // ─── Navigation ───────────────────────────────────────────────────────────
@@ -87,6 +88,8 @@ const en = {
     permessi: 'Leave & Holidays',
     settings: 'Settings',
     checkin: 'Check-In',
+    sistema: 'System',
+    systemPermissions: 'Global Permissions',
   },
 
   // ─── Language ─────────────────────────────────────────────────────────────
@@ -434,6 +437,7 @@ const en = {
       ats: 'ATS',
       report: 'Reports',
       impostazioni: 'Settings',
+      negozi: 'Stores',
     },
   },
   // ─── Settings ─────────────────────────────────────────────────────────────

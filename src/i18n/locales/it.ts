@@ -67,6 +67,7 @@ const it = {
     store_manager_full: 'Responsabile Negozio',
     employee: 'Dipendente',
     store_terminal: 'Terminale',
+    system_admin: 'Amministratore di Sistema',
   },
 
   // ─── Navigation ───────────────────────────────────────────────────────────
@@ -87,6 +88,8 @@ const it = {
     permessi: 'Permessi/Ferie',
     settings: 'Impostazioni',
     checkin: 'Check-In',
+    sistema: 'Sistema',
+    systemPermissions: 'Permessi Globali',
   },
 
   // ─── Language ─────────────────────────────────────────────────────────────
@@ -434,6 +437,7 @@ const it = {
       ats: 'ATS',
       report: 'Report',
       impostazioni: 'Impostazioni',
+      negozi: 'Negozi',
     },
   },
   // ─── Settings ─────────────────────────────────────────────────────────────
