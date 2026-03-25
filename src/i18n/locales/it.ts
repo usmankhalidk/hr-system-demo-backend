@@ -90,6 +90,7 @@ const it = {
     checkin: 'Check-In',
     sistema: 'Sistema',
     systemPermissions: 'Permessi Globali',
+    systemCompanies: 'Aziende di Sistema',
   },
 
   // ─── Language ─────────────────────────────────────────────────────────────
@@ -350,6 +351,14 @@ const it = {
     medicalEndDate: 'Valida Fino A',
     addMedical: 'Aggiungi Visita',
     noMedicals: 'Nessuna visita medica registrata.',
+    uploadAvatar: 'Carica foto',
+    changeAvatar: 'Cambia foto',
+    removeAvatar: 'Rimuovi foto',
+    avatarUploading: 'Caricamento...',
+    avatarSuccess: 'Foto aggiornata',
+    avatarError: 'Errore nel caricamento della foto',
+    avatarRemoved: 'Foto rimossa',
+    sendMessage: 'Invia Messaggio',
   },
 
   // ─── Stores ───────────────────────────────────────────────────────────────
@@ -405,11 +414,15 @@ const it = {
   companies: {
     title: 'La mia azienda',
     editCompany: 'Modifica Azienda',
+    createCompany: 'Crea Azienda',
     errorLoad: 'Impossibile caricare i dati aziendali. Riprova più tardi.',
     errorSave: 'Errore durante il salvataggio. Riprova.',
     fieldName: 'Nome azienda *',
     placeholderName: 'Es. Acme S.r.l.',
     validationName: 'Il nome è obbligatorio',
+    new: 'Nuova Azienda',
+    createdSuccess: 'Azienda creata con successo',
+    systemSubtitle: 'Gestisci tutte le aziende del sistema',
     updatedSuccess: 'Azienda aggiornata con successo',
     statStores: 'Negozi attivi',
     statEmployees: 'Dipendenti attivi',
@@ -446,6 +459,8 @@ const it = {
     title: 'Impostazioni',
     subtitle: 'Configurazione e preferenze dell\'applicazione.',
     noSettingsAvailable: 'Nessuna impostazione disponibile per il tuo ruolo al momento.',
+    sectionLeaveBalance: 'Gestione Saldo Ferie',
+    sectionLeaveBalanceDesc: 'Imposta o aggiorna il monte ferie e malattia assegnato a ciascun dipendente.',
     sectionLeave: 'Permessi e Ferie',
     leaveBalanceVisibility: 'Mostra saldo ferie ai dipendenti',
     leaveBalanceVisibilityDesc: 'Se disabilitato, i dipendenti non vedono il saldo ferie/malattia nella propria home.',
@@ -905,6 +920,28 @@ const it = {
     col_approver: 'Fase',
     select_employee: 'Seleziona dipendente',
     working_days: '{{n}} gg lavorativi',
+  },
+
+  // ─── Messages ────────────────────────────────────────────────────────────
+  messages: {
+    title: 'Bacheca Comunicazioni',
+    send: 'Invia Messaggio',
+    sending: 'Invio in corso...',
+    subject: 'Oggetto',
+    body: 'Messaggio',
+    subjectPlaceholder: 'Oggetto...',
+    bodyPlaceholder: 'Scrivi il tuo messaggio...',
+    noMessages: 'Nessun messaggio',
+    markRead: 'Segna come letto',
+    unread: 'Non letto',
+    from: 'Da',
+    sentAt: 'Inviato',
+    errorSend: "Errore durante l'invio",
+    errorLoad: 'Errore nel caricamento dei messaggi',
+    successSent: 'Messaggio inviato',
+    recipientLabel: 'Destinatario',
+    inbox: 'Posta in Arrivo',
+    compose: 'Nuovo Messaggio',
   },
 } as const;
 

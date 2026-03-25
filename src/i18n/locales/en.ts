@@ -90,6 +90,7 @@ const en = {
     checkin: 'Check-In',
     sistema: 'System',
     systemPermissions: 'Global Permissions',
+    systemCompanies: 'System Companies',
   },
 
   // ─── Language ─────────────────────────────────────────────────────────────
@@ -350,6 +351,14 @@ const en = {
     medicalEndDate: 'Validity Until',
     addMedical: 'Add Medical Check',
     noMedicals: 'No medical check records.',
+    uploadAvatar: 'Upload photo',
+    changeAvatar: 'Change photo',
+    removeAvatar: 'Remove photo',
+    avatarUploading: 'Uploading...',
+    avatarSuccess: 'Photo updated',
+    avatarError: 'Error uploading photo',
+    avatarRemoved: 'Photo removed',
+    sendMessage: 'Send Message',
   },
 
   // ─── Stores ───────────────────────────────────────────────────────────────
@@ -405,11 +414,15 @@ const en = {
   companies: {
     title: 'My Company',
     editCompany: 'Edit Company',
+    createCompany: 'Create Company',
     errorLoad: 'Unable to load company data. Please try again.',
     errorSave: 'Error saving. Please try again.',
     fieldName: 'Company name *',
     placeholderName: 'E.g. Acme Ltd.',
     validationName: 'Name is required',
+    new: 'New Company',
+    createdSuccess: 'Company created successfully',
+    systemSubtitle: 'Manage all companies in the system',
     updatedSuccess: 'Company updated successfully',
     statStores: 'Active stores',
     statEmployees: 'Active employees',
@@ -446,6 +459,8 @@ const en = {
     title: 'Settings',
     subtitle: 'Application configuration and preferences.',
     noSettingsAvailable: 'No settings are available for your role at this time.',
+    sectionLeaveBalance: 'Leave Balance Management',
+    sectionLeaveBalanceDesc: 'Set or update the vacation and sick day allocation for each employee.',
     sectionLeave: 'Leave & Permissions',
     leaveBalanceVisibility: 'Show leave balance to employees',
     leaveBalanceVisibilityDesc: 'When disabled, employees cannot see their vacation/sick day balances on the home page.',
@@ -904,6 +919,28 @@ const en = {
     col_approver: 'Stage',
     select_employee: 'Select employee',
     working_days: '{{n}} working days',
+  },
+
+  // ─── Messages ────────────────────────────────────────────────────────────
+  messages: {
+    title: 'Communication Board',
+    send: 'Send Message',
+    sending: 'Sending...',
+    subject: 'Subject',
+    body: 'Message',
+    subjectPlaceholder: 'Subject...',
+    bodyPlaceholder: 'Write your message...',
+    noMessages: 'No messages',
+    markRead: 'Mark as read',
+    unread: 'Unread',
+    from: 'From',
+    sentAt: 'Sent',
+    errorSend: 'Error sending message',
+    errorLoad: 'Error loading messages',
+    successSent: 'Message sent',
+    recipientLabel: 'Recipient',
+    inbox: 'Inbox',
+    compose: 'New Message',
   },
 } as const;
 
