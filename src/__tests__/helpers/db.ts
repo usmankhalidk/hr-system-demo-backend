@@ -7,7 +7,7 @@ export const testPool = new Pool({ connectionString: TEST_DB_URL, options: '-c t
 
 export async function clearTestData(): Promise<void> {
   await testPool.query(`
-    TRUNCATE login_attempts, audit_logs, role_module_permissions,
+    TRUNCATE messages, login_attempts, audit_logs, role_module_permissions,
              qr_tokens, attendance_events,
              leave_approvals, leave_balances, leave_requests,
              store_affluence, shift_templates, shifts,

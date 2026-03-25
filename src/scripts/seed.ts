@@ -29,6 +29,8 @@ export async function migrate() {
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
       '015_system_admin_role.sql',
+      '016_avatar.sql',
+      '017_messages.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -67,7 +69,7 @@ export async function seed() {
     // This guarantees a clean slate regardless of what was previously deployed
     // (e.g. old 4-table schema on an existing Railway DB).
     await client.query(`
-      DROP TABLE IF EXISTS store_affluence, shift_templates,
+      DROP TABLE IF EXISTS messages, store_affluence, shift_templates,
                            leave_balances, leave_approvals, leave_requests,
                            attendance_events, qr_tokens,
                            attendance, shifts, role_module_permissions,
@@ -98,6 +100,8 @@ export async function seed() {
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
       '015_system_admin_role.sql',
+      '016_avatar.sql',
+      '017_messages.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -160,6 +164,11 @@ export async function seed() {
         (12, 2, 'Carol',    'Russo',   'carol@beta.com',   $1, 'employee',       3,    11,   'Vendite',          '2026-03-10', NULL,         'full_time', 40,   'active', 'BE-EMP-001','carol.russo.privata@gmail.com',     '1992-10-11', 'Italiana', 'F', 'IT60X0542811101000001112233', 'Via Chiaia 55',      '80121', false, 'Nubile'),
         (13, 2, 'Marco',    'Bruno',   'marco@beta.com',   $1, 'employee',       3,    11,   'Cassa',            '2025-12-05', '2026-09-30', 'part_time', 24,   'active', 'BE-EMP-002','marco.bruno2000@gmail.com',         '2000-01-30', 'Italiana', 'M', 'IT60X0542811101000001223344', 'Via Mergellina 8',   '80122', false, 'Celibe')
     `, [HASH]);
+
+    // We inserted explicit `id` values above; `SERIAL`'s sequence is not
+    // automatically advanced for explicit inserts. Advance it before inserting
+    // `system_admin` (which relies on the sequence for its `id`).
+    await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
 
     // ── System admin (no company binding) ────────────────────────────────────
     await client.query(`
