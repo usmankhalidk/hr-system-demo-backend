@@ -14,6 +14,7 @@ const LIST_FIELDS = `
   u.working_type, u.weekly_hours, u.status,
   u.first_aid_flag, u.marital_status,
   u.termination_date, u.termination_type, u.created_at,
+  u.avatar_filename,
   s.name AS store_name,
   CONCAT(sup.name, ' ', sup.surname) AS supervisor_name
 `;
@@ -255,6 +256,17 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
       forbidden(res, 'Accesso negato'); return;
     }
+    // area_manager can only see employees whose direct supervisor is themselves
+    // (consistent with listEmployees scope) — allow self-view
+    if (role === 'area_manager' && empId !== userId) {
+      const supervised = await queryOne<{ id: number }>(
+        `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND supervisor_id = $3`,
+        [empId, companyId, userId],
+      );
+      if (!supervised) {
+        forbidden(res, 'Accesso negato'); return;
+      }
+    }
   }
 
   ok(res, employee);
@@ -262,8 +274,14 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
 
 // POST /api/employees
 export const createEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, role: callerRole } = req.user!;
   const body = req.body as Record<string, any>;
+
+  // Privilege escalation guard: only admin may create another admin
+  if (body.role === 'admin' && callerRole !== 'admin') {
+    forbidden(res, 'Solo un amministratore può creare un utente con ruolo admin');
+    return;
+  }
 
   // Check unique_id uniqueness within company (if provided)
   if (body.unique_id) {
@@ -382,9 +400,16 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   const body = req.body as Record<string, any>;
 
   // H1: Role escalation prevention — only admin and hr may change the role field
-  if ('role' in body && callerRole !== 'admin' && callerRole !== 'hr') {
-    forbidden(res, 'Non sei autorizzato a modificare il ruolo di un dipendente');
-    return;
+  if ('role' in body) {
+    if (callerRole !== 'admin' && callerRole !== 'hr') {
+      forbidden(res, 'Non sei autorizzato a modificare il ruolo di un dipendente');
+      return;
+    }
+    // Privilege escalation guard: only admin may assign or keep the admin role
+    if (body.role === 'admin' && callerRole !== 'admin') {
+      forbidden(res, 'Solo un amministratore può assegnare il ruolo admin');
+      return;
+    }
   }
 
   // Check unique_id conflict (if provided and changed)
