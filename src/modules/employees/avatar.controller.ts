@@ -17,11 +17,18 @@ function cleanupUploadedFile(req: Request): void {
 // Ensure upload directory exists at startup
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 
+const MIME_TO_EXT: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/jpg': '.jpg',
+  'image/png': '.png',
+  'image/webp': '.webp',
+};
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
   filename: (req, file, cb) => {
     const userId = req.params.id;
-    const ext = path.extname(file.originalname).toLowerCase() || '.jpg';
+    const ext = MIME_TO_EXT[file.mimetype] ?? '.jpg';
     cb(null, `${userId}${ext}`);
   },
 });

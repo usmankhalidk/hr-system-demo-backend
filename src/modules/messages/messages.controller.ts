@@ -8,6 +8,9 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const { userId, role, companyId } = req.user!;
   const { recipientId, subject, body } = req.body;
 
+  const numRecipientId = parseInt(String(recipientId), 10);
+  if (isNaN(numRecipientId)) { badRequest(res, 'Destinatario non valido', 'INVALID_RECIPIENT'); return; }
+
   if (!subject?.trim() || !body?.trim()) {
     badRequest(res, 'Oggetto e corpo del messaggio sono obbligatori', 'MISSING_FIELDS');
     return;
@@ -16,7 +19,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   // Verify recipient exists in same company and is active
   const recipient = await queryOne<{ id: number }>(
     `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
-    [recipientId, companyId],
+    [numRecipientId, companyId],
   );
   if (!recipient) {
     notFound(res, 'Destinatario non trovato in questa azienda');
@@ -27,7 +30,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   if (role === 'area_manager') {
     const supervised = await queryOne<{ id: number }>(
       `SELECT id FROM users WHERE id = $1 AND supervisor_id = $2 AND company_id = $3`,
-      [recipientId, userId, companyId],
+      [numRecipientId, userId, companyId],
     );
     if (!supervised) {
       forbidden(res, 'Puoi inviare messaggi solo ai dipendenti che supervisioni');
@@ -42,7 +45,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
        WHERE id = $1
          AND store_id = (SELECT store_id FROM users WHERE id = $2)
          AND company_id = $3`,
-      [recipientId, userId, companyId],
+      [numRecipientId, userId, companyId],
     );
     if (!inStore) {
       forbidden(res, 'Puoi inviare messaggi solo ai dipendenti del tuo negozio');
@@ -54,7 +57,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     `INSERT INTO messages (company_id, sender_id, recipient_id, subject, body)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, company_id, sender_id, recipient_id, subject, body, is_read, created_at`,
-    [companyId, userId, recipientId, subject.trim(), body.trim()],
+    [companyId, userId, numRecipientId, subject.trim(), body.trim()],
   );
 
   created(res, msg, 'Messaggio inviato');
