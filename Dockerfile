@@ -16,6 +16,8 @@ RUN npm run build
 FROM node:20-alpine AS runner
 WORKDIR /app
 
+RUN mkdir -p /uploads/avatars
+
 ENV NODE_ENV=production
 
 COPY backend/package*.json ./
