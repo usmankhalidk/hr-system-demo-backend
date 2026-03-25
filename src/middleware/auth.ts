@@ -57,3 +57,12 @@ export function enforceCompany(req: Request, res: Response, next: NextFunction):
   }
   next();
 }
+
+// Guards endpoints that are exclusively for system_admin (cross-company operations)
+export function requireSystemAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (req.user?.role !== 'system_admin') {
+    res.status(403).json({ success: false, error: 'Richiede ruolo system_admin', code: 'FORBIDDEN' });
+    return;
+  }
+  next();
+}
