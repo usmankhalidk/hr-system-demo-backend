@@ -716,7 +716,7 @@ export const setBalance = asyncHandler(async (req: Request, res: Response) => {
     total_days: number;
   };
 
-  // Validate that the target user belongs to the caller's company
+  // Verify target user belongs to caller's company
   const targetUser = await queryOne<{ id: number }>(
     `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
     [user_id, companyId],
@@ -726,36 +726,40 @@ export const setBalance = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Guard: used_days must not exceed the new total_days
-  const existing = await queryOne<{ used_days: string }>(
-    `SELECT used_days FROM leave_balances
-     WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
-    [companyId, user_id, year, leave_type],
-  );
-  if (existing) {
-    const usedDays = parseFloat(existing.used_days);
-    if (usedDays > total_days) {
-      res.status(422).json({
-        success: false,
-        error: `Il totale non può essere inferiore ai giorni già utilizzati (${usedDays})`,
-        code: 'BALANCE_BELOW_USED',
-      });
-      return;
-    }
-  }
-
-  // Upsert the balance row
-  const row = await queryOne(
+  // Atomic upsert: only update if used_days <= new total_days
+  const result = await query<{
+    id: number; company_id: number; user_id: number; year: number;
+    leave_type: string; total_days: string; used_days: string; remaining_days: string; updated_at: string;
+  }>(
     `INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days)
      VALUES ($1, $2, $3, $4, $5, 0)
      ON CONFLICT (company_id, user_id, year, leave_type)
-     DO UPDATE SET total_days = EXCLUDED.total_days, updated_at = NOW()
+     DO UPDATE SET
+       total_days = EXCLUDED.total_days,
+       updated_at = NOW()
+     WHERE leave_balances.used_days <= $5
      RETURNING id, company_id, user_id, year, leave_type, total_days, used_days,
                (total_days - used_days) AS remaining_days, updated_at`,
     [companyId, user_id, year, leave_type, total_days],
   );
 
-  ok(res, row, 'Saldo aggiornato con successo');
+  if (result.length === 0) {
+    // The update was rejected because used_days > total_days
+    const current = await queryOne<{ used_days: string }>(
+      `SELECT used_days FROM leave_balances
+       WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
+      [companyId, user_id, year, leave_type],
+    );
+    const usedDays = current ? parseFloat(current.used_days) : 0;
+    res.status(422).json({
+      success: false,
+      error: `Il totale non può essere inferiore ai giorni già utilizzati (${usedDays})`,
+      code: 'BALANCE_BELOW_USED',
+    });
+    return;
+  }
+
+  ok(res, result[0], 'Saldo aggiornato con successo');
 });
 
 // ---------------------------------------------------------------------------
