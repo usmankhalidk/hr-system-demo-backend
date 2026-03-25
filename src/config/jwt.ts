@@ -7,13 +7,13 @@ if (!JWT_SECRET) throw new Error('FATAL: JWT_SECRET environment variable is requ
 if (!QR_SECRET) throw new Error('FATAL: QR_SECRET environment variable is required');
 const QR_TOKEN_TTL = parseInt(process.env.QR_TOKEN_TTL || '60', 10);
 
-export type UserRole = 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal';
+export type UserRole = 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal' | 'system_admin';
 
 export interface JwtPayload {
   userId: number;
   email: string;
   role: UserRole;
-  companyId: number;
+  companyId: number | null;
   storeId: number | null;
   supervisorId: number | null;
   is_super_admin: boolean;
