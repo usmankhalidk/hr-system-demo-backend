@@ -3,6 +3,7 @@ import { query, queryOne, pool } from '../../config/database';
 import { ok, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
 const ACTIVE_MODULES = new Set([
@@ -49,7 +50,8 @@ export const getPermissions = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/permissions — Update permission toggles (admin only, active modules only)
 export const updatePermissions = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId } = req.user!;
+  const { userId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { updates } = req.body as { updates: Array<{ role: UserRole; module: string; enabled: boolean }> };
 
   if (!Array.isArray(updates) || updates.length === 0) {
@@ -79,17 +81,21 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
     for (const update of updates) {
       await client.query(
         `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled, updated_by, updated_at)
-         VALUES ($1, $2, $3, $4, $5, NOW())
+         SELECT c.id, $2, $3, $4, $5, NOW()
+         FROM companies c
+         WHERE c.id = ANY($1)
          ON CONFLICT (company_id, role, module_name)
          DO UPDATE SET is_enabled = $4, updated_by = $5, updated_at = NOW()`,
-        [companyId, update.role, update.module, update.enabled, userId]
+        [allowedCompanyIds, update.role, update.module, update.enabled, userId]
       );
     }
+
+    const auditCompanyId = req.user!.companyId ?? (allowedCompanyIds.length > 0 ? allowedCompanyIds[0] : null);
     const ip = req.headers['x-forwarded-for'] as string || req.socket.remoteAddress;
     await client.query(
       `INSERT INTO audit_logs (company_id, user_id, action, entity_type, new_data, ip_address)
        VALUES ($1, $2, 'UPDATE', 'permission', $3, $4)`,
-      [companyId, userId, JSON.stringify(updates), ip]
+      [auditCompanyId, userId, JSON.stringify(updates), ip]
     );
     await client.query('COMMIT');
   } catch (err) {
@@ -106,19 +112,15 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
 // Used by AuthContext on login to load permission map
 // Active modules default to true unless explicitly disabled in DB
 export const getMyPermissions = asyncHandler(async (req: Request, res: Response) => {
-  // system_admin has no company — return all active modules as enabled
-  if (req.user!.role === 'system_admin') {
-    const allActive: Record<string, boolean> = {};
-    for (const mod of ACTIVE_MODULES) allActive[mod] = true;
-    return ok(res, allActive);
-  }
-
   const { companyId, role } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   const rows = await query<{ module_name: string; is_enabled: boolean }>(
-    `SELECT module_name, is_enabled FROM role_module_permissions
-     WHERE company_id = $1 AND role = $2`,
-    [companyId, role]
+    `SELECT module_name, BOOL_OR(is_enabled)::boolean AS is_enabled
+     FROM role_module_permissions
+     WHERE company_id = ANY($1) AND role = $2 AND module_name = ANY($3)
+     GROUP BY module_name`,
+    [allowedCompanyIds, role, Array.from(ACTIVE_MODULES)]
   );
 
   // Default all active modules to enabled — DB rows override the default

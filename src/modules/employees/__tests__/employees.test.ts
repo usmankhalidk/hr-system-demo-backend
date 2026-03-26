@@ -54,13 +54,13 @@ describe('GET /api/employees', () => {
     expect(res.body.data.total).toBeGreaterThanOrEqual(5);
   });
 
-  it('area_manager sees only supervised employees within their company', async () => {
+  it('area_manager can see employees across their allowed group companies', async () => {
     const token = await login('area@acme-test.com');
     const res = await request.get('/api/employees').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
-    // area_manager only sees employees they supervise — no cross-company access
+    // group visibility enables cross-company listing for area_manager
     const emails = res.body.data.employees.map((e: any) => e.email);
-    expect(emails).not.toContain('admin@acme-test.com');
+    expect(emails).toContain('admin@acme-test.com');
   });
 
   it('store_manager sees only employees in their store', async () => {

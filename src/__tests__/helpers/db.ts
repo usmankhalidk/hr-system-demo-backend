@@ -11,23 +11,67 @@ export async function clearTestData(): Promise<void> {
              qr_tokens, attendance_events,
              leave_approvals, leave_balances, leave_requests,
              store_affluence, shift_templates, shifts,
-             attendance, users, stores, companies
+             attendance, users, stores, companies,
+             group_role_visibility, company_groups
     RESTART IDENTITY CASCADE
   `);
 }
 
-export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; sysAdminId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
+export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; superAdminId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
+  // Ensure group tables/columns exist in the test DB (some CI setups may not have
+  // run the newest migrations yet).
+  await testPool.query(`
+    CREATE TABLE IF NOT EXISTS company_groups (
+      id         SERIAL PRIMARY KEY,
+      name       VARCHAR(255) UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE companies
+      ADD COLUMN IF NOT EXISTS group_id INTEGER REFERENCES company_groups(id) ON DELETE SET NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_companies_group_id ON companies(group_id);
+
+    CREATE TABLE IF NOT EXISTS group_role_visibility (
+      group_id          INTEGER NOT NULL REFERENCES company_groups(id) ON DELETE CASCADE,
+      role              user_role NOT NULL,
+      can_cross_company BOOLEAN NOT NULL DEFAULT false,
+      updated_at        TIMESTAMPTZ DEFAULT NOW(),
+      updated_by        INTEGER REFERENCES users(id),
+      UNIQUE (group_id, role),
+      CHECK (role IN ('hr', 'area_manager'))
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_group_role_visibility_group_role ON group_role_visibility(group_id, role);
+  `);
+
+  // Ensure companies.is_active exists (used to block operations on deactivated companies).
+  await testPool.query(`
+    ALTER TABLE companies
+      ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
+  `);
+
   // Companies
   const { rows: [acme] } = await testPool.query(
-    `INSERT INTO companies (name, slug) VALUES ('Acme Test', 'acme-test') RETURNING id`
+    `INSERT INTO companies (name, slug)
+     VALUES ('Acme Test', 'acme-test')
+     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`
   );
   const { rows: [beta] } = await testPool.query(
-    `INSERT INTO companies (name, slug) VALUES ('Beta Test', 'beta-test') RETURNING id`
+    `INSERT INTO companies (name, slug)
+     VALUES ('Beta Test', 'beta-test')
+     ON CONFLICT (slug) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`
   );
 
   // Store
   const { rows: [romaStore] } = await testPool.query(
-    `INSERT INTO stores (company_id, name, code, max_staff) VALUES ($1, 'Roma Test', 'ROM-T1', 10) RETURNING id`,
+    `INSERT INTO stores (company_id, name, code, max_staff)
+     VALUES ($1, 'Roma Test', 'ROM-T1', 10)
+     ON CONFLICT (company_id, code)
+     DO UPDATE SET name = EXCLUDED.name, max_staff = EXCLUDED.max_staff
+     RETURNING id`,
     [acme.id]
   );
 
@@ -35,55 +79,151 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
 
   // Users
   const { rows: [admin] } = await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status) VALUES ($1, 'Admin', 'Test', 'admin@acme-test.com', $2, 'admin', 'active') RETURNING id`,
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status)
+     VALUES ($1, 'Admin', 'Test', 'admin@acme-test.com', $2, 'admin', 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       status = EXCLUDED.status
+     RETURNING id`,
     [acme.id, HASH]
   );
   const { rows: [hr] } = await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status) VALUES ($1, 'HR', 'Test', 'hr@acme-test.com', $2, 'hr', 'active') RETURNING id`,
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status)
+     VALUES ($1, 'HR', 'Test', 'hr@acme-test.com', $2, 'hr', 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       status = EXCLUDED.status
+     RETURNING id`,
     [acme.id, HASH]
   );
   const { rows: [areaManager] } = await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status) VALUES ($1, 'Area', 'Manager', 'area@acme-test.com', $2, 'area_manager', 'active') RETURNING id`,
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status)
+     VALUES ($1, 'Area', 'Manager', 'area@acme-test.com', $2, 'area_manager', 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       status = EXCLUDED.status
+     RETURNING id`,
     [acme.id, HASH]
   );
   const { rows: [romaManager] } = await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status) VALUES ($1, 'Roma', 'Manager', 'manager.roma@acme-test.com', $2, 'store_manager', $3, $4, 'active') RETURNING id`,
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status)
+     VALUES ($1, 'Roma', 'Manager', 'manager.roma@acme-test.com', $2, 'store_manager', $3, $4, 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       store_id = EXCLUDED.store_id,
+       supervisor_id = EXCLUDED.supervisor_id,
+       status = EXCLUDED.status
+     RETURNING id`,
     [acme.id, HASH, romaStore.id, areaManager.id]
   );
   const { rows: [employee1] } = await testPool.query(
-    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, supervisor_id, department, hire_date, working_type, weekly_hours, unique_id, status) VALUES ($1, 'Anna', 'Test', 'employee1@acme-test.com', $2, 'employee', $3, $4, 'Cassa', '2023-01-15', 'full_time', 40, 'ACME-TEST-001', 'active') RETURNING id`,
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, supervisor_id, department, hire_date, working_type, weekly_hours, unique_id, status)
+     VALUES ($1, 'Anna', 'Test', 'employee1@acme-test.com', $2, 'employee', $3, $4, 'Cassa', '2023-01-15', 'full_time', 40, 'ACME-TEST-001', 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       store_id = EXCLUDED.store_id,
+       supervisor_id = EXCLUDED.supervisor_id,
+       department = EXCLUDED.department,
+       hire_date = EXCLUDED.hire_date,
+       working_type = EXCLUDED.working_type,
+       weekly_hours = EXCLUDED.weekly_hours,
+       unique_id = EXCLUDED.unique_id,
+       status = EXCLUDED.status
+     RETURNING id`,
     [acme.id, HASH, romaStore.id, romaManager.id]
   );
 
   const { rows: [terminal] } = await testPool.query(
     `INSERT INTO users (company_id, name, surname, email, password_hash, role, store_id, status)
      VALUES ($1, 'Terminal', 'Roma', 'terminal@acme-test.com', $2, 'store_terminal', $3, 'active')
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       store_id = EXCLUDED.store_id,
+       status = EXCLUDED.status
      RETURNING id`,
     [acme.id, HASH, romaStore.id]
   );
 
-  const { rows: [sysAdmin] } = await testPool.query(
+  // Main Admin (is_super_admin) used for global company + permission controls
+  const { rows: [superAdmin] } = await testPool.query(
     `INSERT INTO users (company_id, name, surname, email, password_hash, role, status, is_super_admin)
-     VALUES (NULL, 'System', 'Admin', 'sysadmin@test.com', $1, 'system_admin', 'active', false)
+     VALUES (NULL, 'Super', 'Admin', 'superadmin@acme-test.com', $1, 'admin', 'active', true)
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       status = EXCLUDED.status,
+       is_super_admin = EXCLUDED.is_super_admin
      RETURNING id`,
     [HASH]
   );
 
-  // Seed module permissions for acme
+  // Seed a single group and assign both companies to it
+  const { rows: [grp] } = await testPool.query(
+    `INSERT INTO company_groups (name) VALUES ('TEST GROUP')
+     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+     RETURNING id`
+  );
+  await testPool.query(`UPDATE companies SET group_id = $1 WHERE id IN ($2, $3)`, [grp.id, acme.id, beta.id]);
+  await testPool.query(
+    `INSERT INTO group_role_visibility (group_id, role, can_cross_company)
+     VALUES ($1, 'hr', true), ($1, 'area_manager', true)
+     ON CONFLICT (group_id, role) DO UPDATE SET can_cross_company = EXCLUDED.can_cross_company`,
+    [grp.id]
+  );
+
+  // Seed module permissions for both companies
   const modules = ['dipendenti','turni','presenze','permessi','negozi','documenti','ats','report','impostazioni'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
-  for (const role of roles) {
-    for (const mod of modules) {
-      const enabled = (mod === 'dipendenti' && ['admin','hr','area_manager','store_manager'].includes(role))
-        || (mod === 'impostazioni' && role === 'admin');
-      await testPool.query(
-        `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled) VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
-        [acme.id, role, mod, enabled]
-      );
+  for (const cid of [acme.id, beta.id]) {
+    for (const role of roles) {
+      for (const mod of modules) {
+        const enabled =
+          (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
+          || (mod === 'impostazioni' && role === 'admin');
+        await testPool.query(
+          `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (company_id, role, module_name) DO UPDATE SET is_enabled = EXCLUDED.is_enabled`,
+          [cid, role, mod, enabled]
+        );
+      }
     }
   }
 
   // Seed a past shift for employee1 (used by shifts/anomalies tests querying 2026-W11)
+  await testPool.query(
+    `DELETE FROM shifts
+     WHERE company_id = $1 AND user_id = $2 AND (date = '2026-03-10' OR date = CURRENT_DATE)`,
+    [acme.id, employee1.id],
+  );
+
   const { rows: [shift1] } = await testPool.query(
     `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, status, created_by)
      VALUES ($1, $2, $3, '2026-03-10', '09:00', '17:00', 'scheduled', $4) RETURNING id`,
@@ -106,7 +246,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     romaManagerId: romaManager.id,
     employee1Id: employee1.id,
     terminalId: terminal.id,
-    sysAdminId: sysAdmin.id,
+    superAdminId: superAdmin.id,
     romaStoreId: romaStore.id,
     shiftId: shift1.id,
     todayShiftId: todayShift.id,

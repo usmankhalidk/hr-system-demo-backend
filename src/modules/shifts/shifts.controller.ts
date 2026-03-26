@@ -4,6 +4,7 @@ import { query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { validateShiftCrossFields } from './shifts.routes';
 
 // ---------------------------------------------------------------------------
@@ -130,39 +131,42 @@ const BASE_JOINS = `
 // ---------------------------------------------------------------------------
 async function buildShiftScope(
   role: UserRole,
-  companyId: number,
+  allowedCompanyIds: number[],
   userId: number,
   storeId: number | null,
 ): Promise<{ where: string; params: any[] }> {
-  const base = `s.company_id = $1`;
+  const base = `s.company_id = ANY($1)`;
   switch (role) {
     case 'admin':
     case 'hr':
-      return { where: base, params: [companyId] };
+      return { where: base, params: [allowedCompanyIds] };
 
     case 'area_manager': {
-      // Restricted to stores where they supervise a store_manager
+      // Restricted to stores where they supervise a store_manager (across
+      // all companies in their allowed group scope).
       const managedStores = await query<{ store_id: number }>(
         `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+         WHERE role = 'store_manager'
+           AND supervisor_id = $1
+           AND company_id = ANY($2)
            AND status = 'active' AND store_id IS NOT NULL`,
-        [userId, companyId],
+        [userId, allowedCompanyIds],
       );
       const storeIds = managedStores.map((r) => r.store_id);
       if (storeIds.length === 0) {
-        return { where: `${base} AND 1=0`, params: [companyId] };
+        return { where: `${base} AND 1=0`, params: [allowedCompanyIds] };
       }
       const placeholders = storeIds.map((_, i) => `$${i + 2}`).join(',');
       return {
         where: `${base} AND s.store_id IN (${placeholders})`,
-        params: [companyId, ...storeIds],
+        params: [allowedCompanyIds, ...storeIds],
       };
     }
 
     case 'store_manager':
       return {
         where: `${base} AND s.store_id = $2`,
-        params: [companyId, storeId],
+        params: [allowedCompanyIds, storeId],
       };
 
     case 'employee':
@@ -170,7 +174,7 @@ async function buildShiftScope(
       // Always scope to own user_id — ignore any user_id query param
       return {
         where: `${base} AND s.user_id = $2`,
-        params: [companyId, userId],
+        params: [allowedCompanyIds, userId],
       };
   }
 }
@@ -180,10 +184,11 @@ async function buildShiftScope(
 // Query params: week=YYYY-WNN | month=YYYY-MM, store_id?, user_id?
 // ---------------------------------------------------------------------------
 export const listShifts = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, userId, storeId } = req.user!;
+  const { role, userId, storeId } = req.user!;
   const { week, month, store_id, user_id } = req.query as Record<string, string>;
 
-  const { where, params } = await buildShiftScope(role, companyId!, userId, storeId);
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const { where, params } = await buildShiftScope(role, allowedCompanyIds, userId, storeId);
   let extraWhere = '';
   const extra: any[] = [];
   let idx = params.length + 1;
@@ -243,29 +248,50 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
 // POST /api/shifts
 // ---------------------------------------------------------------------------
 export const createShift = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId: callerId, role, storeId: callerStoreId } = req.user!;
+  const { userId: callerId, role, storeId: callerStoreId } = req.user!;
   const body = req.body as Record<string, any>;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // store_manager can only create shifts for their own store
   if (role === 'store_manager' && body.store_id !== callerStoreId) {
     forbidden(res, 'Puoi creare turni solo per il tuo negozio'); return;
   }
 
-  // Super admin can create shifts for any company — resolve effective company from the target employee
-  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
-    `SELECT is_super_admin FROM users WHERE id = $1`, [callerId],
-  );
-  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
-
+  // Resolve target employee (must belong to one of the allowed companies)
   const targetUser = await queryOne<{ id: number; company_id: number }>(
-    isSuperAdmin
-      ? `SELECT id, company_id FROM users WHERE id = $1 AND status = 'active'`
-      : `SELECT id, company_id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
-    isSuperAdmin ? [body.user_id] : [body.user_id, companyId],
+    `SELECT id, company_id
+     FROM users
+     WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
+    [body.user_id, allowedCompanyIds]
   );
   if (!targetUser) { notFound(res, 'Dipendente non trovato'); return; }
 
   const effectiveCompanyId = targetUser.company_id;
+
+  // Validate store belongs to the resolved company and (for area_manager)
+  // that they supervise the store_manager for that store.
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [body.store_id, effectiveCompanyId]
+  );
+  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+
+  if (role === 'area_manager') {
+    const canManage = await queryOne<{ id: number }>(
+      `SELECT id
+       FROM users
+       WHERE role = 'store_manager'
+         AND supervisor_id = $1
+         AND company_id = $2
+         AND store_id = $3
+         AND status = 'active'
+       LIMIT 1`,
+      [callerId, effectiveCompanyId, body.store_id]
+    );
+    if (!canManage) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+  }
 
   // Overlap detection: check new main block AND new split block (if any)
   // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
@@ -305,6 +331,17 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  let insertStatus: string = body.status ?? 'scheduled';
+  if (role === 'store_manager') {
+    if (insertStatus === 'confirmed') {
+      forbidden(res, 'Il responsabile di negozio non può confermare i turni');
+      return;
+    }
+    if (insertStatus !== 'scheduled' && insertStatus !== 'cancelled') {
+      insertStatus = 'scheduled';
+    }
+  }
+
   const isFlexible = body.break_type === 'flexible';
   const shift = await queryOne(
     `INSERT INTO shifts (
@@ -329,7 +366,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       body.split_start2 ?? null,
       body.split_end2 ?? null,
       body.notes ?? null,
-      body.status ?? 'scheduled',
+      insertStatus,
       callerId,
     ],
   );
@@ -341,24 +378,25 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
 // PUT /api/shifts/:id
 // ---------------------------------------------------------------------------
 export const updateShift = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, storeId: callerStoreId } = req.user!;
+  const { role, storeId: callerStoreId } = req.user!;
   const shiftId = parseInt(req.params.id, 10);
   if (isNaN(shiftId)) { notFound(res, 'Turno non trovato'); return; }
   const body = req.body as Record<string, any>;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // Fetch existing shift (include time fields for cross-field validation of partial patches)
   const existing = await queryOne<{
-    id: number; store_id: number; user_id: number; date: string;
+    id: number; company_id: number; store_id: number; user_id: number; date: string;
     start_time: string; end_time: string;
     break_start: string | null; break_end: string | null;
     break_type: string | null; break_minutes: number | null;
     is_split: boolean; split_start2: string | null; split_end2: string | null;
   }>(
-    `SELECT id, store_id, user_id, date,
+    `SELECT id, company_id, store_id, user_id, date,
             start_time, end_time, break_start, break_end,
             break_type, break_minutes, is_split, split_start2, split_end2
-     FROM shifts WHERE id = $1 AND company_id = $2`,
-    [shiftId, companyId],
+     FROM shifts WHERE id = $1 AND company_id = ANY($2)`,
+    [shiftId, allowedCompanyIds],
   );
   if (!existing) { notFound(res, 'Turno non trovato'); return; }
 
@@ -366,6 +404,26 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   if (role === 'store_manager' && existing.store_id !== callerStoreId) {
     forbidden(res, 'Accesso negato'); return;
   }
+
+  // area_manager can only update shifts in stores they supervise a store_manager for
+  if (role === 'area_manager') {
+    const canManage = await queryOne<{ id: number }>(
+      `SELECT id
+       FROM users
+       WHERE role = 'store_manager'
+         AND supervisor_id = $1
+         AND company_id = $2
+         AND store_id = $3
+         AND status = 'active'
+       LIMIT 1`,
+      [req.user!.userId, existing.company_id, existing.store_id],
+    );
+    if (!canManage) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+  }
+
+  const effectiveCompanyId = existing.company_id;
 
   // Overlap detection (exclude self)
   const targetUserId = body.user_id ?? existing.user_id;
@@ -387,7 +445,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
          )`,
-      [companyId, targetUserId, targetDate, shiftId, targetEnd, targetStart],
+      [effectiveCompanyId, targetUserId, targetDate, shiftId, targetEnd, targetStart],
     );
 
     const targetSplitStart = body.split_start2 ?? null;
@@ -406,7 +464,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
              OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                  AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
            )`,
-        [companyId, targetUserId, targetDate, shiftId, targetSplitEnd, targetSplitStart],
+        [effectiveCompanyId, targetUserId, targetDate, shiftId, targetSplitEnd, targetSplitStart],
       );
     }
 
@@ -431,6 +489,11 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   const crossErrs = validateShiftCrossFields(mergedForValidation);
   if (crossErrs.length > 0) {
     badRequest(res, crossErrs[0], 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (role === 'store_manager' && body.status === 'confirmed') {
+    forbidden(res, 'Il responsabile di negozio non può confermare i turni');
     return;
   }
 
@@ -470,7 +533,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
       body.notes ?? null,
       body.status ?? null,
       shiftId,
-      companyId,
+      effectiveCompanyId,
     ],
   );
 
@@ -482,13 +545,15 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 // DELETE /api/shifts/:id — soft cancel
 // ---------------------------------------------------------------------------
 export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, storeId: callerStoreId } = req.user!;
+  const { role, storeId: callerStoreId } = req.user!;
   const shiftId = parseInt(req.params.id, 10);
   if (isNaN(shiftId)) { notFound(res, 'Turno non trovato'); return; }
 
-  const existing = await queryOne<{ id: number; store_id: number }>(
-    `SELECT id, store_id FROM shifts WHERE id = $1 AND company_id = $2`,
-    [shiftId, companyId],
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  const existing = await queryOne<{ id: number; company_id: number; store_id: number }>(
+    `SELECT id, company_id, store_id FROM shifts WHERE id = $1 AND company_id = ANY($2)`,
+    [shiftId, allowedCompanyIds],
   );
   if (!existing) { notFound(res, 'Turno non trovato'); return; }
 
@@ -496,14 +561,126 @@ export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
     forbidden(res, 'Accesso negato'); return;
   }
 
+  if (role === 'area_manager') {
+    const canManage = await queryOne<{ id: number }>(
+      `SELECT id
+       FROM users
+       WHERE role = 'store_manager'
+         AND supervisor_id = $1
+         AND company_id = $2
+         AND store_id = $3
+         AND status = 'active'
+       LIMIT 1`,
+      [req.user!.userId, existing.company_id, existing.store_id],
+    );
+    if (!canManage) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+  }
+
   const shift = await queryOne(
     `UPDATE shifts SET status = 'cancelled', updated_at = NOW()
      WHERE id = $1 AND company_id = $2
      RETURNING id, status, updated_at`,
-    [shiftId, companyId],
+    [shiftId, existing.company_id],
   );
 
   ok(res, shift, 'Turno annullato');
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/shifts/approve-week
+// Confirms all scheduled shifts for one employee in an ISO week (HR / Admin / Area Manager).
+// Optional store_id limits to shifts in that store (matches calendar filter).
+// ---------------------------------------------------------------------------
+export const approveWeekForEmployee = asyncHandler(async (req: Request, res: Response) => {
+  const { role, userId: callerId } = req.user!;
+  if (role === 'store_manager') {
+    forbidden(res, 'Accesso negato');
+    return;
+  }
+
+  const body = req.body as { user_id?: number; week?: string; store_id?: number | null };
+  const targetUserId = typeof body.user_id === 'number' ? body.user_id : parseInt(String(body.user_id), 10);
+  const weekRaw = body.week ?? '';
+  const optionalStoreId = body.store_id != null && !Number.isNaN(Number(body.store_id))
+    ? Number(body.store_id)
+    : null;
+
+  if (!targetUserId || isNaN(targetUserId)) {
+    badRequest(res, 'user_id non valido', 'VALIDATION_ERROR');
+    return;
+  }
+  const match = weekRaw.match(/^(\d{4})-W(\d{1,2})$/);
+  if (!match) {
+    badRequest(res, 'week non valida (YYYY-WNN)', 'VALIDATION_ERROR');
+    return;
+  }
+  const weekNum = parseInt(match[2], 10);
+  if (weekNum < 1 || weekNum > 53) {
+    badRequest(res, 'Settimana non valida', 'VALIDATION_ERROR');
+    return;
+  }
+  const weekParam = `${match[1]}-${match[2].padStart(2, '0')}`;
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const targetUser = await queryOne<{ id: number; company_id: number }>(
+    `SELECT id, company_id FROM users WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
+    [targetUserId, allowedCompanyIds],
+  );
+  if (!targetUser) {
+    notFound(res, 'Dipendente non trovato');
+    return;
+  }
+  const companyId = targetUser.company_id;
+
+  const params: any[] = [companyId, targetUserId, weekParam];
+  let extraWhere = '';
+
+  if (role === 'area_manager') {
+    const managed = await query<{ store_id: number }>(
+      `SELECT DISTINCT store_id FROM users
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+         AND status = 'active' AND store_id IS NOT NULL`,
+      [callerId, companyId],
+    );
+    const ids = managed.map((r) => r.store_id);
+    if (ids.length === 0) {
+      ok(res, { updated: 0 });
+      return;
+    }
+    if (optionalStoreId != null && !Number.isNaN(optionalStoreId)) {
+      if (!ids.includes(optionalStoreId)) {
+        forbidden(res, 'Accesso negato');
+        return;
+      }
+      extraWhere = ' AND store_id = $4';
+      params.push(optionalStoreId);
+    } else {
+      const ph = ids.map((_, i) => `$${4 + i}`).join(', ');
+      extraWhere = ` AND store_id IN (${ph})`;
+      params.push(...ids);
+    }
+  } else {
+    if (optionalStoreId != null && !Number.isNaN(optionalStoreId)) {
+      extraWhere = ' AND store_id = $4';
+      params.push(optionalStoreId);
+    }
+  }
+
+  const result = await query<{ id: number }>(
+    `UPDATE shifts SET status = 'confirmed', updated_at = NOW()
+     WHERE company_id = $1
+       AND user_id = $2
+       AND status = 'scheduled'
+       AND date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
+       AND date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'
+       ${extraWhere}
+     RETURNING id`,
+    params,
+  );
+
+  ok(res, { updated: result.length });
 });
 
 // ---------------------------------------------------------------------------
@@ -511,20 +688,22 @@ export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
 // body: { store_id, source_week: 'YYYY-WNN', target_week: 'YYYY-WNN' }
 // ---------------------------------------------------------------------------
 export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId: callerId, role, storeId: callerStoreId } = req.user!;
+  const { userId: callerId, role, storeId: callerStoreId } = req.user!;
   const { store_id, source_week, target_week } = req.body as Record<string, any>;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // store_manager can only copy their own store
   if (role === 'store_manager' && store_id !== callerStoreId) {
     forbidden(res, 'Puoi operare solo sul tuo negozio'); return;
   }
-  // area_manager can only copy stores they supervise
+  // area_manager can only copy stores they supervise (within allowed companies)
   if (role === 'area_manager') {
     const managedStores = await query<{ store_id: number }>(
       `SELECT DISTINCT store_id FROM users
        WHERE role = 'store_manager' AND supervisor_id = $1
+         AND company_id = ANY($2)
          AND status = 'active' AND store_id IS NOT NULL`,
-      [callerId],
+      [callerId, allowedCompanyIds],
     );
     if (!managedStores.some((r) => r.store_id === store_id)) {
       forbidden(res, 'Accesso negato'); return;
@@ -534,12 +713,12 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
   // Fetch all non-cancelled shifts from source week
   const sourceShifts = await query<Record<string, any>>(
     `SELECT * FROM shifts
-     WHERE company_id = $1
+     WHERE company_id = ANY($1)
        AND store_id = $2
        AND status != 'cancelled'
        AND date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
        AND date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'`,
-    [companyId, store_id, parseIsoWeek(source_week)],
+    [allowedCompanyIds, store_id, parseIsoWeek(source_week)],
   );
 
   if (sourceShifts.length === 0) {
@@ -572,7 +751,7 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
       `($${b},$${b+1},$${b+2},$${b+3}::DATE+($${b+4}::DATE-$${b+5}::DATE),$${b+6},$${b+7},$${b+8},$${b+9},$${b+10},$${b+11},$${b+12},$${b+13},'scheduled',$${b+14})`,
     );
     copyParams.push(
-      companyId, store_id, s.user_id,
+      s.company_id, store_id, s.user_id,
       target_monday, s.date, source_monday,
       s.start_time, s.end_time,
       s.break_start ?? null, s.break_end ?? null,
@@ -598,18 +777,18 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
 // GET /api/shifts/templates
 // ---------------------------------------------------------------------------
 export const listTemplates = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { store_id } = req.query as Record<string, string>;
 
   let extraWhere = '';
-  const params: any[] = [companyId];
+  const params: any[] = [allowedCompanyIds];
   if (store_id) {
     extraWhere = ' AND store_id = $2';
     params.push(parseInt(store_id, 10));
   }
 
   const templates = await query(
-    `SELECT * FROM shift_templates WHERE company_id = $1${extraWhere} ORDER BY name`,
+    `SELECT * FROM shift_templates WHERE company_id = ANY($1)${extraWhere} ORDER BY name`,
     params,
   );
   ok(res, { templates });
@@ -619,8 +798,17 @@ export const listTemplates = asyncHandler(async (req: Request, res: Response) =>
 // POST /api/shifts/templates
 // ---------------------------------------------------------------------------
 export const createTemplate = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId: callerId, role, storeId: callerStoreId } = req.user!;
+  const { userId: callerId, role, storeId: callerStoreId } = req.user!;
   const { store_id, name, template_data } = req.body as Record<string, any>;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  // Resolve effective company from the provided store (must be in allowed scope)
+  const store = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM stores WHERE id = $1 AND company_id = ANY($2) AND is_active = true`,
+    [store_id, allowedCompanyIds],
+  );
+  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+  const effectiveCompanyId = store.company_id;
 
   if (role === 'store_manager' && store_id !== callerStoreId) {
     forbidden(res, 'Puoi creare template solo per il tuo negozio'); return;
@@ -629,7 +817,7 @@ export const createTemplate = asyncHandler(async (req: Request, res: Response) =
   const template = await queryOne(
     `INSERT INTO shift_templates (company_id, store_id, name, template_data, created_by)
      VALUES ($1, $2, $3, $4, $5) RETURNING *`,
-    [companyId, store_id, name, JSON.stringify(template_data), callerId],
+    [effectiveCompanyId, store_id, name, JSON.stringify(template_data), callerId],
   );
   created(res, template, 'Template salvato');
 });
@@ -639,22 +827,24 @@ export const createTemplate = asyncHandler(async (req: Request, res: Response) =
 // H2 fix: store_manager may only delete templates belonging to their own store
 // ---------------------------------------------------------------------------
 export const deleteTemplate = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, storeId: callerStoreId } = req.user!;
+  const { role, storeId: callerStoreId } = req.user!;
   const templateId = parseInt(req.params.id, 10);
   if (isNaN(templateId)) { notFound(res, 'Template non trovato'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   let template: { id: number } | null;
   if (role === 'store_manager') {
     // Scope deletion to the caller's store to prevent cross-store deletes
     template = await queryOne(
-      `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 AND store_id = $3 RETURNING id`,
-      [templateId, companyId, callerStoreId],
+      `DELETE FROM shift_templates WHERE id = $1 AND company_id = ANY($2) AND store_id = $3 RETURNING id`,
+      [templateId, allowedCompanyIds, callerStoreId],
     );
   } else {
     // admin / hr may delete any template in the company
     template = await queryOne(
-      `DELETE FROM shift_templates WHERE id = $1 AND company_id = $2 RETURNING id`,
-      [templateId, companyId],
+      `DELETE FROM shift_templates WHERE id = $1 AND company_id = ANY($2) RETURNING id`,
+      [templateId, allowedCompanyIds],
     );
   }
   if (!template) { notFound(res, 'Template non trovato'); return; }
@@ -665,10 +855,10 @@ export const deleteTemplate = asyncHandler(async (req: Request, res: Response) =
 // GET /api/shifts/export  ?store_id&week  → CSV download
 // ---------------------------------------------------------------------------
 export const exportShifts = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { store_id, week } = req.query as Record<string, string>;
 
-  const params: any[] = [companyId];
+  const params: any[] = [allowedCompanyIds];
   let extraWhere = '';
   let idx = 2;
 
@@ -698,7 +888,7 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
      FROM shifts s
      LEFT JOIN users u  ON u.id  = s.user_id
      LEFT JOIN stores st ON st.id = s.store_id
-     WHERE s.company_id = $1${extraWhere}
+     WHERE s.company_id = ANY($1)${extraWhere}
      ORDER BY s.date, s.start_time
      LIMIT ${EXPORT_ROW_CAP + 1}`,
     params,
@@ -842,7 +1032,10 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
       const splitStart2 = parseTimeCell(getField(row, 'inizio2', 'split_start2', 'Inizio2'));
       const splitEnd2   = parseTimeCell(getField(row, 'fine2', 'split_end2', 'Fine2'));
       const statusRaw   = String(getField(row, 'stato', 'status', 'Stato')).trim().toLowerCase();
-      const status      = ['scheduled','confirmed','cancelled'].includes(statusRaw) ? statusRaw : 'scheduled';
+      let status        = ['scheduled','confirmed','cancelled'].includes(statusRaw) ? statusRaw : 'scheduled';
+      if (role === 'store_manager' && status === 'confirmed') {
+        status = 'scheduled';
+      }
       const notes       = String(getField(row, 'note', 'notes', 'Note')).trim() || null;
 
       if (!dateVal) {

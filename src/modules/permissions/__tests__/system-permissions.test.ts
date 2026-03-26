@@ -29,32 +29,31 @@ async function loginAs(email: string): Promise<string> {
   return res.body.data.token;
 }
 
-describe('POST /api/auth/login as system_admin', () => {
-  it('system_admin can log in without crashing audit_logs', async () => {
-    const res = await request.post('/api/auth/login').send({ email: 'sysadmin@test.com', password: 'password123' });
+describe('POST /api/auth/login as super admin', () => {
+  it('super admin can log in', async () => {
+    const res = await request.post('/api/auth/login').send({ email: 'superadmin@acme-test.com', password: 'password123' });
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.token).toBeDefined();
-    expect(res.body.data.user.role).toBe('system_admin');
-    expect(res.body.data.user.companyId).toBeNull();
+    expect(res.body.data.user.role).toBe('admin');
   });
 });
 
-describe('GET /api/permissions/my as system_admin', () => {
-  it('returns all active modules as true without DB query', async () => {
-    const token = await loginAs('sysadmin@test.com');
+describe('GET /api/permissions/my as admin', () => {
+  it('returns active modules based on stored toggles', async () => {
+    const token = await loginAs('admin@acme-test.com');
     const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.dipendenti).toBe(true);
-    expect(res.body.data.turni).toBe(true);
-    expect(res.body.data.negozi).toBe(true);
+    expect(res.body.data.turni).toBe(false);
+    expect(res.body.data.negozi).toBe(false);
   });
 });
 
 describe('GET /api/permissions/companies', () => {
-  it('system_admin gets all companies with grid', async () => {
-    const token = await loginAs('sysadmin@test.com');
+  it('super admin gets all companies with grid', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request.get('/api/permissions/companies').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -63,12 +62,6 @@ describe('GET /api/permissions/companies', () => {
     expect(company).toBeDefined();
     expect(company.grid).toHaveProperty('turni');
     expect(company.grid.turni).toHaveProperty('hr');
-  });
-
-  it('admin → 403', async () => {
-    const token = await loginAs('admin@acme-test.com');
-    const res = await request.get('/api/permissions/companies').set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(403);
   });
 
   it('hr → 403', async () => {
@@ -84,8 +77,8 @@ describe('GET /api/permissions/companies', () => {
 });
 
 describe('PUT /api/permissions/companies/:companyId', () => {
-  it('system_admin can update a permission', async () => {
-    const token = await loginAs('sysadmin@test.com');
+  it('admin can update a permission', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
@@ -105,17 +98,60 @@ describe('PUT /api/permissions/companies/:companyId', () => {
       .send({ updates: [{ role: 'hr', module: 'negozi', enabled: true }] });
   });
 
-  it('invalid role → 400', async () => {
-    const token = await loginAs('sysadmin@test.com');
+  it('employee can update a company permission', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ updates: [{ role: 'employee', module: 'turni', enabled: false }] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    // Verify persisted
+    const getRes = await request.get('/api/permissions/companies').set('Authorization', `Bearer ${token}`);
+    const company = getRes.body.data.companies.find((c: { id: number }) => c.id === seeds.acmeId);
+    expect(company.grid.turni.employee).toBe(false);
+
+    // Restore
+    await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'employee', module: 'turni', enabled: true }] });
+  });
+
+  it('store_terminal can update a company permission', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'store_terminal', module: 'presenze', enabled: false }] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    // Verify persisted
+    const getRes = await request.get('/api/permissions/companies').set('Authorization', `Bearer ${token}`);
+    const company = getRes.body.data.companies.find((c: { id: number }) => c.id === seeds.acmeId);
+    expect(company.grid.presenze.store_terminal).toBe(false);
+
+    // Restore
+    await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'store_terminal', module: 'presenze', enabled: true }] });
+  });
+
+  it('invalid role → 400', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      // admin is intentionally not manageable via /permissions/companies/:id (handled elsewhere)
+      .send({ updates: [{ role: 'admin', module: 'turni', enabled: false }] });
     expect(res.status).toBe(400);
   });
 
   it('invalid module → 400', async () => {
-    const token = await loginAs('sysadmin@test.com');
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
@@ -124,7 +160,7 @@ describe('PUT /api/permissions/companies/:companyId', () => {
   });
 
   it('non-existent companyId → 404', async () => {
-    const token = await loginAs('sysadmin@test.com');
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put('/api/permissions/companies/999999')
       .set('Authorization', `Bearer ${token}`)
@@ -132,8 +168,8 @@ describe('PUT /api/permissions/companies/:companyId', () => {
     expect(res.status).toBe(404);
   });
 
-  it('non-system_admin → 403', async () => {
-    const token = await loginAs('admin@acme-test.com');
+  it('hr → 403', async () => {
+    const token = await loginAs('hr@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
@@ -142,7 +178,7 @@ describe('PUT /api/permissions/companies/:companyId', () => {
   });
 
   it('empty updates → 400', async () => {
-    const token = await loginAs('sysadmin@test.com');
+    const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)

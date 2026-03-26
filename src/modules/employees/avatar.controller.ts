@@ -6,7 +6,8 @@ import { query, queryOne } from '../../config/database';
 import { ok, badRequest, forbidden, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 
-const UPLOAD_DIR = process.env.UPLOADS_DIR || '/uploads/avatars';
+const UPLOAD_DIR =
+  process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads', 'avatars');
 
 function cleanupUploadedFile(req: Request): void {
   if (req.file?.path) {

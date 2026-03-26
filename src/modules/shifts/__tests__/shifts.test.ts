@@ -179,6 +179,8 @@ describe('Overlap detection', () => {
   beforeAll(async () => {
     // Create a base shift: employee1, 2026-03-25, 09:00-17:00
     const token = await login('admin@acme-test.com');
+    // Seed helper also inserts a "today" shift; ensure determinism for this fixed test date.
+    await testPool.query('DELETE FROM shifts WHERE date = $1 AND user_id = $2', ['2026-03-25', seeds.employee1Id]);
     const res = await request
       .post('/api/shifts')
       .set('Authorization', `Bearer ${token}`)

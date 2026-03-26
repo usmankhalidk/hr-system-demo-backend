@@ -5,6 +5,7 @@ import { query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 // Safe fields for list view (NO sensitive data)
 const LIST_FIELDS = `
@@ -112,6 +113,12 @@ function buildScopeWhere(
 // GET /api/employees — list with filters, no sensitive fields
 export const listEmployees = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
+
+  if (role === 'store_terminal') {
+    forbidden(res, 'Accesso non consentito');
+    return;
+  }
+
   const {
     search,
     store_id,
@@ -121,22 +128,18 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     target_company_id,
     page = '1',
     limit = '20',
+    for_shift_planning,
   } = req.query as Record<string, string>;
 
-  // Check if requester is a super admin (DB lookup, not JWT)
-  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
-    `SELECT is_super_admin FROM users WHERE id = $1`,
-    [userId],
-  );
-  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
-
-  // Only super admin gets cross-company visibility
-  const hasCrossCompanyAccess = isSuperAdmin;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
 
   const targetCompanyId = target_company_id ? parseInt(target_company_id, 10) : null;
-  const effectiveCompanyId = (hasCrossCompanyAccess && targetCompanyId) ? targetCompanyId : companyId;
+  if (targetCompanyId !== null && !allowedCompanyIds.includes(targetCompanyId)) {
+    return res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+  }
 
-  // Cross-company with no target: query all companies (no company filter)
+  // Cross-company with no target: query all allowed companies
   const crossCompany = hasCrossCompanyAccess && !targetCompanyId;
 
   // H8: cross-company queries allow up to 500 rows; normal queries cap at 100
@@ -148,12 +151,41 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   let where: string;
   let params: any[];
 
-  if (crossCompany) {
-    where = '1=1';
-    params = [];
+  const forShiftPlanning = for_shift_planning === 'true' || for_shift_planning === '1';
+
+  if (forShiftPlanning && role === 'area_manager') {
+    const managedStores = await query<{ store_id: number }>(
+      `SELECT DISTINCT store_id FROM users
+       WHERE role = 'store_manager'
+         AND supervisor_id = $1
+         AND company_id = ANY($2)
+         AND status = 'active' AND store_id IS NOT NULL`,
+      [userId, allowedCompanyIds],
+    );
+    const storeIds = managedStores.map((r) => r.store_id);
+    if (storeIds.length === 0) {
+      ok(res, { employees: [], total: 0, page: pageNum, limit: limitNum, pages: 0 });
+      return;
+    }
+    if (crossCompany) {
+      const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
+      where = `u.company_id = ANY($1) AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      params = [allowedCompanyIds, ...storeIds];
+    } else if (hasCrossCompanyAccess && targetCompanyId) {
+      const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
+      where = `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      params = [targetCompanyId, ...storeIds];
+    } else {
+      const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
+      where = `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      params = [companyId!, ...storeIds];
+    }
+  } else if (crossCompany) {
+    where = `u.company_id = ANY($1)`;
+    params = [allowedCompanyIds];
   } else if (hasCrossCompanyAccess && targetCompanyId) {
     where = `u.company_id = $1`;
-    params = [effectiveCompanyId];
+    params = [targetCompanyId];
   } else {
     const scope = buildScopeWhere(role, companyId!, userId, storeId);
     where = scope.where;
@@ -164,9 +196,15 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   const extraParams: any[] = [];
   let paramIdx = params.length + 1;
 
+  // When loading for shift planning, exclude non-shiftable management roles
+  if (forShiftPlanning) {
+    extraWhere += ` AND u.role NOT IN ('admin', 'hr', 'area_manager')`;
+  }
+
   if (search) {
-    extraWhere += ` AND (LOWER(u.name) LIKE LOWER($${paramIdx}) OR LOWER(u.surname) LIKE LOWER($${paramIdx}) OR u.unique_id ILIKE $${paramIdx})`;
-    extraParams.push(`%${search}%`);
+    extraWhere += ` AND (LOWER(u.name) LIKE LOWER($${paramIdx}) ESCAPE '\\' OR LOWER(u.surname) LIKE LOWER($${paramIdx}) ESCAPE '\\' OR u.unique_id ILIKE $${paramIdx} ESCAPE '\\')`;
+    const escapedSearch = search.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    extraParams.push(`%${escapedSearch}%`);
     paramIdx++;
   }
   if (store_id) {
@@ -215,25 +253,19 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
-  // Check super admin status
-  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
-    `SELECT is_super_admin FROM users WHERE id = $1`,
-    [userId],
-  );
-  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+  // Cross-company access: super_admin, grouped admin, and grouped HR/area_manager
+  // with can_cross_company enabled may view employees across group companies.
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
 
-  // Only super admin has cross-company visibility
-  const hasCrossCompanyAccess = isSuperAdmin;
-
-  // H3: canSeeSensitive is ALWAYS evaluated from the caller's actual role,
-  // even for super admins. Cross-company access only bypasses the company filter,
-  // never the sensitive-field permission check.
+  // H3: canSeeSensitive is ALWAYS evaluated from the caller's actual role.
+  // Cross-company access only bypasses the company filter, never the sensitive-field check.
   const canSeeSensitive = role === 'admin' || role === 'hr' || role === 'area_manager' || userId === empId;
 
   const fields = canSeeSensitive ? DETAIL_FIELDS : LIST_FIELDS;
 
-  // Cross-company super admin may view employees across companies but field
-  // selection is still governed by canSeeSensitive (role-based, set above).
+  // For cross-company callers, fetch the employee and then verify company membership.
+  // For single-company callers, scope directly by company_id for efficiency.
   const employee = await queryOne<Record<string, any>>(
     hasCrossCompanyAccess
       ? `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1`
@@ -246,18 +278,19 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Cross-company super admins bypass company/store/supervisor scope restrictions only
+  // For cross-company callers, verify the employee belongs to an allowed company.
+  if (hasCrossCompanyAccess && !allowedCompanyIds.includes(employee.company_id)) {
+    forbidden(res, 'Accesso negato'); return;
+  }
+
+  // For single-company callers, apply the usual sub-company scope restrictions.
   if (!hasCrossCompanyAccess) {
-    // Access control: employee can only see themselves
     if (role === 'employee' && userId !== empId) {
       forbidden(res, 'Accesso negato'); return;
     }
-    // store_manager can only see employees in their store
     if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
       forbidden(res, 'Accesso negato'); return;
     }
-    // area_manager can only see employees whose direct supervisor is themselves
-    // (consistent with listEmployees scope) — allow self-view
     if (role === 'area_manager' && empId !== userId) {
       const supervised = await queryOne<{ id: number }>(
         `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND supervisor_id = $3`,
@@ -274,8 +307,26 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
 
 // POST /api/employees
 export const createEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role: callerRole } = req.user!;
+  const { companyId: callerCompanyId, role: callerRole } = req.user!;
   const body = req.body as Record<string, any>;
+
+  // Resolve target company: cross-company callers (grouped admin/hr/area_manager)
+  // may specify a company_id in the body to create an employee in a sibling company.
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const requestedCompanyId = body.company_id ? parseInt(String(body.company_id), 10) : null;
+  let companyId: number;
+  if (requestedCompanyId !== null && !isNaN(requestedCompanyId)) {
+    if (!allowedCompanyIds.includes(requestedCompanyId)) {
+      forbidden(res, 'Accesso negato: azienda non valida'); return;
+    }
+    companyId = requestedCompanyId;
+  } else {
+    if (callerCompanyId == null) {
+      badRequest(res, 'Impossibile creare il dipendente: azienda non valida', 'COMPANY_MISMATCH');
+      return;
+    }
+    companyId = callerCompanyId;
+  }
 
   // Privilege escalation guard: only admin may create another admin
   if (body.role === 'admin' && callerRole !== 'admin') {
@@ -394,10 +445,20 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/employees/:id
 export const updateEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role: callerRole } = req.user!;
+  const { role: callerRole } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
   const body = req.body as Record<string, any>;
+
+  // Resolve which companies the caller may operate on, then derive the target
+  // company from the employee's actual record (scoped to the allowed set).
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const empRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM users WHERE id = $1 AND company_id = ANY($2)`,
+    [empId, allowedCompanyIds],
+  );
+  if (!empRow) { notFound(res, 'Dipendente non trovato'); return; }
+  const companyId = empRow.company_id;
 
   // H1: Role escalation prevention — only admin and hr may change the role field
   if ('role' in body) {
@@ -426,7 +487,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M11: Validate store_id if provided
   if (body.store_id) {
-    const storeError = await validateStore(parseInt(body.store_id, 10), companyId!);
+    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
@@ -435,7 +496,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M9: Validate supervisor_id if provided
   if (body.supervisor_id) {
-    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId!);
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
     if (supError) {
       badRequest(res, supError, 'INVALID_SUPERVISOR');
       return;
@@ -496,15 +557,16 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
 
 // DELETE /api/employees/:id — soft deactivation only
 export const deactivateEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
   const employee = await queryOne(
     `UPDATE users SET status = 'inactive', termination_date = CURRENT_DATE, updated_at = NOW()
-     WHERE id = $1 AND company_id = $2 AND status = 'active'
+     WHERE id = $1 AND company_id = ANY($2) AND status = 'active'
      RETURNING id, name, surname, email, role, status, termination_date`,
-    [empId, companyId],
+    [empId, allowedCompanyIds],
   );
 
   if (!employee) {
@@ -516,15 +578,16 @@ export const deactivateEmployee = asyncHandler(async (req: Request, res: Respons
 
 // PATCH /api/employees/:id/activate — Admin only
 export const activateEmployee = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
   const employee = await queryOne(
     `UPDATE users SET status = 'active', termination_date = NULL, updated_at = NOW()
-     WHERE id = $1 AND company_id = $2 AND status = 'inactive'
+     WHERE id = $1 AND company_id = ANY($2) AND status = 'inactive'
      RETURNING id, name, surname, email, role, status, termination_date`,
-    [empId, companyId],
+    [empId, allowedCompanyIds],
   );
 
   if (!employee) {

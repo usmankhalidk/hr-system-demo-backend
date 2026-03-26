@@ -7,6 +7,7 @@ import path from 'path';
 import authRoutes from './modules/auth/auth.routes';
 import { seed, migrate } from './scripts/seed';
 import companiesRoutes from './modules/companies/companies.routes';
+import companyGroupsRoutes from './modules/companyGroups/companyGroups.routes';
 import storesRoutes from './modules/stores/stores.routes';
 import employeesRoutes from './modules/employees/employees.routes';
 import permissionsRoutes from './modules/permissions/permissions.routes';
@@ -49,10 +50,11 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Serve uploaded files (avatars)
-app.use('/uploads', express.static(process.env.UPLOADS_DIR
+// Serve uploaded files (avatars) — local default: <cwd>/uploads; Docker sets UPLOADS_DIR
+const uploadsStaticRoot = process.env.UPLOADS_DIR
   ? path.dirname(process.env.UPLOADS_DIR)
-  : '/uploads'));
+  : path.join(process.cwd(), 'uploads');
+app.use('/uploads', express.static(uploadsStaticRoot));
 
 // Health check
 app.get('/health', (_req, res) => {
@@ -62,6 +64,7 @@ app.get('/health', (_req, res) => {
 // Phase 1 API Routes
 app.use('/api/auth', authRoutes);
 app.use('/api/companies', companiesRoutes);
+app.use('/api/company-groups', companyGroupsRoutes);
 app.use('/api/stores', storesRoutes);
 app.use('/api/employees', employeesRoutes);
 app.use('/api/permissions', permissionsRoutes);

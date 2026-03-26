@@ -586,7 +586,7 @@ describe('PUT /api/leave/balance', () => {
     expect(res.body.code).toBe('BALANCE_BELOW_USED');
   });
 
-  it('user_id not in same company → 404', async () => {
+  it('user_id in allowed group company → 200', async () => {
     // Create an employee in the Beta company
     const { rows: [betaEmployee] } = await testPool.query(
       `INSERT INTO users (company_id, name, surname, email, password_hash, role, status)
@@ -607,10 +607,11 @@ describe('PUT /api/leave/balance', () => {
         leave_type: 'vacation',
         total_days: 20,
       });
-    expect(res.status).toBe(404);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
 
     // Cleanup
+    await testPool.query('DELETE FROM leave_balances WHERE user_id = $1', [betaEmployee.id]);
     await testPool.query('DELETE FROM users WHERE id = $1', [betaEmployee.id]);
   });
 });

@@ -4,13 +4,14 @@ import { ok } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 
 const SYSTEM_MODULES = ['turni', 'permessi', 'presenze', 'negozi', 'dipendenti'] as const;
-const MANAGED_ROLES = ['hr', 'area_manager', 'store_manager'] as const;
+// Roles that the super-admin company grid can configure.
+// Note: other roles (admin) typically have full access and are managed via /api/permissions.
+const MANAGED_ROLES = ['hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'] as const;
 
 type SystemModule = typeof SYSTEM_MODULES[number];
 type ManagedRole = typeof MANAGED_ROLES[number];
 
 // GET /api/permissions/companies — returns all companies with their permission grid
-// Only accessible to system_admin
 export const getCompaniesPermissions = asyncHandler(async (_req: Request, res: Response) => {
   const companies = await query<{ id: number; name: string }>(
     `SELECT id, name FROM companies ORDER BY name`,
@@ -53,7 +54,6 @@ export const getCompaniesPermissions = asyncHandler(async (_req: Request, res: R
 });
 
 // PUT /api/permissions/companies/:companyId — batch-update permissions for one company
-// Only accessible to system_admin
 export const updateCompanyPermissions = asyncHandler(async (req: Request, res: Response) => {
   const companyId = parseInt(req.params.companyId, 10);
   const { userId } = req.user!;

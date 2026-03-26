@@ -7,6 +7,7 @@ import {
   updateShift,
   deleteShift,
   copyWeek,
+  approveWeekForEmployee,
   listTemplates,
   createTemplate,
   deleteTemplate,
@@ -153,6 +154,12 @@ const copyWeekSchema = z.object({
   target_week: z.string().regex(/^\d{4}-W\d{1,2}$/),
 });
 
+const approveWeekSchema = z.object({
+  user_id:   z.number().int().positive(),
+  week:      z.string().regex(/^\d{4}-W\d{1,2}$/),
+  store_id:  z.number().int().positive().optional().nullable(),
+});
+
 const createTemplateSchema = z.object({
   store_id:      z.number().int().positive(),
   name:          z.string().min(1).max(100),
@@ -194,6 +201,16 @@ router.get(
   requireRole(...managementRoles),
   enforceCompany,
   getAffluence,
+);
+
+// POST /api/shifts/approve-week — must be BEFORE /:id
+router.post(
+  '/approve-week',
+  authenticate,
+  requireRole('admin', 'hr', 'area_manager'),
+  enforceCompany,
+  validate(approveWeekSchema),
+  approveWeekForEmployee,
 );
 
 // POST /api/shifts/copy-week — must be BEFORE /:id

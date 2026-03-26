@@ -60,6 +60,16 @@ describe('GET /api/companies', () => {
     expect(res.body.success).toBe(true);
   });
 
+  it('admin → 200 (cross-company list)', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request.get('/api/companies').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    const ids = res.body.data.map((c: any) => c.id);
+    expect(ids).toEqual(expect.arrayContaining([seeds.acmeId, seeds.betaId]));
+  });
+
   it('unauthenticated → 401', async () => {
     const res = await request.get('/api/companies');
     expect(res.status).toBe(401);
@@ -86,14 +96,22 @@ describe('PUT /api/companies/:id', () => {
       .send({ name: 'Acme Test' });
   });
 
-  it('trying to update a different company id → 404 (scope check)', async () => {
+  it('admin can update a different company id', async () => {
     const token = await loginAs('admin@acme-test.com');
     const res = await request
       .put(`/api/companies/${seeds.betaId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'Hijacked Company' });
-    expect(res.status).toBe(404);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.name).toBe('Hijacked Company');
+    expect(res.body.data.slug).toBe('hijacked-company');
+
+    // Restore original name for test isolation
+    await request
+      .put(`/api/companies/${seeds.betaId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Beta Test' });
   });
 
   it('empty name → 400', async () => {
@@ -106,12 +124,45 @@ describe('PUT /api/companies/:id', () => {
     expect(res.body.success).toBe(false);
   });
 
-  it('hr → 403', async () => {
+  it('hr can update company within group scope', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request
       .put(`/api/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'HR Attempt' });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.slug).toBe('hr-attempt');
+  });
+
+  // (no system_admin tests: role removed)
+});
+
+describe('POST /api/companies', () => {
+  it('super admin creates a company', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .post('/api/companies')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'New Company X' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.name).toBe('New Company X');
+    expect(res.body.data.slug).toBe('new-company-x');
+
+    const listRes = await request.get('/api/companies').set('Authorization', `Bearer ${token}`);
+    expect(listRes.body.data.map((c: any) => c.id)).toEqual(
+      expect.arrayContaining([res.body.data.id])
+    );
+  });
+
+  it('hr cannot create a company', async () => {
+    const token = await loginAs('hr@acme-test.com');
+    const res = await request
+      .post('/api/companies')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Should Fail' });
     expect(res.status).toBe(403);
     expect(res.body.success).toBe(false);
   });

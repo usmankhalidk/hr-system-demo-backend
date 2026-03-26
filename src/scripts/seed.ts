@@ -29,8 +29,10 @@ export async function migrate() {
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
       '015_system_admin_role.sql',
+      '018_company_groups.sql',
       '016_avatar.sql',
       '017_messages.sql',
+      '019_company_is_active.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -73,7 +75,8 @@ export async function seed() {
                            leave_balances, leave_approvals, leave_requests,
                            attendance_events, qr_tokens,
                            attendance, shifts, role_module_permissions,
-                           audit_logs, login_attempts, users, stores, companies
+                           audit_logs, login_attempts, users, stores,
+                           group_role_visibility, companies, company_groups
       CASCADE
     `);
     await client.query(`DROP TYPE IF EXISTS user_role`);
@@ -100,8 +103,10 @@ export async function seed() {
       '013_add_ip_index_to_login_attempts.sql',
       '014_data_integrity_constraints.sql',
       '015_system_admin_role.sql',
+      '018_company_groups.sql',
       '016_avatar.sql',
       '017_messages.sql',
+      '019_company_is_active.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -118,6 +123,31 @@ export async function seed() {
         ('Beta Industries', 'beta')
     `);
     console.log('✓ Companies seeded');
+
+    // ── Company groups (Phase 1 extension) ──────────────────────────────────
+    // Demo: put FUSARO UOMO into a group; Beta Industries stays standalone.
+    // Role visibility flags decide whether HR/Area Manager can access other
+    // companies in the same group (if multiple companies are added later).
+    await client.query(`
+      INSERT INTO company_groups (name)
+      VALUES ('FUSARO GROUP')
+      ON CONFLICT (name) DO NOTHING
+    `);
+    await client.query(`
+      UPDATE companies
+      SET group_id = (SELECT id FROM company_groups WHERE name = 'FUSARO GROUP')
+      WHERE id = 1
+    `);
+    await client.query(`
+      INSERT INTO group_role_visibility (group_id, role, can_cross_company)
+      SELECT
+        (SELECT id FROM company_groups WHERE name = 'FUSARO GROUP'),
+        r.role,
+        true
+      FROM (VALUES ('hr'::user_role), ('area_manager'::user_role)) AS r(role)
+      ON CONFLICT (group_id, role)
+      DO UPDATE SET can_cross_company = EXCLUDED.can_cross_company
+    `);
 
     // ── Stores ────────────────────────────────────────────────────────────────
     await client.query(`
@@ -166,18 +196,9 @@ export async function seed() {
     `, [HASH]);
 
     // We inserted explicit `id` values above; `SERIAL`'s sequence is not
-    // automatically advanced for explicit inserts. Advance it before inserting
-    // `system_admin` (which relies on the sequence for its `id`).
+    // automatically advanced for explicit inserts. Advance it for any subsequent inserts.
     await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
-
-    // ── System admin (no company binding) ────────────────────────────────────
-    await client.query(`
-      INSERT INTO users (company_id, name, surname, email, password_hash, role, status, is_super_admin)
-      VALUES (NULL, 'System', 'Admin', 'sysadmin@sistema.com', $1, 'system_admin', 'active', false)
-    `, [HASH]);
-
-    await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
-    console.log('✓ Users seeded (14 users, incl. system_admin)');
+    console.log('✓ Users seeded (13 users)');
 
     // ── Phase 1 feedback: is_super_admin ──────────────────────────────────────
     await client.query(`

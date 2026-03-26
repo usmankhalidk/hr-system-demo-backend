@@ -5,6 +5,7 @@ import { pool, query, queryOne } from '../../config/database';
 import { ok, created, badRequest, conflict, forbidden, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 // ---------------------------------------------------------------------------
 // GET /api/qr/generate?store_id=N
@@ -194,7 +195,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
 // body: { userId, storeId, eventType, eventTime, notes? }
 // ---------------------------------------------------------------------------
 export const createManualEvent = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId: callerId } = req.user!;
+  const { userId: callerId } = req.user!;
   const { user_id, store_id, event_type, event_time, notes } = req.body as {
     user_id: number;
     store_id: number;
@@ -203,18 +204,14 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
     notes?: string;
   };
 
-  // Super admin can create entries for any company — resolve effective company from the target employee
-  const superAdminRow = await queryOne<{ is_super_admin: boolean }>(
-    `SELECT is_super_admin FROM users WHERE id = $1`, [callerId],
-  );
-  const isSuperAdmin = superAdminRow?.is_super_admin ?? false;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
-  // Resolve the employee and their company
+  // Resolve the employee and ensure it belongs to an allowed company
   const targetUser = await queryOne<{ id: number; company_id: number }>(
-    isSuperAdmin
-      ? `SELECT id, company_id FROM users WHERE id = $1 AND status = 'active'`
-      : `SELECT id, company_id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
-    isSuperAdmin ? [user_id] : [user_id, companyId],
+    `SELECT id, company_id
+     FROM users
+     WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
+    [user_id, allowedCompanyIds],
   );
   if (!targetUser) {
     badRequest(res, 'Dipendente non trovato in questa azienda', 'NOT_FOUND');
@@ -272,7 +269,8 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
 // Query params: user_id?, store_id?, date_from?, date_to?, event_type?
 // ---------------------------------------------------------------------------
 export const listAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, userId, storeId } = req.user!;
+  const { role, userId, storeId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { user_id, store_id, date_from, date_to, event_type } = req.query as Record<string, string>;
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -289,7 +287,7 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     badRequest(res, 'event_type non valido', 'VALIDATION_ERROR'); return;
   }
 
-  const params: any[] = [companyId];
+  const params: any[] = [allowedCompanyIds];
   let extraWhere = '';
   let idx = 2;
 
@@ -302,9 +300,9 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
   } else if (role === 'area_manager') {
     const managedRows = await query<{ store_id: number }>(
       `SELECT DISTINCT store_id FROM users
-       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = ANY($2)
          AND status = 'active' AND store_id IS NOT NULL`,
-      [userId, companyId],
+      [userId, allowedCompanyIds],
     );
     const managedIds = managedRows.map((r) => r.store_id);
     if (managedIds.length === 0) {
@@ -352,7 +350,8 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 
   const format = req.query.format as string | undefined;
 
-  // Export path: run uncapped query, skip pagination
+  // Export path: capped at 10,000 rows to prevent runaway memory allocation
+  const EXPORT_ROW_CAP = 10_000;
   if (format === 'csv' || format === 'xlsx') {
     const exportEvents = await query(
       `SELECT
@@ -364,10 +363,13 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
        FROM attendance_events ae
        LEFT JOIN users u  ON u.id  = ae.user_id
        LEFT JOIN stores st ON st.id = ae.store_id
-       WHERE ae.company_id = $1${extraWhere}
-       ORDER BY ae.event_time DESC`,
+       WHERE ae.company_id = ANY($1)${extraWhere}
+       ORDER BY ae.event_time DESC
+       LIMIT ${EXPORT_ROW_CAP + 1}`,
       params,
     );
+    const capped = exportEvents.length > EXPORT_ROW_CAP;
+    if (capped) exportEvents.splice(EXPORT_ROW_CAP);
     const HEADERS = ['Data/Ora', 'Cognome', 'Nome', 'Negozio', 'Tipo Evento', 'Origine', 'Note'];
     const EVENT_LABELS: Record<string, string> = {
       checkin: 'Entrata', checkout: 'Uscita', break_start: 'Inizio Pausa', break_end: 'Fine Pausa',
@@ -391,11 +393,13 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
       const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      if (capped) res.setHeader('X-Export-Capped', `true`);
       res.send(buf);
     } else {
       const csvRows = rowData.map((r) => r.map((v) => `"${String(v).replace(/"/g,'""')}"`).join(','));
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+      if (capped) res.setHeader('X-Export-Capped', `true`);
       res.send(HEADERS.map(h => `"${h}"`).join(',') + '\n' + csvRows.join('\n'));
     }
     return;
@@ -403,7 +407,7 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 
   // Pagination path (normal UI listing)
   const countResult = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM attendance_events ae WHERE ae.company_id = $1${extraWhere}`,
+    `SELECT COUNT(*) as count FROM attendance_events ae WHERE ae.company_id = ANY($1)${extraWhere}`,
     params,
   );
   const total = parseInt(countResult[0].count, 10);
@@ -418,7 +422,7 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
      FROM attendance_events ae
      LEFT JOIN users u  ON u.id  = ae.user_id
      LEFT JOIN stores st ON st.id = ae.store_id
-     WHERE ae.company_id = $1${extraWhere}
+    WHERE ae.company_id = ANY($1)${extraWhere}
      ORDER BY ae.event_time DESC
      LIMIT 500`,
     params,
@@ -576,7 +580,8 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
 // Anomaly types: late_arrival, no_show, long_break, early_exit
 // ---------------------------------------------------------------------------
 export const getAnomalies = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, role, userId, storeId: callerStoreId } = req.user!;
+  const { role, userId, storeId: callerStoreId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { store_id, date_from, date_to } = req.query as Record<string, string>;
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
@@ -602,9 +607,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   if (role === 'area_manager') {
     const rows = await query<{ store_id: number }>(
       `SELECT DISTINCT store_id FROM users
-       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = ANY($2)
          AND status = 'active' AND store_id IS NOT NULL`,
-      [userId, companyId],
+      [userId, allowedCompanyIds],
     );
     managedStoreIds = rows.map((r) => r.store_id);
     if (managedStoreIds.length === 0) {
@@ -635,21 +640,22 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     start_time: string; end_time: string;
     break_start: string | null; break_end: string | null;
     user_name: string; user_surname: string; store_name: string;
+    user_avatar_filename: string | null;
   }>(
     `SELECT s.id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
             s.start_time, s.end_time, s.break_start, s.break_end,
-            u.name AS user_name, u.surname AS user_surname,
+            u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename,
             st.name AS store_name
      FROM shifts s
      LEFT JOIN users u  ON u.id  = s.user_id
      LEFT JOIN stores st ON st.id = s.store_id
-     WHERE s.company_id = $1
+     WHERE s.company_id = ANY($1)
        AND s.date BETWEEN $2 AND $3
        AND s.status != 'cancelled'
        AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))
        ${shiftScope.clause}
      ORDER BY s.date, s.user_id`,
-    [companyId, from, to, ...shiftScope.params],
+    [allowedCompanyIds, from, to, ...shiftScope.params],
   );
 
   if (shifts.length === 0) {
@@ -664,11 +670,11 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   }>(
     `SELECT ae.user_id, ae.event_type, ae.event_time
      FROM attendance_events ae
-     WHERE ae.company_id = $1
+     WHERE ae.company_id = ANY($1)
        AND ae.event_time::DATE BETWEEN $2 AND $3
        ${evScope.clause}
      ORDER BY ae.user_id, ae.event_time`,
-    [companyId, from, to, ...evScope.params],
+    [allowedCompanyIds, from, to, ...evScope.params],
   );
 
   // Group events by (user_id, date)
@@ -692,6 +698,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
   const anomalies: Array<{
     shift_id: number; user_id: number; user_name: string; user_surname: string;
+    user_avatar_filename: string | null;
     store_name: string; date: string;
     anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit';
     severity: 'low' | 'medium' | 'high';
@@ -710,6 +717,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       anomalies.push({
         shift_id: shift.id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
+        user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'no_show', severity: 'high',
         details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
@@ -728,6 +736,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       anomalies.push({
         shift_id: shift.id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
+        user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
         details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
@@ -744,6 +753,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         anomalies.push({
           shift_id: shift.id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
+          user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'early_exit', severity: earlyMin > 30 ? 'high' : 'medium',
           details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
@@ -761,6 +771,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         anomalies.push({
           shift_id: shift.id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
+          user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'long_break', severity: breakMin > 90 ? 'high' : 'medium',
           details: `Pausa di ${breakMin} min (limite: 60 min)`,
@@ -780,7 +791,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 // Requires admin or hr role. Updates a single attendance_events record.
 // ---------------------------------------------------------------------------
 export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const id = parseInt(req.params.id, 10);
 
   if (!id || isNaN(id)) {
@@ -810,8 +821,8 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 
   // Verify record exists and belongs to this company
   const existing = await queryOne<{ id: number }>(
-    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = $2`,
-    [id, companyId],
+    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = ANY($2)`,
+    [id, allowedCompanyIds],
   );
   if (!existing) {
     notFound(res, 'Evento non trovato');
@@ -844,11 +855,11 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
     return;
   }
 
-  params.push(id, companyId);
+  params.push(id, allowedCompanyIds);
   const updated = await queryOne(
     `UPDATE attendance_events
      SET ${setClauses.join(', ')}
-     WHERE id = $${idx} AND company_id = $${idx + 1}
+     WHERE id = $${idx} AND company_id = ANY($${idx + 1})
      RETURNING *`,
     params,
   );
@@ -861,7 +872,7 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 // Requires admin role. Hard-deletes a single attendance_events record.
 // ---------------------------------------------------------------------------
 export const deleteAttendanceEvent = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const id = parseInt(req.params.id, 10);
 
   if (!id || isNaN(id)) {
@@ -871,8 +882,8 @@ export const deleteAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 
   // Verify record exists and belongs to this company
   const existing = await queryOne<{ id: number }>(
-    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = $2`,
-    [id, companyId],
+    `SELECT id FROM attendance_events WHERE id = $1 AND company_id = ANY($2)`,
+    [id, allowedCompanyIds],
   );
   if (!existing) {
     notFound(res, 'Evento non trovato');
@@ -880,8 +891,8 @@ export const deleteAttendanceEvent = asyncHandler(async (req: Request, res: Resp
   }
 
   await queryOne(
-    `DELETE FROM attendance_events WHERE id = $1 AND company_id = $2`,
-    [id, companyId],
+    `DELETE FROM attendance_events WHERE id = $1 AND company_id = ANY($2)`,
+    [id, allowedCompanyIds],
   );
 
   ok(res, { id }, 'Evento eliminato');

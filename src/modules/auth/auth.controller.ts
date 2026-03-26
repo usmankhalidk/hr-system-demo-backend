@@ -17,6 +17,7 @@ interface UserRow {
   supervisor_id: number | null;
   status: string;
   is_super_admin: boolean;
+  avatar_filename: string | null;
 }
 
 async function isRateLimited(email: string, ip: string): Promise<boolean> {
@@ -61,7 +62,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const user = await queryOne<UserRow>(
-    `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status, is_super_admin
+    `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status, is_super_admin, avatar_filename
      FROM users WHERE email = $1`,
     [email]
   );
@@ -115,6 +116,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       storeId: user.store_id,
       supervisorId: user.supervisor_id,
       isSuperAdmin: user.is_super_admin,
+      avatarFilename: user.avatar_filename,
     },
   });
 });
@@ -136,7 +138,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const user = await queryOne<Omit<UserRow, 'password_hash'>>(
-    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status, is_super_admin
+    `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status, is_super_admin, avatar_filename
      FROM users WHERE id = $1`,
     [req.user!.userId]
   );
@@ -155,6 +157,7 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
     role: user.role,
     status: user.status,
     isSuperAdmin: user.is_super_admin,
+    avatarFilename: user.avatar_filename,
   });
 });
 

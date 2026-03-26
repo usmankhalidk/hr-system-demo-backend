@@ -13,6 +13,7 @@ const storeSchema = z.object({
   address: z.string().optional(),
   cap: z.string().max(10).optional(),
   max_staff: z.number().int().min(0).optional(),
+  company_id: z.number().int().nullable().optional(),
 });
 
 const allManagers = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
