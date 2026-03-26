@@ -24,11 +24,9 @@ RUN npm install --omit=dev
 # Compiled JS
 COPY --from=builder /app/dist ./dist
 
-# Schema for seed script:
-# seed.js lives at /app/dist/scripts/seed.js (__dirname = /app/dist/scripts)
-# path.join(__dirname, '../../../database/schema.sql') = /database/schema.sql
-# So we copy database/ to /database (root level) to match that resolved path.
-COPY database /database
+# Migration files are in database/ relative to backend repo root.
+# seed.js (__dirname = /app/dist/scripts) resolves ../../database → /app/database.
+COPY database ./database
 
 # Startup script: auto-seeds on first deploy, then starts the server
 COPY start.sh ./

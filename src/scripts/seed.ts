@@ -12,7 +12,11 @@ dotenv.config();
 export async function migrate() {
   const client = await pool.connect();
   try {
-    const migrationsDir = path.join(__dirname, '../../../database/migrations');
+    // Railway standalone repo: database/ is at /app/database (2 levels up from /app/dist/scripts)
+    // Monorepo Docker: database/ is at /database (3 levels up, copied to root by root Dockerfile)
+    const standaloneDir = path.join(__dirname, '../../database/migrations');
+    const monorepoDir = path.join(__dirname, '../../../database/migrations');
+    const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
     for (const file of [
       '001_initial_schema.sql',
       '002_phase1_schema.sql',
@@ -82,9 +86,10 @@ export async function seed() {
     await client.query(`DROP TYPE IF EXISTS user_role`);
     console.log('✓ Old schema dropped');
 
-    // Path from dist/scripts/seed.js: __dirname = /app/dist/scripts
-    // Dockerfile copies database/ to /database → resolves to /database/migrations/
-    const migrationsDir = path.join(__dirname, '../../../database/migrations');
+    // Same path resolution as migrate(): try standalone first, fall back to monorepo
+    const standaloneDir2 = path.join(__dirname, '../../database/migrations');
+    const monorepoDir2 = path.join(__dirname, '../../../database/migrations');
+    const migrationsDir = fs.existsSync(standaloneDir2) ? standaloneDir2 : monorepoDir2;
     // Apply base schema (001) then all migrations in order
     // 002 is for upgrading legacy deployments — not needed on a fresh seed
     for (const file of [
