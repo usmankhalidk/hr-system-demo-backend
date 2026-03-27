@@ -71,8 +71,8 @@ const setBalanceSchema = z.object({
 router.post(
   '/',
   authenticate,
-  requireRole(...allRoles),
   enforceCompany,
+  requireRole(...allRoles),
   upload.single('certificate'),
   // Validate after multer so req.body is populated
   (req, res, next) => {
@@ -94,8 +94,8 @@ router.post(
 router.get(
   '/pending',
   authenticate,
-  requireRole(...managersRoles),
   enforceCompany,
+  requireRole(...managersRoles),
   getPendingApprovals,
 );
 
@@ -103,8 +103,8 @@ router.get(
 router.get(
   '/balance',
   authenticate,
-  requireRole(...allRoles),
   enforceCompany,
+  requireRole(...allRoles),
   getBalance,
 );
 
@@ -112,8 +112,8 @@ router.get(
 router.put(
   '/balance',
   authenticate,
-  requireRole('admin', 'hr'),
   enforceCompany,
+  requireRole('admin', 'hr'),
   validate(setBalanceSchema),
   setBalance,
 );
@@ -122,8 +122,8 @@ router.put(
 router.get(
   '/',
   authenticate,
-  requireRole(...allRoles),
   enforceCompany,
+  requireRole(...allRoles),
   listLeaveRequests,
 );
 
@@ -132,8 +132,8 @@ router.get(
 router.get(
   '/:id/certificate',
   authenticate,
-  requireRole(...allRoles),
   enforceCompany,
+  requireRole(...allRoles),
   downloadCertificate,
 );
 
@@ -141,8 +141,8 @@ router.get(
 router.post(
   '/admin',
   authenticate,
-  requireRole('admin', 'hr'),
   enforceCompany,
+  requireRole('admin', 'hr'),
   validate(adminCreateSchema),
   createLeaveAdmin,
 );
@@ -151,8 +151,8 @@ router.post(
 router.delete(
   '/:id',
   authenticate,
-  requireRole('admin'),
   enforceCompany,
+  requireRole('admin'),
   deleteLeaveRequest,
 );
 
@@ -160,8 +160,8 @@ router.delete(
 router.put(
   '/:id/approve',
   authenticate,
-  requireRole(...managersRoles),
   enforceCompany,
+  requireRole(...managersRoles),
   validate(approveSchema),
   approveLeave,
 );
@@ -170,8 +170,8 @@ router.put(
 router.put(
   '/:id/reject',
   authenticate,
-  requireRole(...managersRoles),
   enforceCompany,
+  requireRole(...managersRoles),
   validate(rejectSchema),
   rejectLeave,
 );

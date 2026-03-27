@@ -57,7 +57,7 @@ const uploadsRoot = process.env.UPLOADS_DIR
   ? path.dirname(process.env.UPLOADS_DIR)
   : path.join(process.cwd(), 'uploads');
 
-app.get('/uploads/:filename', authenticate, async (req, res) => {
+app.get('/uploads/avatars/:filename', authenticate, async (req, res) => {
   const { filename } = req.params;
   if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
     res.status(400).end();
@@ -87,7 +87,7 @@ app.get('/uploads/:filename', authenticate, async (req, res) => {
   };
   const contentType = mimeTypes[ext];
   if (contentType) res.setHeader('Content-Type', contentType);
-  const filePath = path.join(uploadsRoot, filename);
+  const filePath = path.join(uploadsRoot, 'avatars', filename);
   res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
 });
 

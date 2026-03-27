@@ -170,8 +170,8 @@ const createTemplateSchema = z.object({
 router.get(
   '/export',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   exportShifts,
 );
 
@@ -179,8 +179,8 @@ router.get(
 router.get(
   '/import-template',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   importTemplate,
 );
 
@@ -188,8 +188,8 @@ router.get(
 router.post(
   '/import',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   upload.single('file'),
   importShifts,
 );
@@ -198,8 +198,8 @@ router.post(
 router.get(
   '/affluence',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   getAffluence,
 );
 
@@ -207,8 +207,8 @@ router.get(
 router.post(
   '/approve-week',
   authenticate,
-  requireRole('admin', 'hr', 'area_manager'),
   enforceCompany,
+  requireRole('admin', 'hr', 'area_manager'),
   validate(approveWeekSchema),
   approveWeekForEmployee,
 );
@@ -217,8 +217,8 @@ router.post(
 router.post(
   '/copy-week',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   validate(copyWeekSchema),
   copyWeek,
 );
@@ -227,8 +227,8 @@ router.post(
 router.get(
   '/templates',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   listTemplates,
 );
 
@@ -236,8 +236,8 @@ router.get(
 router.post(
   '/templates',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   validate(createTemplateSchema),
   createTemplate,
 );
@@ -246,8 +246,8 @@ router.post(
 router.delete(
   '/templates/:id',
   authenticate,
-  requireRole('admin', 'hr', 'store_manager'),
   enforceCompany,
+  requireRole('admin', 'hr', 'store_manager'),
   deleteTemplate,
 );
 
@@ -255,8 +255,8 @@ router.delete(
 router.get(
   '/',
   authenticate,
-  requireRole(...allRoles),
   enforceCompany,
+  requireRole(...allRoles),
   listShifts,
 );
 
@@ -264,8 +264,8 @@ router.get(
 router.post(
   '/',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   validate(createShiftSchema),
   createShift,
 );
@@ -274,8 +274,8 @@ router.post(
 router.put(
   '/:id',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   validate(updateShiftSchema),
   updateShift,
 );
@@ -284,8 +284,8 @@ router.put(
 router.delete(
   '/:id',
   authenticate,
-  requireRole(...managementRoles),
   enforceCompany,
+  requireRole(...managementRoles),
   deleteShift,
 );
 

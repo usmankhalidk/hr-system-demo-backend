@@ -242,6 +242,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
        lr.start_date, lr.end_date, lr.status, lr.current_approver_role,
        lr.notes, lr.created_at, lr.updated_at,
+       lr.medical_certificate_name,
        u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename
      FROM leave_requests lr
      JOIN users u ON u.id = lr.user_id
@@ -300,6 +301,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
        lr.start_date, lr.end_date, lr.status, lr.current_approver_role,
        lr.notes, lr.created_at,
+       lr.medical_certificate_name,
        u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename
      FROM leave_requests lr
      JOIN users u ON u.id = lr.user_id
@@ -511,23 +513,33 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const updated = await queryOne(
-    `UPDATE leave_requests
-     SET status = 'rejected', current_approver_role = NULL, updated_at = NOW()
-     WHERE id = $1
-     RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
-               status, current_approver_role, notes, created_at, updated_at`,
-    [leaveId],
-  );
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  await queryOne(
-    `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
-     VALUES ($1, $2, $3, 'rejected', $4)
-     RETURNING id`,
-    [leaveId, userId, effectiveRole, notes],
-  );
+    const updatedResult = await client.query(
+      `UPDATE leave_requests
+       SET status = 'rejected', current_approver_role = NULL, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 status, current_approver_role, notes, created_at, updated_at`,
+      [leaveId],
+    );
 
-  ok(res, updated, 'Richiesta rifiutata');
+    await client.query(
+      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+       VALUES ($1, $2, $3, 'rejected', $4)`,
+      [leaveId, userId, effectiveRole, notes],
+    );
+
+    await client.query('COMMIT');
+    ok(res, updatedResult.rows[0], 'Richiesta rifiutata');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // ---------------------------------------------------------------------------
