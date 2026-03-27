@@ -203,6 +203,34 @@ export default function AttendanceLogsPage() {
   const [dateTo, setDateTo]       = useState(today);
   const [eventType, setEventType] = useState<string>('');
   const [activeTab, setActiveTab] = useState<'events' | 'anomalies'>('events');
+  const [filterSearch, setFilterSearch] = useState('');
+  const [filterStoreId, setFilterStoreId] = useState<string>('');
+  const [filterUserId, setFilterUserId] = useState<string>('');
+  const [filterEmployees, setFilterEmployees] = useState<Array<{ id: number; name: string; surname: string; storeId: number | null }>>([]);
+  const [filterStores, setFilterStores] = useState<Array<{ id: number; name: string; companyName?: string }>>([]);
+
+  const loadFilterEmployees = useCallback(async (storeId?: number) => {
+    try {
+      const res = await getEmployees({ limit: 500, status: 'active', ...(storeId ? { storeId } : {}) });
+      setFilterEmployees(
+        res.employees.map((e) => ({
+          id: e.id,
+          name: e.name,
+          surname: e.surname,
+          storeId: e.storeId ?? null,
+        })),
+      );
+    } catch {
+      setFilterEmployees([]);
+    }
+  }, []);
+
+  useEffect(() => {
+    getStores()
+      .then((stores) => setFilterStores(stores.map((s) => ({ id: s.id, name: s.name, companyName: s.companyName }))))
+      .catch(() => setFilterStores([]));
+    void loadFilterEmployees();
+  }, [loadFilterEmployees]);
 
   const fetchEvents = useCallback(async () => {
     setLoading(true);
@@ -210,6 +238,9 @@ export default function AttendanceLogsPage() {
     try {
       const params: AttendanceListParams = { dateFrom, dateTo };
       if (eventType) params.eventType = eventType as EventType;
+      if (filterStoreId) params.storeId = parseInt(filterStoreId, 10);
+      if (filterUserId) params.userId = parseInt(filterUserId, 10);
+      if (filterSearch.trim()) params.search = filterSearch.trim();
       const res = await listAttendanceEvents(params);
       setEvents(res.events);
       setTotal(res.total);
@@ -219,7 +250,7 @@ export default function AttendanceLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, eventType, t]);
+  }, [dateFrom, dateTo, eventType, filterStoreId, filterUserId, filterSearch, t]);
 
   useEffect(() => { fetchEvents(); }, [fetchEvents]);
 
@@ -229,6 +260,9 @@ export default function AttendanceLogsPage() {
       if (dateFrom)  params.append('date_from', dateFrom);
       if (dateTo)    params.append('date_to', dateTo);
       if (eventType) params.append('event_type', eventType);
+      if (filterStoreId) params.append('store_id', filterStoreId);
+      if (filterUserId) params.append('user_id', filterUserId);
+      if (filterSearch.trim()) params.append('search', filterSearch.trim());
       params.append('format', format);
       const res = await client.get(`/attendance?${params.toString()}`, { responseType: 'blob' });
       const ext = format === 'xlsx' ? 'xlsx' : 'csv';
@@ -493,6 +527,82 @@ export default function AttendanceLogsPage() {
           )}
         </div>
 
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          gap: 8,
+          width: isMobile ? '100%' : undefined,
+          flexWrap: isMobile ? 'wrap' : undefined,
+        }}>
+          {!isMobile && <div style={{ width: 1, height: 24, background: 'var(--border)', flexShrink: 0 }} />}
+          <input
+            value={filterSearch}
+            onChange={(e) => setFilterSearch(e.target.value)}
+            placeholder={t('employees.searchPlaceholder', { defaultValue: 'Search by name, surname or ID...' })}
+            style={{
+              minWidth: isMobile ? 180 : 240,
+              width: isMobile ? '100%' : 260,
+              height: 34,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              padding: '0 10px',
+              background: 'var(--background)',
+              color: 'var(--text)',
+              fontSize: 12,
+              outline: 'none',
+            }}
+          />
+          <select
+            value={filterStoreId}
+            onChange={(e) => {
+              const nextStoreId = e.target.value;
+              setFilterStoreId(nextStoreId);
+              setFilterUserId('');
+              void loadFilterEmployees(nextStoreId ? parseInt(nextStoreId, 10) : undefined);
+            }}
+            style={{
+              minWidth: isMobile ? 140 : 180,
+              height: 34,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              padding: '0 10px',
+              background: 'var(--background)',
+              color: 'var(--text)',
+              fontSize: 12,
+              outline: 'none',
+            }}
+          >
+            <option value="">{t('common.all')} {t('common.store').toLowerCase()}</option>
+            {filterStores.map((s) => (
+              <option key={s.id} value={String(s.id)}>
+                {s.companyName ? `${s.name} (${s.companyName})` : s.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filterUserId}
+            onChange={(e) => setFilterUserId(e.target.value)}
+            style={{
+              minWidth: isMobile ? 160 : 220,
+              height: 34,
+              borderRadius: 8,
+              border: '1px solid var(--border)',
+              padding: '0 10px',
+              background: 'var(--background)',
+              color: 'var(--text)',
+              fontSize: 12,
+              outline: 'none',
+            }}
+          >
+            <option value="">{t('common.all')} {t('employees.colName').toLowerCase()}</option>
+            {filterEmployees.map((e) => (
+              <option key={e.id} value={String(e.id)}>
+                {e.surname} {e.name}
+              </option>
+            ))}
+          </select>
+        </div>
+
         {/* Date range — horizontally scrollable row on mobile */}
         <div style={{
           display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8,
@@ -540,40 +650,42 @@ export default function AttendanceLogsPage() {
           </div>
         </div>
 
-        {/* Event type pills — scrollable on mobile */}
-        <div style={{
-          display: 'flex', gap: 6, alignItems: 'center',
-          flexWrap: isMobile ? undefined : 'wrap',
-          overflowX: isMobile ? 'auto' : undefined,
-          width: isMobile ? '100%' : undefined,
-          paddingBottom: isMobile ? 2 : 0,
-        }}>
-          {!isMobile && <div style={{ width: 1, height: 24, background: 'var(--border)', flexShrink: 0 }} />}
-          {eventTypeOptions.map(({ value, labelKey }) => {
-            const meta   = value ? EVENT_META[value] : null;
-            const active = eventType === value;
-            return (
-              <button
-                key={value}
-                className="att-type-btn"
-                onClick={() => setEventType(value)}
-                style={{
-                  padding: '5px 11px', borderRadius: 20, flexShrink: 0,
-                  border: `1.5px solid ${active ? (meta?.dot ?? 'var(--accent)') : 'var(--border)'}`,
-                  background: active ? (meta ? meta.bg : 'var(--accent-light)') : 'transparent',
-                  color: active ? (meta?.color ?? 'var(--accent)') : 'var(--text-secondary)',
-                  fontSize: 12, fontWeight: 700, cursor: 'pointer',
-                  transition: 'all 0.15s', letterSpacing: 0.3,
-                  display: 'flex', alignItems: 'center', gap: 5,
-                  outline: 'none', whiteSpace: 'nowrap',
-                }}
-              >
-                {meta && <span style={{ fontSize: 11 }}>{meta.icon}</span>}
-                {t(labelKey)}
-              </button>
-            );
-          })}
-        </div>
+        {/* Event type pills (events tab only) */}
+        {activeTab === 'events' && (
+          <div style={{
+            display: 'flex', gap: 6, alignItems: 'center',
+            flexWrap: isMobile ? undefined : 'wrap',
+            overflowX: isMobile ? 'auto' : undefined,
+            width: isMobile ? '100%' : undefined,
+            paddingBottom: isMobile ? 2 : 0,
+          }}>
+            {!isMobile && <div style={{ width: 1, height: 24, background: 'var(--border)', flexShrink: 0 }} />}
+            {eventTypeOptions.map(({ value, labelKey }) => {
+              const meta   = value ? EVENT_META[value] : null;
+              const active = eventType === value;
+              return (
+                <button
+                  key={value}
+                  className="att-type-btn"
+                  onClick={() => setEventType(value)}
+                  style={{
+                    padding: '5px 11px', borderRadius: 20, flexShrink: 0,
+                    border: `1.5px solid ${active ? (meta?.dot ?? 'var(--accent)') : 'var(--border)'}`,
+                    background: active ? (meta ? meta.bg : 'var(--accent-light)') : 'transparent',
+                    color: active ? (meta?.color ?? 'var(--accent)') : 'var(--text-secondary)',
+                    fontSize: 12, fontWeight: 700, cursor: 'pointer',
+                    transition: 'all 0.15s', letterSpacing: 0.3,
+                    display: 'flex', alignItems: 'center', gap: 5,
+                    outline: 'none', whiteSpace: 'nowrap',
+                  }}
+                >
+                  {meta && <span style={{ fontSize: 11 }}>{meta.icon}</span>}
+                  {t(labelKey)}
+                </button>
+              );
+            })}
+          </div>
+        )}
 
         {/* Loading indicator desktop */}
         {loading && !isMobile && (
@@ -916,7 +1028,13 @@ export default function AttendanceLogsPage() {
           )}
         </div>
       ) : (
-        <AnomalyList dateFrom={dateFrom} dateTo={dateTo} />
+        <AnomalyList
+          dateFrom={dateFrom}
+          dateTo={dateTo}
+          storeId={filterStoreId ? parseInt(filterStoreId, 10) : undefined}
+          userId={filterUserId ? parseInt(filterUserId, 10) : undefined}
+          search={filterSearch.trim() || undefined}
+        />
       )}
 
       {/* ── Edit Event Modal ──────────────────────────────────────────────── */}

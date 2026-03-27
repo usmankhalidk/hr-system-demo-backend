@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { LeaveRequest, LeaveStatus, approveLeaveRequest, rejectLeaveRequest, downloadCertificate } from '../../api/leave';
+import { getAvatarUrl } from '../../api/client';
 import { useToast } from '../../context/ToastContext';
 
 // ---------------------------------------------------------------------------
@@ -361,7 +362,7 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
                   }}>
                     {req.userAvatarFilename ? (
                       <img
-                        src={`/uploads/avatars/${req.userAvatarFilename}`}
+                        src={getAvatarUrl(req.userAvatarFilename) ?? ''}
                         alt={`${req.userSurname} ${req.userName}`}
                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                       />

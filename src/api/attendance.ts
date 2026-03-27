@@ -48,6 +48,7 @@ export interface AttendanceListParams {
   dateFrom?: string;
   dateTo?: string;
   eventType?: EventType;
+  search?: string;
 }
 
 export interface AttendanceListResponse {

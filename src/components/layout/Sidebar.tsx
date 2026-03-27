@@ -6,6 +6,7 @@ import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 import { UserRole } from '../../types';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { getUnreadCount } from '../../api/messages';
+import { getAvatarUrl } from '../../api/client';
 
 interface SidebarProps {
   collapsed: boolean;
@@ -129,8 +130,8 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.presenze',   path: '/presenze',              icon: <IconClock />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',   path: '/permessi',              icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.messaggi',   path: '/hr-chat',               icon: <IconMessage />, permissionKey: 'messaggi' },
-      { labelKey: 'nav.permissions',path: '/impostazioni/permessi', icon: <IconShield />, permissionKey: 'impostazioni', superAdminOnly: true },
-      { labelKey: 'nav.settings',   path: '/impostazioni',          icon: <IconSettings /> },
+      { labelKey: 'nav.permissions',path: '/impostazioni/permessi', icon: <IconShield />, permissionKey: 'impostazioni' },
+      { labelKey: 'nav.settings',   path: '/impostazioni',          icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
     hr: [
       { labelKey: 'nav.dashboard', path: '/',             icon: <IconDashboard /> },
@@ -141,16 +142,19 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
       { labelKey: 'nav.presenze',  path: '/presenze',     icon: <IconClock />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',     icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.messaggi',  path: '/hr-chat',      icon: <IconMessage />, permissionKey: 'messaggi' },
+      { labelKey: 'nav.permissions', path: '/impostazioni/permessi', icon: <IconShield /> },
       { labelKey: 'nav.settings',  path: '/impostazioni', icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
     area_manager: [
       { labelKey: 'nav.dashboard', path: '/',             icon: <IconDashboard /> },
       { labelKey: 'nav.companies', path: '/aziende',      icon: <IconBuilding /> },
+      { labelKey: 'nav.stores',    path: '/negozi',       icon: <IconStore />, permissionKey: 'negozi' },
       { labelKey: 'nav.employees', path: '/dipendenti',   icon: <IconUsers />, permissionKey: 'dipendenti' },
       { labelKey: 'nav.turni',     path: '/turni',        icon: <IconCalendar />, permissionKey: 'turni' },
       { labelKey: 'nav.presenze',  path: '/presenze',     icon: <IconClock />, permissionKey: 'presenze' },
       { labelKey: 'nav.permessi',  path: '/permessi',     icon: <IconUmbrella />, permissionKey: 'permessi' },
       { labelKey: 'nav.messaggi',  path: '/hr-chat',      icon: <IconMessage />, permissionKey: 'messaggi' },
+      { labelKey: 'nav.permissions', path: '/impostazioni/permessi', icon: <IconShield /> },
       { labelKey: 'nav.settings',  path: '/impostazioni', icon: <IconSettings />, permissionKey: 'impostazioni' },
     ],
     store_manager: [
@@ -176,6 +180,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
   const navItems = NAV_ITEMS[user.role].filter((item) => {
     if (item.superAdminOnly && user.isSuperAdmin !== true) return false;
     if (!item.permissionKey) return true;
+    if (user.isSuperAdmin === true) return true;
     return permissions[item.permissionKey] === true;
   });
 
@@ -270,7 +275,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
         }}>
           {user.avatarFilename && !avatarImgError ? (
             <img
-              src={`/uploads/avatars/${user.avatarFilename}`}
+              src={getAvatarUrl(user.avatarFilename) ?? ''}
               alt={fullName}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               onError={() => setAvatarImgError(true)}

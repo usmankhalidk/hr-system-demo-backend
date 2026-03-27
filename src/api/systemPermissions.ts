@@ -5,12 +5,13 @@ export interface CompanyGrid {
   // - area_manager -> areaManager
   // - store_manager -> storeManager
   // - store_terminal -> storeTerminal
-  turni: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
-  permessi: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
-  presenze: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
-  negozi: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
-  dipendenti: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
-  messaggi: { hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  turni: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  permessi: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  presenze: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  negozi: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  dipendenti: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  messaggi: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
+  impostazioni: { admin: boolean; hr: boolean; areaManager: boolean; storeManager: boolean; employee: boolean; storeTerminal: boolean };
 }
 
 export interface CompanyPermissions {
@@ -25,8 +26,8 @@ export async function getCompaniesPermissions(): Promise<{ companies: CompanyPer
 }
 
 export interface SystemPermissionUpdate {
-  role: 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal';
-  module: 'turni' | 'permessi' | 'presenze' | 'negozi' | 'dipendenti' | 'messaggi';
+  role: 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal';
+  module: 'turni' | 'permessi' | 'presenze' | 'negozi' | 'dipendenti' | 'messaggi' | 'impostazioni';
   enabled: boolean;
 }
 

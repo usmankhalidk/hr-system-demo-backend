@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { LanguageSwitcher } from '../ui/LanguageSwitcher';
 import { UserRole } from '../../types';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
+import { getAvatarUrl } from '../../api/client';
 
 interface HeaderProps {
   onToggleSidebar: () => void;
@@ -122,7 +123,7 @@ const Header: React.FC<HeaderProps> = ({ onToggleSidebar, title }) => {
             }}>
               {user?.avatarFilename ? (
                 <img
-                  src={`/uploads/avatars/${user.avatarFilename}`}
+                  src={getAvatarUrl(user.avatarFilename) ?? ''}
                   alt={fullName}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />

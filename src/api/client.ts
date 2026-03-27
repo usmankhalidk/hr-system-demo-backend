@@ -77,4 +77,18 @@ client.interceptors.response.use(
   (err) => Promise.reject(err)
 );
 
+const TOKEN_KEY = 'hr_token';
+
+/**
+ * Returns an authenticated URL for a user avatar file.
+ * Uses a ?token= query param so that <img> tags (which can't set headers) work.
+ * Works in dev (relative URL via Vite proxy) and production (absolute Railway URL).
+ */
+export function getAvatarUrl(filename: string | null | undefined): string | null {
+  if (!filename) return null;
+  const token = localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY) || '';
+  const base = apiBase; // '' in dev (uses Vite proxy), full URL in prod
+  return `${base}/uploads/avatars/${filename}${token ? `?token=${encodeURIComponent(token)}` : ''}`;
+}
+
 export default client;

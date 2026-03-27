@@ -43,7 +43,7 @@ export async function createEmployee(payload: Partial<Employee> & { email: strin
   return data.data;
 }
 
-export async function updateEmployee(id: number, payload: Partial<Employee>): Promise<Employee> {
+export async function updateEmployee(id: number, payload: Partial<Employee> & { password?: string }): Promise<Employee> {
   const { data } = await apiClient.put(`/employees/${id}`, payload);
   return data.data;
 }

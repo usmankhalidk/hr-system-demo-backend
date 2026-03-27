@@ -128,6 +128,9 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
   const [tempPassword, setTempPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [passwordError, setPasswordError] = useState<string | undefined>();
+  const [editPassword, setEditPassword] = useState('');
+  const [showEditPassword, setShowEditPassword] = useState(false);
+  const [editPasswordError, setEditPasswordError] = useState<string | undefined>();
   // After creation: show credentials card
   const [createdCredentials, setCreatedCredentials] = useState<{ name: string; email: string; password: string } | null>(null);
   const [copied, setCopied] = useState(false);
@@ -260,6 +263,10 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
       setPasswordError(t('employees.passwordTooShort'));
       return;
     }
+    if (isEditMode && editPassword.length > 0 && editPassword.length < 8) {
+      setEditPasswordError(t('employees.passwordTooShort'));
+      return;
+    }
     if (validateStep1()) setStep(2);
   };
   const handleBack = () => setStep(1);
@@ -333,6 +340,7 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
         probationMonths: formData.probationMonths ? parseInt(formData.probationMonths, 10) : null,
         terminationDate: formData.terminationDate || null,
         terminationType: formData.terminationType || null,
+        password: isEditMode && editPassword.trim() ? editPassword : undefined,
       };
       if (isEditMode && employeeId) {
         await updateEmployee(employeeId, payload);
@@ -732,8 +740,8 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                     />
                   </div>
 
-                  {/* Password (create mode only) */}
-                  {!isEditMode && (
+                  {/* Password */}
+                  {!isEditMode ? (
                     <>
                       <SectionDivider label={t('employees.sectionSystemAccess')} />
                       <div style={{ marginBottom: '14px' }}>
@@ -800,6 +808,58 @@ export function EmployeeForm({ employeeId, onSuccess, onCancel }: EmployeeFormPr
                         </div>
                         {passwordError && (
                           <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>{passwordError}</div>
+                        )}
+                        <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '5px' }}>
+                          {t('employees.tempPasswordHint')}
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <SectionDivider label={t('employees.sectionSystemAccess')} />
+                      <div style={{ marginBottom: '14px' }}>
+                        <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '5px', fontFamily: 'var(--font-body)' }}>
+                          {t('profile.newPassword')} ({t('common.optional', { defaultValue: 'optional' })})
+                        </div>
+                        <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                          <div style={{ flex: 1, position: 'relative' }}>
+                            <input
+                              type={showEditPassword ? 'text' : 'password'}
+                              value={editPassword}
+                              onChange={(e) => { setEditPassword(e.target.value); setEditPasswordError(undefined); }}
+                              placeholder={t('employees.leaveEmptyToKeepPassword', { defaultValue: 'Leave empty to keep current password' })}
+                              style={{
+                                width: '100%',
+                                height: '38px',
+                                padding: '0 38px 0 12px',
+                                border: `1px solid ${editPasswordError ? 'var(--danger)' : 'var(--border)'}`,
+                                borderRadius: 'var(--radius-sm)',
+                                fontSize: '13px',
+                                fontFamily: 'var(--font-body)',
+                                background: 'var(--surface)',
+                                color: 'var(--text-primary)',
+                                outline: 'none',
+                                boxSizing: 'border-box',
+                                letterSpacing: showEditPassword ? 'normal' : '0.12em',
+                              }}
+                              onFocus={(e) => { e.currentTarget.style.borderColor = 'var(--accent)'; e.currentTarget.style.boxShadow = '0 0 0 3px var(--accent-light)'; }}
+                              onBlur={(e) => { e.currentTarget.style.borderColor = editPasswordError ? 'var(--danger)' : 'var(--border)'; e.currentTarget.style.boxShadow = 'none'; }}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => setShowEditPassword((v) => !v)}
+                              style={{
+                                position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)',
+                                background: 'none', border: 'none', cursor: 'pointer',
+                                color: 'var(--text-muted)', display: 'flex', alignItems: 'center', padding: 0,
+                              }}
+                            >
+                              {showEditPassword ? <EyeOff size={15} /> : <Eye size={15} />}
+                            </button>
+                          </div>
+                        </div>
+                        {editPasswordError && (
+                          <div style={{ fontSize: '11px', color: 'var(--danger)', marginTop: '4px' }}>{editPasswordError}</div>
                         )}
                         <div style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '5px' }}>
                           {t('employees.tempPasswordHint')}

@@ -3,6 +3,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 import { getEmployee, deactivateEmployee, activateEmployee, uploadEmployeeAvatar } from '../../api/employees';
+import { getAvatarUrl } from '../../api/client';
 import { getTrainings, getMedicals, createTraining, updateTraining, createMedical, updateMedical } from '../../api/trainings';
 import { translateApiError } from '../../utils/apiErrors';
 import { useAuth } from '../../context/AuthContext';
@@ -361,7 +362,7 @@ export function EmployeeDetail() {
           }}>
             {employee.avatarFilename ? (
               <img
-                src={`/uploads/avatars/${employee.avatarFilename}`}
+                src={getAvatarUrl(employee.avatarFilename) ?? ''}
                 alt={fullName}
                 style={{ width: '100%', height: '100%', objectFit: 'cover' }}
               />

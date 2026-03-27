@@ -4,6 +4,7 @@ import { useAuth } from '../../context/AuthContext';
 import { Card } from '../../components/ui';
 import { changePassword } from '../../api/auth';
 import { getEmployee, uploadEmployeeAvatar } from '../../api/employees';
+import { getAvatarUrl } from '../../api/client';
 import { translateApiError } from '../../utils/apiErrors';
 import { useToast } from '../../context/ToastContext';
 import { Button } from '../../components/ui/Button';
@@ -266,7 +267,7 @@ export function ProfilePage() {
               }}>
                 {(employee?.avatarFilename ?? user.avatarFilename) ? (
                   <img
-                    src={`/uploads/avatars/${employee?.avatarFilename ?? user.avatarFilename}`}
+                    src={getAvatarUrl(employee?.avatarFilename ?? user.avatarFilename) ?? ''}
                     alt={fullName}
                     style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                   />

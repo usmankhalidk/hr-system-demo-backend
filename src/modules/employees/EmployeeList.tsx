@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import { getEmployees } from '../../api/employees';
-import apiClient from '../../api/client';
+import apiClient, { getAvatarUrl } from '../../api/client';
 import { translateApiError } from '../../utils/apiErrors';
 import { getStores } from '../../api/stores';
 import { useAuth } from '../../context/AuthContext';
@@ -141,7 +141,7 @@ export function EmployeeList() {
             }}>
               {row.avatarFilename ? (
                 <img
-                  src={`/uploads/avatars/${row.avatarFilename}`}
+                  src={getAvatarUrl(row.avatarFilename) ?? ''}
                   alt={fullName}
                   style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                 />

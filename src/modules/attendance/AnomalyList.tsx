@@ -1,6 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import client from '../../api/client';
+import client, { getAvatarUrl } from '../../api/client';
 import { useBreakpoint } from '../../hooks/useBreakpoint';
 
 interface Anomaly {
@@ -21,6 +21,9 @@ interface Anomaly {
 interface Props {
   dateFrom: string;
   dateTo: string;
+  storeId?: number;
+  userId?: number;
+  search?: string;
 }
 
 // ── SVG Icons ──────────────────────────────────────────────────────────────
@@ -94,7 +97,7 @@ function getAvatarColor(name: string): string {
   return PALETTE[Math.abs(hash) % PALETTE.length];
 }
 
-export default function AnomalyList({ dateFrom, dateTo }: Props) {
+export default function AnomalyList({ dateFrom, dateTo, storeId, userId, search }: Props) {
   const { t, i18n } = useTranslation();
   const locale = i18n.language === 'en' ? 'en-GB' : 'it-IT';
   const { isMobile } = useBreakpoint();
@@ -116,7 +119,13 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
     setError(null);
     try {
       const res = await client.get('/attendance/anomalies', {
-        params: { date_from: dateFrom, date_to: dateTo },
+        params: {
+          date_from: dateFrom,
+          date_to: dateTo,
+          ...(storeId != null ? { store_id: storeId } : {}),
+          ...(userId != null ? { user_id: userId } : {}),
+          ...(search ? { search } : {}),
+        },
       });
       // axios interceptor already camelizes all keys (snake_case → camelCase)
       const raw = (res.data.data.anomalies ?? []) as any[];
@@ -138,7 +147,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
     } finally {
       setLoading(false);
     }
-  }, [dateFrom, dateTo, t]);
+  }, [dateFrom, dateTo, storeId, userId, search, t, rangeExceeds14Days]);
 
   useEffect(() => { fetchAnomalies(); }, [fetchAnomalies]);
 
@@ -291,7 +300,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
                     overflow: 'hidden',
                   }}>
                     {a.userAvatarFilename ? (
-                      <img src={`/uploads/avatars/${a.userAvatarFilename}`} alt={`${a.userSurname} ${a.userName}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      <img src={getAvatarUrl(a.userAvatarFilename) ?? ''} alt={`${a.userSurname} ${a.userName}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                     ) : initials}
                   </div>
                   <div style={{ flex: 1, minWidth: 0 }}>
@@ -405,7 +414,7 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
                             fontFamily: 'var(--font-display)', overflow: 'hidden',
                           }}>
                             {a.userAvatarFilename ? (
-                              <img src={`/uploads/avatars/${a.userAvatarFilename}`} alt={`${a.userSurname} ${a.userName}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                              <img src={getAvatarUrl(a.userAvatarFilename) ?? ''} alt={`${a.userSurname} ${a.userName}`} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                             ) : initials}
                           </div>
                           <div>

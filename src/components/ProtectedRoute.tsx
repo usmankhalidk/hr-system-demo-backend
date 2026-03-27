@@ -41,7 +41,7 @@ export default function ProtectedRoute({ children, roles, superAdminOnly, permis
     return <Navigate to="/" replace />;
   }
 
-  if (permissionKey && permissions[permissionKey] !== true) {
+  if (permissionKey && user.isSuperAdmin !== true && permissions[permissionKey] !== true) {
     return <Navigate to="/" replace />;
   }
 

@@ -12,6 +12,7 @@ import EmployeeDetail from './modules/employees/EmployeeDetail';
 import StoreList from './modules/stores/StoreList';
 import SystemCompanyManagement from './modules/companies/SystemCompanyManagement';
 import SystemPermissionsPanel from './modules/permissions/SystemPermissionsPanel';
+import PermissionsPanel from './modules/permissions/PermissionsPanel';
 import ProfilePage from './modules/profile/ProfilePage';
 import ShiftsPage from './modules/shifts/ShiftsPage';
 import AttendanceLogsPage from './modules/attendance/AttendanceLogsPage';
@@ -33,6 +34,7 @@ function HomeRoute() {
 
 function AppRoutes() {
   const { t } = useTranslation();
+  const { user } = useAuth();
 
   return (
     <Routes>
@@ -69,13 +71,15 @@ function AppRoutes() {
       } />
 
       <Route path="/impostazioni/permessi" element={
-        <ProtectedRoute roles={['admin']} superAdminOnly>
-          <Layout title={t('nav.permissions')}><SystemPermissionsPanel /></Layout>
+        <ProtectedRoute roles={['admin', 'hr', 'area_manager']}>
+          <Layout title={t('nav.permissions')}>
+            {user?.isSuperAdmin ? <SystemPermissionsPanel /> : <PermissionsPanel />}
+          </Layout>
         </ProtectedRoute>
       } />
 
       <Route path="/impostazioni" element={
-        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager']} permissionKey="impostazioni">
+        <ProtectedRoute roles={['admin', 'hr', 'area_manager']} permissionKey="impostazioni">
           <Layout title={t('settings.title')}><SettingsPage /></Layout>
         </ProtectedRoute>
       } />
