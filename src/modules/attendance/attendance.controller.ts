@@ -910,6 +910,46 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 });
 
 // ---------------------------------------------------------------------------
+// GET /api/attendance/my  — employee self-service history
+// Query params: date_from?, date_to?  (defaults: last 30 days)
+// ---------------------------------------------------------------------------
+export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, userId } = req.user!;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  const { date_from, date_to } = req.query as Record<string, string>;
+
+  if (date_from && !DATE_RE.test(date_from)) {
+    badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  if (date_to && !DATE_RE.test(date_to)) {
+    badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+  const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const from = date_from || defaultFrom;
+  const to   = date_to   || today;
+
+  const events = await query(
+    `SELECT
+       ae.id, ae.event_type, ae.event_time, ae.source, ae.notes, ae.created_at,
+       st.name AS store_name
+     FROM attendance_events ae
+     LEFT JOIN stores st ON st.id = ae.store_id
+     WHERE ae.company_id = $1
+       AND ae.user_id = $2
+       AND ae.event_time >= $3::DATE
+       AND ae.event_time < ($4::DATE + INTERVAL '1 day')
+     ORDER BY ae.event_time DESC
+     LIMIT 200`,
+    [companyId, userId, from, to],
+  );
+
+  ok(res, { events, total: events.length });
+});
+
+// ---------------------------------------------------------------------------
 // DELETE /api/attendance/:id
 // Requires admin role. Hard-deletes a single attendance_events record.
 // ---------------------------------------------------------------------------

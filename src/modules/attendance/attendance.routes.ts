@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { checkin, createManualEvent, listAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent } from './attendance.controller';
+import { checkin, createManualEvent, listAttendanceEvents, listMyAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent } from './attendance.controller';
 
 const router = Router();
 
@@ -89,6 +89,16 @@ router.get(
   enforceCompany,
   requireModulePermission('presenze', 'read'),
   getAnomalies,
+);
+
+// GET /api/attendance/my — employee self-service attendance history
+router.get(
+  '/my',
+  authenticate,
+  requireRole('employee'),
+  enforceCompany,
+  requireModulePermission('presenze', 'read'),
+  listMyAttendanceEvents,
 );
 
 // PUT /api/attendance/:id — admin or hr only
