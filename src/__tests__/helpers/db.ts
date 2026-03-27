@@ -208,7 +208,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
           (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
           || (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
           || (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'].includes(role))
-          || (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
           || (mod === 'negozi' && ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'].includes(role))
           || (mod === 'messaggi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
           || (mod === 'impostazioni' && ['admin', 'hr', 'area_manager'].includes(role));

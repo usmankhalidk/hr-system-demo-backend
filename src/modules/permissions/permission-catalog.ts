@@ -56,7 +56,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   dipendenti: ['admin', 'hr', 'area_manager', 'store_manager'],
   turni: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   presenze: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
-  permessi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  permessi: ['admin', 'hr', 'area_manager', 'store_manager'],
   negozi: ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'],
   messaggi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   impostazioni: ['admin', 'hr', 'area_manager'],

@@ -287,7 +287,7 @@ export async function seed() {
             (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'turni'        && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'presenze'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'permessi'     && ['admin','hr','area_manager','store_manager','employee'].includes(role)) ||
+            (mod === 'permessi'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'impostazioni' && ['admin','hr'].includes(role));
           await client.query(
             `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
@@ -316,8 +316,7 @@ export async function seed() {
           ($1, 'admin',         'permessi', true),
           ($1, 'hr',            'permessi', true),
           ($1, 'area_manager',  'permessi', true),
-          ($1, 'store_manager', 'permessi', true),
-          ($1, 'employee',      'permessi', true)
+          ($1, 'store_manager', 'permessi', true)
         ON CONFLICT (company_id, role, module_name) DO UPDATE SET is_enabled = true
       `, [cid]);
     }
