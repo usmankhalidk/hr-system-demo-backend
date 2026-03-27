@@ -8,6 +8,13 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 // Pure utilities
 // ---------------------------------------------------------------------------
 
+function sanitiseCertificateName(raw: string): string {
+  // keep only safe filename characters, strip everything else
+  const ext = raw.split('.').pop()?.toLowerCase() ?? 'bin';
+  const safe = raw.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return safe.length > 0 ? safe : `certificato.${ext}`;
+}
+
 /**
  * Count working days (Mon–Fri) between two ISO date strings, inclusive.
  */
@@ -113,8 +120,9 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const certificateName = file?.originalname ?? null;
+  const certificateName = file ? sanitiseCertificateName(file.originalname) : null;
   const certificateData = file?.buffer ?? null;
+  const certificateMime = file?.mimetype ?? null;
 
   const firstApprover = await determineFirstApprover(companyId!, storeId ?? null);
 
@@ -122,13 +130,13 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     `INSERT INTO leave_requests
       (company_id, user_id, store_id, leave_type, start_date, end_date,
        status, current_approver_role, notes,
-       medical_certificate_name, medical_certificate_data)
-     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10)
+       medical_certificate_name, medical_certificate_data, medical_certificate_type)
+     VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8, $9, $10, $11)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                status, current_approver_role, notes,
                medical_certificate_name, created_at`,
     [companyId, userId, storeId ?? null, leave_type, start_date, end_date,
-     firstApprover, notes ?? null, certificateName, certificateData],
+     firstApprover, notes ?? null, certificateName, certificateData, certificateMime],
   );
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
@@ -862,21 +870,47 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
 // GET /api/leave/:id/certificate — download medical certificate
 // ---------------------------------------------------------------------------
 export const downloadCertificate = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, role } = req.user!;
+  const { userId, role, storeId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
-  const row = await queryOne<{
+  let row: {
     user_id: number;
     company_id: number;
+    store_id: number | null;
     medical_certificate_name: string | null;
     medical_certificate_data: Buffer | null;
-  }>(
-    `SELECT user_id, company_id, medical_certificate_name, medical_certificate_data
-     FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
-    [leaveId, allowedCompanyIds],
-  );
+    medical_certificate_type: string | null;
+  } | null;
+
+  if (role === 'store_manager') {
+    row = await queryOne<{
+      user_id: number;
+      company_id: number;
+      store_id: number | null;
+      medical_certificate_name: string | null;
+      medical_certificate_data: Buffer | null;
+      medical_certificate_type: string | null;
+    }>(
+      `SELECT user_id, company_id, store_id, medical_certificate_name, medical_certificate_data, medical_certificate_type
+       FROM leave_requests WHERE id = $1 AND company_id = ANY($2) AND store_id = $3`,
+      [leaveId, allowedCompanyIds, storeId],
+    );
+  } else {
+    row = await queryOne<{
+      user_id: number;
+      company_id: number;
+      store_id: number | null;
+      medical_certificate_name: string | null;
+      medical_certificate_data: Buffer | null;
+      medical_certificate_type: string | null;
+    }>(
+      `SELECT user_id, company_id, store_id, medical_certificate_name, medical_certificate_data, medical_certificate_type
+       FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
+      [leaveId, allowedCompanyIds],
+    );
+  }
 
   if (!row) { notFound(res, 'Richiesta non trovata'); return; }
 
@@ -892,12 +926,7 @@ export const downloadCertificate = asyncHandler(async (req: Request, res: Respon
   }
 
   const filename = row.medical_certificate_name ?? 'certificato-medico';
-  const ext = filename.split('.').pop()?.toLowerCase();
-  const contentType =
-    ext === 'pdf'  ? 'application/pdf' :
-    ext === 'png'  ? 'image/png' :
-    ext === 'jpg' || ext === 'jpeg' ? 'image/jpeg' :
-    'application/octet-stream';
+  const contentType = row.medical_certificate_type ?? 'application/octet-stream';
 
   res.setHeader('Content-Type', contentType);
   res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);

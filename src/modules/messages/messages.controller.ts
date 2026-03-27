@@ -96,7 +96,7 @@ export const getHrRecipient = asyncHandler(async (req: Request, res: Response) =
     `SELECT id, name, surname
      FROM users
      WHERE company_id = $1 AND role = 'hr' AND status = 'active'
-     ORDER BY id
+     ORDER BY name, surname
      LIMIT 1`,
     [companyId],
   );

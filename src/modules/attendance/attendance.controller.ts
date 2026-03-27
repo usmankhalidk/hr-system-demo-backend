@@ -559,7 +559,8 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       await queryOne(
         `INSERT INTO attendance_events
            (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
-         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)`,
+         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)
+         ON CONFLICT (company_id, user_id, event_type, event_time) DO NOTHING`,
         [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(),
          linkedShiftId, ev.notes ?? null],
       );

@@ -2,9 +2,11 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import { queryOne } from './config/database';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
+import { authenticate } from './middleware/auth';
 import { seed, migrate } from './scripts/seed';
 import companiesRoutes from './modules/companies/companies.routes';
 import companyGroupsRoutes from './modules/companyGroups/companyGroups.routes';
@@ -50,11 +52,44 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Serve uploaded files (avatars) — local default: <cwd>/uploads; Docker sets UPLOADS_DIR
-const uploadsStaticRoot = process.env.UPLOADS_DIR
+// Serve uploaded files (avatars) behind authentication — prevents unauthenticated PII access
+const uploadsRoot = process.env.UPLOADS_DIR
   ? path.dirname(process.env.UPLOADS_DIR)
   : path.join(process.cwd(), 'uploads');
-app.use('/uploads', express.static(uploadsStaticRoot));
+
+app.get('/uploads/:filename', authenticate, async (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+    res.status(400).end();
+    return;
+  }
+  // Verify the avatar belongs to a user in the requester's company
+  const userId = parseInt(filename.split('.')[0], 10);
+  if (!Number.isFinite(userId)) {
+    res.status(404).end();
+    return;
+  }
+  const owner = await queryOne<{ companyId: number }>(
+    `SELECT company_id AS "companyId" FROM users WHERE id = $1`,
+    [userId]
+  );
+  if (!owner || owner.companyId !== req.user!.companyId) {
+    res.status(403).end();
+    return;
+  }
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+  const filePath = path.join(uploadsRoot, filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
 
 // Health check
 app.get('/health', (_req, res) => {

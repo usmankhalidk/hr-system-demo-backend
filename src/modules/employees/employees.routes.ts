@@ -54,24 +54,24 @@ const allManagementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as c
 router.get(
   '/',
   authenticate,
-  requireRole(...allManagementRoles),
   enforceCompany,
+  requireRole(...allManagementRoles),
   listEmployees,
 );
 
 router.get(
   '/:id',
   authenticate,
-  requireRole(...allManagementRoles, 'employee'),
   enforceCompany,
+  requireRole(...allManagementRoles, 'employee'),
   getEmployee,
 );
 
 router.post(
   '/',
   authenticate,
-  requireRole('admin', 'hr'),
   enforceCompany,
+  requireRole('admin', 'hr'),
   validate(createEmployeeSchema),
   auditLog('employee'),
   createEmployee,
@@ -80,8 +80,8 @@ router.post(
 router.put(
   '/:id',
   authenticate,
-  requireRole('admin', 'hr'),
   enforceCompany,
+  requireRole('admin', 'hr'),
   validate(updateEmployeeSchema),
   auditLog('employee'),
   updateEmployee,
@@ -90,8 +90,8 @@ router.put(
 router.delete(
   '/:id',
   authenticate,
-  requireRole('admin'),
   enforceCompany,
+  requireRole('admin'),
   auditLog('employee'),
   deactivateEmployee,
 );
@@ -99,8 +99,8 @@ router.delete(
 router.patch(
   '/:id/activate',
   authenticate,
-  requireRole('admin'),
   enforceCompany,
+  requireRole('admin'),
   auditLog('employee'),
   activateEmployee,
 );
@@ -112,8 +112,8 @@ router.use('/:id/medicals', medicalsRoutes);
 router.post(
   '/:id/avatar',
   authenticate,
-  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
   enforceCompany,
+  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
   uploadMiddleware,
   uploadAvatar,
 );
@@ -121,8 +121,8 @@ router.post(
 router.delete(
   '/:id/avatar',
   authenticate,
-  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
   enforceCompany,
+  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
   deleteAvatar,
 );
 

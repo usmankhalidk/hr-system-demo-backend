@@ -13,7 +13,10 @@ const sendMessageSchema = z.object({
   recipient_id: z.number().int().positive().optional(),
   subject: z.string().min(1, 'Oggetto obbligatorio').max(255),
   body: z.string().min(1, 'Corpo obbligatorio'),
-});
+}).refine(
+  (data) => data.recipientId != null || data.recipient_id != null,
+  { message: 'recipientId è obbligatorio', path: ['recipientId'] }
+);
 
 // Unread count — must come before '/' to avoid route conflict
 router.get(
@@ -36,7 +39,7 @@ router.post(
   '/',
   authenticate,
   enforceCompany,
-  requireRole('admin', 'hr', 'area_manager', 'store_manager'),
+  requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
   validate(sendMessageSchema),
   sendMessage,
 );

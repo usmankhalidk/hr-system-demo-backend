@@ -37,6 +37,8 @@ export async function migrate() {
       '016_avatar.sql',
       '017_messages.sql',
       '019_company_is_active.sql',
+      '020_leave_certificate_type.sql',
+      '021_attendance_sync_dedup.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -112,6 +114,8 @@ export async function seed() {
       '016_avatar.sql',
       '017_messages.sql',
       '019_company_is_active.sql',
+      '020_leave_certificate_type.sql',
+      '021_attendance_sync_dedup.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);

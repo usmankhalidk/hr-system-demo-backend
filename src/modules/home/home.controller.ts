@@ -9,33 +9,34 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
   switch (role) {
     case 'admin': {
+      const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
       const [companiesRes, storesRes, employeesRes, roleBreakdown, storeBreakdown] = await Promise.all([
         queryOne<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM companies WHERE id = $1`,
-          [companyId]
+          `SELECT COUNT(*) AS count FROM companies WHERE id = ANY($1)`,
+          [allowedCompanyIds]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM stores WHERE company_id = $1 AND is_active = true`,
-          [companyId]
+          `SELECT COUNT(*) AS count FROM stores WHERE company_id = ANY($1) AND is_active = true`,
+          [allowedCompanyIds]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM users WHERE company_id = $1 AND status = 'active' AND role != 'store_terminal'`,
-          [companyId]
+          `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active' AND role != 'store_terminal'`,
+          [allowedCompanyIds]
         ),
         query<{ role: string; count: number }>(
           `SELECT role, COUNT(*)::int AS count
            FROM users
-           WHERE company_id = $1 AND status = 'active'
+           WHERE company_id = ANY($1) AND status = 'active'
            GROUP BY role ORDER BY count DESC`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         query<{ name: string; count: number }>(
           `SELECT s.name, COUNT(u.id)::int AS count
            FROM stores s
            LEFT JOIN users u ON u.store_id = s.id AND u.status = 'active'
-           WHERE s.company_id = $1 AND s.is_active = true
+           WHERE s.company_id = ANY($1) AND s.is_active = true
            GROUP BY s.id, s.name ORDER BY count DESC LIMIT 10`,
-          [companyId]
+          [allowedCompanyIds]
         ),
       ]);
       ok(res, {
@@ -58,49 +59,49 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       ] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, contract_end_date FROM users
-           WHERE company_id = $1 AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+           WHERE company_id = ANY($1) AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
            ORDER BY contract_end_date LIMIT 10`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         query(
           `SELECT id, name, surname, role, hire_date FROM users
-           WHERE company_id = $1 AND hire_date >= DATE_TRUNC('month', CURRENT_DATE)
+           WHERE company_id = ANY($1) AND hire_date >= DATE_TRUNC('month', CURRENT_DATE)
            ORDER BY hire_date DESC LIMIT 10`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM users WHERE company_id = $1 AND status = 'active'`,
-          [companyId]
+          `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active'`,
+          [allowedCompanyIds]
         ),
         query<{ month: string; count: number }>(
           `SELECT TO_CHAR(DATE_TRUNC('month', hire_date), 'YYYY-MM') AS month, COUNT(*)::int AS count
            FROM users
-           WHERE company_id = $1 AND hire_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '5 months'
+           WHERE company_id = ANY($1) AND hire_date >= DATE_TRUNC('month', CURRENT_DATE) - INTERVAL '5 months'
            GROUP BY DATE_TRUNC('month', hire_date)
            ORDER BY 1`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         query<{ status: string; count: number }>(
-          `SELECT status, COUNT(*)::int AS count FROM users WHERE company_id = $1 GROUP BY status`,
-          [companyId]
+          `SELECT status, COUNT(*)::int AS count FROM users WHERE company_id = ANY($1) GROUP BY status`,
+          [allowedCompanyIds]
         ),
         query(
           `SELECT t.id, t.training_type, t.end_date,
                   u.id AS user_id, u.name, u.surname
            FROM employee_trainings t
            JOIN users u ON u.id = t.user_id
-           WHERE t.company_id = $1 AND t.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
+           WHERE t.company_id = ANY($1) AND t.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
            ORDER BY t.end_date LIMIT 10`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         query(
           `SELECT m.id, m.end_date,
                   u.id AS user_id, u.name, u.surname
            FROM employee_medical_checks m
            JOIN users u ON u.id = m.user_id
-           WHERE m.company_id = $1 AND m.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
+           WHERE m.company_id = ANY($1) AND m.end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '60 days'
            ORDER BY m.end_date LIMIT 10`,
-          [companyId]
+          [allowedCompanyIds]
         ),
         query(
           `SELECT s.id, s.user_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
