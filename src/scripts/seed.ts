@@ -308,15 +308,18 @@ export async function seed() {
           ($1, 'hr',            'turni',    true),
           ($1, 'area_manager',  'turni',    true),
           ($1, 'store_manager', 'turni',    true),
+          ($1, 'employee',      'turni',    true),
           ($1, 'admin',         'presenze', true),
           ($1, 'hr',            'presenze', true),
           ($1, 'area_manager',  'presenze', true),
           ($1, 'store_manager', 'presenze', true),
           ($1, 'store_terminal','presenze', true),
+          ($1, 'employee',      'presenze', true),
           ($1, 'admin',         'permessi', true),
           ($1, 'hr',            'permessi', true),
           ($1, 'area_manager',  'permessi', true),
-          ($1, 'store_manager', 'permessi', true)
+          ($1, 'store_manager', 'permessi', true),
+          ($1, 'employee',      'permessi', true)
         ON CONFLICT (company_id, role, module_name) DO UPDATE SET is_enabled = true
       `, [cid]);
     }
