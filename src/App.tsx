@@ -134,7 +134,7 @@ function AppRoutes() {
       } />
 
       <Route path="/permessi" element={
-        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager']} permissionKey="permessi">
+        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager', 'employee']} permissionKey="permessi">
           <Layout title={t('nav.permessi')}><LeavePage /></Layout>
         </ProtectedRoute>
       } />
