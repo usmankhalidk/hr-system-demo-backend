@@ -120,7 +120,6 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
-  requireModulePermission('dipendenti', 'write'),
   uploadMiddleware,
   uploadAvatar,
 );
@@ -130,7 +129,6 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
-  requireModulePermission('dipendenti', 'write'),
   deleteAvatar,
 );
 
