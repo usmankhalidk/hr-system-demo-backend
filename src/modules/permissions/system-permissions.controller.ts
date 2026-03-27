@@ -3,7 +3,7 @@ import { query, queryOne, pool } from '../../config/database';
 import { ok } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 
-const SYSTEM_MODULES = ['turni', 'permessi', 'presenze', 'negozi', 'dipendenti'] as const;
+const SYSTEM_MODULES = ['turni', 'permessi', 'presenze', 'negozi', 'dipendenti', 'messaggi'] as const;
 // Roles that the super-admin company grid can configure.
 // Note: other roles (admin) typically have full access and are managed via /api/permissions.
 const MANAGED_ROLES = ['hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'] as const;

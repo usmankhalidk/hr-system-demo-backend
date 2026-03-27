@@ -18,7 +18,7 @@ const updatePermissionsSchema = z.object({
 const systemUpdateSchema = z.object({
   updates: z.array(z.object({
     role:    z.enum(['hr', 'area_manager', 'store_manager', 'employee', 'store_terminal']),
-    module:  z.enum(['turni', 'permessi', 'presenze', 'negozi', 'dipendenti']),
+    module:  z.enum(['turni', 'permessi', 'presenze', 'negozi', 'dipendenti', 'messaggi']),
     enabled: z.boolean(),
   })).min(1, 'Almeno una modifica è richiesta'),
 });

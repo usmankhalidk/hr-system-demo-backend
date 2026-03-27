@@ -5,9 +5,9 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
-const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
+const ALL_MODULES = ['dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'messaggi', 'documenti', 'ats', 'report', 'impostazioni'] as const;
 const ACTIVE_MODULES = new Set([
-  'dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'impostazioni',
+  'dipendenti', 'turni', 'presenze', 'permessi', 'negozi', 'messaggi', 'impostazioni',
 ]); // Phase 2 active modules
 
 type ModuleName = typeof ALL_MODULES[number];
@@ -116,7 +116,7 @@ export const getMyPermissions = asyncHandler(async (req: Request, res: Response)
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   const rows = await query<{ module_name: string; is_enabled: boolean }>(
-    `SELECT module_name, BOOL_OR(is_enabled)::boolean AS is_enabled
+    `SELECT module_name, BOOL_AND(is_enabled)::boolean AS is_enabled
      FROM role_module_permissions
      WHERE company_id = ANY($1) AND role = $2 AND module_name = ANY($3)
      GROUP BY module_name`,
