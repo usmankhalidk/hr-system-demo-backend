@@ -102,7 +102,16 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const rangeExceeds14Days = (() => {
+    const from = new Date(dateFrom);
+    const to = new Date(dateTo);
+    const diffMs = to.getTime() - from.getTime();
+    const diffDays = diffMs / (1000 * 60 * 60 * 24);
+    return diffDays > 14;
+  })();
+
   const fetchAnomalies = useCallback(async () => {
+    if (rangeExceeds14Days) return;
     setLoading(true);
     setError(null);
     try {
@@ -134,6 +143,22 @@ export default function AnomalyList({ dateFrom, dateTo }: Props) {
   useEffect(() => { fetchAnomalies(); }, [fetchAnomalies]);
 
   const pad = isMobile ? '16px' : '24px';
+
+  if (rangeExceeds14Days) {
+    return (
+      <div style={{ margin: `20px ${pad}` }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '12px 16px', borderRadius: 'var(--radius)',
+          background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.30)',
+          color: '#b45309', fontSize: 13,
+        }}>
+          <IconAlertTriangle />
+          {"L'intervallo di date non può superare 14 giorni"}
+        </div>
+      </div>
+    );
+  }
 
   if (loading) {
     return (

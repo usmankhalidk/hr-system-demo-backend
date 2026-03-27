@@ -57,7 +57,7 @@ function AppRoutes() {
       } />
 
       <Route path="/negozi" element={
-        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager']}>
+        <ProtectedRoute roles={['admin', 'hr', 'area_manager', 'store_manager']} permissionKey="negozi">
           <Layout title={t('nav.stores')}><StoreList /></Layout>
         </ProtectedRoute>
       } />

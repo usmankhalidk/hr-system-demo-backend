@@ -8,10 +8,11 @@ interface Props {
   children: React.ReactNode;
   roles?: UserRole[];
   superAdminOnly?: boolean;
+  permissionKey?: string;
 }
 
-export default function ProtectedRoute({ children, roles, superAdminOnly }: Props) {
-  const { user, loading } = useAuth();
+export default function ProtectedRoute({ children, roles, superAdminOnly, permissionKey }: Props) {
+  const { user, loading, permissions } = useAuth();
   const location = useLocation();
 
   if (loading) {
@@ -37,6 +38,10 @@ export default function ProtectedRoute({ children, roles, superAdminOnly }: Prop
   }
 
   if (roles && !roles.includes(user.role)) {
+    return <Navigate to="/" replace />;
+  }
+
+  if (permissionKey && permissions[permissionKey] !== true) {
     return <Navigate to="/" replace />;
   }
 

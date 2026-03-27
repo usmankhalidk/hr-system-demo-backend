@@ -104,6 +104,7 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
   const { t } = useTranslation();
 
   const [unreadMessages, setUnreadMessages] = useState(0);
+  const [avatarImgError, setAvatarImgError] = useState(false);
 
   useEffect(() => {
     if (!user || user.role === 'store_terminal') return;
@@ -267,11 +268,12 @@ const Sidebar: React.FC<SidebarProps> = ({ collapsed, mobileOpen, onMobileClose 
           fontFamily: 'var(--font-display)', flexShrink: 0,
           overflow: 'hidden',
         }}>
-          {user.avatarFilename ? (
+          {user.avatarFilename && !avatarImgError ? (
             <img
               src={`/uploads/avatars/${user.avatarFilename}`}
               alt={fullName}
               style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+              onError={() => setAvatarImgError(true)}
             />
           ) : initials}
         </div>
