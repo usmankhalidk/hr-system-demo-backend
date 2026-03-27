@@ -81,6 +81,29 @@ describe('GET /api/stores', () => {
     expect(res.body.data.length).toBeGreaterThanOrEqual(2);
   });
 
+  it('area_manager can list stores when negozi row is missing (default-on)', async () => {
+    await testPool.query(
+      `DELETE FROM role_module_permissions
+       WHERE company_id = $1 AND role = 'area_manager' AND module_name = 'negozi'`,
+      [seeds.acmeId],
+    );
+
+    const token = await login('area@acme-test.com');
+    const res = await request.get('/api/stores').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+
+    // Restore defaults for other tests
+    await testPool.query(
+      `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
+       VALUES ($1, 'area_manager', 'negozi', true)
+       ON CONFLICT (company_id, role, module_name)
+       DO UPDATE SET is_enabled = EXCLUDED.is_enabled`,
+      [seeds.acmeId],
+    );
+  });
+
   it('store_manager sees only their own store (array length 1)', async () => {
     const token = await login('manager.roma@acme-test.com');
     const res = await request.get('/api/stores').set('Authorization', `Bearer ${token}`);
@@ -172,7 +195,7 @@ describe('POST /api/stores', () => {
     expect(res.body.code).toBe('CODE_CONFLICT');
   });
 
-  it('hr gets 403 trying to create a store', async () => {
+  it('hr can create a store', async () => {
     const token = await login('hr@acme-test.com');
     const res = await request
       .post('/api/stores')
@@ -180,6 +203,22 @@ describe('POST /api/stores', () => {
       .send({
         name: 'HR Store',
         code: 'HR-T1',
+        max_staff: 5,
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    // Cleanup
+    await testPool.query(`DELETE FROM stores WHERE code = 'HR-T1' AND company_id = $1`, [seeds.acmeId]);
+  });
+
+  it('store_manager gets 403 trying to create a store', async () => {
+    const token = await login('manager.roma@acme-test.com');
+    const res = await request
+      .post('/api/stores')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Manager Store',
+        code: 'MGR-T1',
         max_staff: 5,
       });
     expect(res.status).toBe(403);
@@ -277,10 +316,22 @@ describe('DELETE /api/stores/:id', () => {
     expect(res.body.data.is_active).toBe(false);
   });
 
-  it('hr gets 403 trying to deactivate a store', async () => {
+  it('hr can deactivate a store', async () => {
     const token = await login('hr@acme-test.com');
     const res = await request
-      .delete(`/api/stores/${seeds.romaStoreId}`)
+      .delete(`/api/stores/${secondStoreId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.is_active).toBe(false);
+    // Restore
+    const adminToken = await login('admin@acme-test.com');
+    await request.patch(`/api/stores/${secondStoreId}/activate`).set('Authorization', `Bearer ${adminToken}`);
+  });
+
+  it('store_manager gets 403 trying to deactivate a store', async () => {
+    const token = await login('manager.roma@acme-test.com');
+    const res = await request
+      .delete(`/api/stores/${secondStoreId}`)
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(403);
   });
@@ -291,11 +342,11 @@ describe('DELETE /api/stores/:id', () => {
 // ---------------------------------------------------------------------------
 
 describe('DELETE /api/stores/:id/permanent — admin hard delete', () => {
-  it('403 for non-admin', async () => {
-    const hrToken = await login('hr@acme-test.com');
+  it('403 for store_manager (not a store writer)', async () => {
+    const managerToken = await login('manager.roma@acme-test.com');
     const res = await request
       .delete(`/api/stores/${seeds.romaStoreId}/permanent`)
-      .set('Authorization', `Bearer ${hrToken}`);
+      .set('Authorization', `Bearer ${managerToken}`);
     expect(res.status).toBe(403);
   });
 

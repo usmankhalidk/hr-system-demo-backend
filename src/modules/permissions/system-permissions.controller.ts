@@ -1,15 +1,15 @@
 import { Request, Response } from 'express';
 import { query, queryOne, pool } from '../../config/database';
-import { ok } from '../../utils/response';
+import { ok, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
-
-const SYSTEM_MODULES = ['turni', 'permessi', 'presenze', 'negozi', 'dipendenti', 'messaggi'] as const;
-// Roles that the super-admin company grid can configure.
-// Note: other roles (admin) typically have full access and are managed via /api/permissions.
-const MANAGED_ROLES = ['hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'] as const;
-
-type SystemModule = typeof SYSTEM_MODULES[number];
-type ManagedRole = typeof MANAGED_ROLES[number];
+import {
+  SYSTEM_MODULES,
+  MANAGED_ROLES,
+  ManagedRole,
+  SystemModuleName,
+  isRoleEligibleForModule,
+  isDefaultEnabledForModule,
+} from './permission-catalog';
 
 // GET /api/permissions/companies — returns all companies with their permission grid
 export const getCompaniesPermissions = asyncHandler(async (_req: Request, res: Response) => {
@@ -44,7 +44,9 @@ export const getCompaniesPermissions = asyncHandler(async (_req: Request, res: R
     for (const mod of SYSTEM_MODULES) {
       grid[mod] = {};
       for (const role of MANAGED_ROLES) {
-        grid[mod][role] = rowMap[company.id]?.[mod]?.[role] ?? true;
+        grid[mod][role] = isRoleEligibleForModule(role, mod)
+          ? (rowMap[company.id]?.[mod]?.[role] ?? isDefaultEnabledForModule(role, mod))
+          : false;
       }
     }
     return { id: company.id, name: company.name, grid };
@@ -58,7 +60,7 @@ export const updateCompanyPermissions = asyncHandler(async (req: Request, res: R
   const companyId = parseInt(req.params.companyId, 10);
   const { userId } = req.user!;
   const { updates } = req.body as {
-    updates: Array<{ role: ManagedRole; module: SystemModule; enabled: boolean }>;
+    updates: Array<{ role: ManagedRole; module: SystemModuleName; enabled: boolean }>;
   };
 
   const company = await queryOne<{ id: number }>(
@@ -74,6 +76,11 @@ export const updateCompanyPermissions = asyncHandler(async (req: Request, res: R
   try {
     await client.query('BEGIN');
     for (const update of updates) {
+      if (!isRoleEligibleForModule(update.role, update.module)) {
+        badRequest(res, `Il ruolo '${update.role}' non è abilitabile per il modulo '${update.module}'`, 'ROLE_NOT_ELIGIBLE');
+        await client.query('ROLLBACK');
+        return;
+      }
       await client.query(
         `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())

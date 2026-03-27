@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import multer from 'multer';
 import { z } from 'zod';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import {
   submitLeave,
@@ -73,6 +73,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole(...allRoles),
+  requireModulePermission('permessi', 'write'),
   upload.single('certificate'),
   // Validate after multer so req.body is populated
   (req, res, next) => {
@@ -96,6 +97,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...managersRoles),
+  requireModulePermission('permessi', 'read'),
   getPendingApprovals,
 );
 
@@ -105,6 +107,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allRoles),
+  requireModulePermission('permessi', 'read'),
   getBalance,
 );
 
@@ -114,6 +117,7 @@ router.put(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'write'),
   validate(setBalanceSchema),
   setBalance,
 );
@@ -124,6 +128,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allRoles),
+  requireModulePermission('permessi', 'read'),
   listLeaveRequests,
 );
 
@@ -134,6 +139,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allRoles),
+  requireModulePermission('permessi', 'read'),
   downloadCertificate,
 );
 
@@ -143,6 +149,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'write'),
   validate(adminCreateSchema),
   createLeaveAdmin,
 );
@@ -153,6 +160,7 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole('admin'),
+  requireModulePermission('permessi', 'write'),
   deleteLeaveRequest,
 );
 
@@ -162,6 +170,7 @@ router.put(
   authenticate,
   enforceCompany,
   requireRole(...managersRoles),
+  requireModulePermission('permessi', 'write'),
   validate(approveSchema),
   approveLeave,
 );
@@ -172,6 +181,7 @@ router.put(
   authenticate,
   enforceCompany,
   requireRole(...managersRoles),
+  requireModulePermission('permessi', 'write'),
   validate(rejectSchema),
   rejectLeave,
 );

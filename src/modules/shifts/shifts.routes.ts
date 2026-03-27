@@ -16,7 +16,7 @@ import {
   importTemplate,
   getAffluence,
 } from './shifts.controller';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 
 const upload = multer({
@@ -172,6 +172,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'read'),
   exportShifts,
 );
 
@@ -181,6 +182,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'read'),
   importTemplate,
 );
 
@@ -190,6 +192,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   upload.single('file'),
   importShifts,
 );
@@ -200,6 +203,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'read'),
   getAffluence,
 );
 
@@ -209,6 +213,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager'),
+  requireModulePermission('turni', 'write'),
   validate(approveWeekSchema),
   approveWeekForEmployee,
 );
@@ -219,6 +224,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   validate(copyWeekSchema),
   copyWeek,
 );
@@ -229,6 +235,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'read'),
   listTemplates,
 );
 
@@ -238,6 +245,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   validate(createTemplateSchema),
   createTemplate,
 );
@@ -248,6 +256,7 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'store_manager'),
+  requireModulePermission('turni', 'write'),
   deleteTemplate,
 );
 
@@ -257,6 +266,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allRoles),
+  requireModulePermission('turni', 'read'),
   listShifts,
 );
 
@@ -266,6 +276,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   validate(createShiftSchema),
   createShift,
 );
@@ -276,6 +287,7 @@ router.put(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   validate(updateShiftSchema),
   updateShift,
 );
@@ -286,6 +298,7 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
   deleteShift,
 );
 

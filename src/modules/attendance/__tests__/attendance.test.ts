@@ -168,6 +168,35 @@ describe('POST /api/attendance/checkin', () => {
     expect(res.body.success).toBe(false);
     expect(res.body.code).toBe('INVALID_QR_TOKEN');
   });
+
+  it('returns 403 when presenze module is disabled for employee role', async () => {
+    await testPool.query(
+      `UPDATE role_module_permissions
+       SET is_enabled = false
+       WHERE company_id = $1 AND role = 'employee' AND module_name = 'presenze'`,
+      [seeds.acmeId],
+    );
+
+    const employeeToken = await login('employee1@acme-test.com');
+    const res = await request
+      .post('/api/attendance/checkin')
+      .set('Authorization', `Bearer ${employeeToken}`)
+      .send({
+        qr_token: qrToken,
+        event_type: 'checkin',
+      });
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('MODULE_DISABLED');
+
+    await testPool.query(
+      `UPDATE role_module_permissions
+       SET is_enabled = true
+       WHERE company_id = $1 AND role = 'employee' AND module_name = 'presenze'`,
+      [seeds.acmeId],
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

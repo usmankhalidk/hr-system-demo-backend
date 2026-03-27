@@ -199,14 +199,19 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
   );
 
   // Seed module permissions for both companies
-  const modules = ['dipendenti','turni','presenze','permessi','negozi','documenti','ats','report','impostazioni'];
+  const modules = ['dipendenti','turni','presenze','permessi','negozi','messaggi','documenti','ats','report','impostazioni'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
   for (const cid of [acme.id, beta.id]) {
     for (const role of roles) {
       for (const mod of modules) {
         const enabled =
           (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
-          || (mod === 'impostazioni' && role === 'admin');
+          || (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'].includes(role))
+          || (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'negozi' && ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'].includes(role))
+          || (mod === 'messaggi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'impostazioni' && ['admin', 'hr', 'area_manager'].includes(role));
         await testPool.query(
           `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
            VALUES ($1, $2, $3, $4)

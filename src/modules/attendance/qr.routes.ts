@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { generateQr } from './attendance.controller';
 
 const router = Router();
@@ -11,6 +11,7 @@ router.get(
   authenticate,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'),
   enforceCompany,
+  requireModulePermission('presenze', 'read'),
   generateQr,
 );
 

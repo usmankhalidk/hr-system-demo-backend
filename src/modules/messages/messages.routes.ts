@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { sendMessage, listMessages, unreadCount, markAsRead, getHrRecipient } from './messages.controller';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 
 const router = Router();
@@ -23,6 +23,7 @@ router.get(
   '/unread-count',
   authenticate,
   enforceCompany,
+  requireModulePermission('messaggi', 'read'),
   unreadCount,
 );
 
@@ -31,6 +32,7 @@ router.get(
   '/',
   authenticate,
   enforceCompany,
+  requireModulePermission('messaggi', 'read'),
   listMessages,
 );
 
@@ -40,6 +42,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
+  requireModulePermission('messaggi', 'write'),
   validate(sendMessageSchema),
   sendMessage,
 );
@@ -49,6 +52,7 @@ router.get(
   '/hr',
   authenticate,
   enforceCompany,
+  requireModulePermission('messaggi', 'read'),
   getHrRecipient,
 );
 
@@ -57,6 +61,7 @@ router.patch(
   '/:id/read',
   authenticate,
   enforceCompany,
+  requireModulePermission('messaggi', 'write'),
   markAsRead,
 );
 

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { checkin, createManualEvent, listAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent } from './attendance.controller';
 
@@ -23,6 +23,7 @@ router.post(
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   validate(checkinSchema),
   checkin,
 );
@@ -33,6 +34,7 @@ router.get(
   authenticate,
   requireRole(...managementRoles),
   enforceCompany,
+  requireModulePermission('presenze', 'read'),
   listAttendanceEvents,
 );
 
@@ -50,6 +52,7 @@ router.post(
   authenticate,
   requireRole('admin', 'hr'),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   validate(manualEventSchema),
   createManualEvent,
 );
@@ -73,6 +76,7 @@ router.post(
   authenticate,
   requireRole('store_terminal'),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   validate(syncSchema),
   syncEvents,
 );
@@ -83,6 +87,7 @@ router.get(
   authenticate,
   requireRole(...managementRoles),
   enforceCompany,
+  requireModulePermission('presenze', 'read'),
   getAnomalies,
 );
 
@@ -92,6 +97,7 @@ router.put(
   authenticate,
   requireRole('admin', 'hr'),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   updateAttendanceEvent,
 );
 
@@ -101,6 +107,7 @@ router.delete(
   authenticate,
   requireRole('admin'),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   deleteAttendanceEvent,
 );
 

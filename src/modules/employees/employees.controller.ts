@@ -503,6 +503,11 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
+  let passwordHash: string | null = null;
+  if (typeof body.password === 'string' && body.password.length > 0) {
+    passwordHash = await bcrypt.hash(body.password, 12);
+  }
+
   const employee = await queryOne(
     `UPDATE users SET
       store_id = $1, supervisor_id = $2, name = $3, surname = $4,
@@ -512,8 +517,10 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       gender = $15, iban = $16, address = $17, cap = $18,
       first_aid_flag = $19, marital_status = $20,
       contract_type = $21, probation_months = $22,
-      termination_date = $23, termination_type = $24, updated_at = NOW()
-    WHERE id = $25 AND company_id = $26
+      termination_date = $23, termination_type = $24,
+      password_hash = COALESCE($25, password_hash),
+      updated_at = NOW()
+    WHERE id = $26 AND company_id = $27
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
@@ -543,6 +550,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.probation_months ?? null,
       body.termination_date ?? null,
       body.termination_type ?? null,
+      passwordHash,
       empId,
       companyId,
     ],

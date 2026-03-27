@@ -57,7 +57,14 @@ const uploadsRoot = process.env.UPLOADS_DIR
   ? path.dirname(process.env.UPLOADS_DIR)
   : path.join(process.cwd(), 'uploads');
 
-app.get('/uploads/avatars/:filename', authenticate, async (req, res) => {
+// Promote ?token= query param to Authorization header so <img> tags can load avatars.
+// The authenticate middleware only reads headers, so we bridge the gap here.
+app.get('/uploads/avatars/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
   const { filename } = req.params;
   if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
     res.status(400).end();

@@ -8,7 +8,7 @@ import {
   deactivateEmployee,
   activateEmployee,
 } from './employees.controller';
-import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
 import trainingsRoutes from './trainings.routes';
@@ -46,8 +46,8 @@ const createEmployeeSchema = z.object({
   password: z.string().min(8).optional(), // initial password
 });
 
-// Update schema: same as create but email/role changes restricted
-const updateEmployeeSchema = createEmployeeSchema.omit({ email: true, password: true });
+// Update schema: same as create but email changes restricted
+const updateEmployeeSchema = createEmployeeSchema.omit({ email: true });
 
 const allManagementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
@@ -56,6 +56,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allManagementRoles),
+  requireModulePermission('dipendenti', 'read'),
   listEmployees,
 );
 
@@ -64,6 +65,7 @@ router.get(
   authenticate,
   enforceCompany,
   requireRole(...allManagementRoles, 'employee'),
+  requireModulePermission('dipendenti', 'read'),
   getEmployee,
 );
 
@@ -72,6 +74,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr'),
+  requireModulePermission('dipendenti', 'write'),
   validate(createEmployeeSchema),
   auditLog('employee'),
   createEmployee,
@@ -82,6 +85,7 @@ router.put(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr'),
+  requireModulePermission('dipendenti', 'write'),
   validate(updateEmployeeSchema),
   auditLog('employee'),
   updateEmployee,
@@ -92,6 +96,7 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole('admin'),
+  requireModulePermission('dipendenti', 'write'),
   auditLog('employee'),
   deactivateEmployee,
 );
@@ -101,6 +106,7 @@ router.patch(
   authenticate,
   enforceCompany,
   requireRole('admin'),
+  requireModulePermission('dipendenti', 'write'),
   auditLog('employee'),
   activateEmployee,
 );
@@ -114,6 +120,7 @@ router.post(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
+  requireModulePermission('dipendenti', 'write'),
   uploadMiddleware,
   uploadAvatar,
 );
@@ -123,6 +130,7 @@ router.delete(
   authenticate,
   enforceCompany,
   requireRole('admin', 'hr', 'area_manager', 'store_manager', 'employee'),
+  requireModulePermission('dipendenti', 'write'),
   deleteAvatar,
 );
 

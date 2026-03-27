@@ -46,8 +46,8 @@ describe('GET /api/permissions/my as admin', () => {
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data.dipendenti).toBe(true);
-    expect(res.body.data.turni).toBe(false);
-    expect(res.body.data.negozi).toBe(false);
+    expect(res.body.data.turni).toBe(true);
+    expect(res.body.data.negozi).toBe(true);
   });
 });
 
@@ -61,6 +61,7 @@ describe('GET /api/permissions/companies', () => {
     const company = res.body.data.companies.find((c: { id: number }) => c.id === seeds.acmeId);
     expect(company).toBeDefined();
     expect(company.grid).toHaveProperty('turni');
+    expect(company.grid).toHaveProperty('impostazioni');
     expect(company.grid.turni).toHaveProperty('hr');
   });
 
@@ -140,14 +141,18 @@ describe('PUT /api/permissions/companies/:companyId', () => {
       .send({ updates: [{ role: 'store_terminal', module: 'presenze', enabled: true }] });
   });
 
-  it('invalid role → 400', async () => {
+  it('admin role can now be managed in system permissions', async () => {
     const token = await loginAs('superadmin@acme-test.com');
     const res = await request
       .put(`/api/permissions/companies/${seeds.acmeId}`)
       .set('Authorization', `Bearer ${token}`)
-      // admin is intentionally not manageable via /permissions/companies/:id (handled elsewhere)
       .send({ updates: [{ role: 'admin', module: 'turni', enabled: false }] });
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+
+    await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'admin', module: 'turni', enabled: true }] });
   });
 
   it('invalid module → 400', async () => {
@@ -157,6 +162,17 @@ describe('PUT /api/permissions/companies/:companyId', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ updates: [{ role: 'hr', module: 'report', enabled: false }] });
     expect(res.status).toBe(400);
+  });
+
+  it('ineligible role-module combo (employee + negozi) → 400 ROLE_NOT_ELIGIBLE', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .put(`/api/permissions/companies/${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'employee', module: 'negozi', enabled: true }] });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('ROLE_NOT_ELIGIBLE');
   });
 
   it('non-existent companyId → 404', async () => {

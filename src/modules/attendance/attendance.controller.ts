@@ -271,7 +271,7 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
 export const listAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId, storeId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const { user_id, store_id, date_from, date_to, event_type } = req.query as Record<string, string>;
+  const { user_id, store_id, date_from, date_to, event_type, search } = req.query as Record<string, string>;
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const VALID_EVENT_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
@@ -347,6 +347,12 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     params.push(event_type);
     idx++;
   }
+  if (search) {
+    const escapedSearch = search.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    extraWhere += ` AND (LOWER(u.name) LIKE LOWER($${idx}) ESCAPE '\\' OR LOWER(u.surname) LIKE LOWER($${idx}) ESCAPE '\\' OR u.unique_id ILIKE $${idx} ESCAPE '\\')`;
+    params.push(`%${escapedSearch}%`);
+    idx++;
+  }
 
   const format = req.query.format as string | undefined;
 
@@ -407,7 +413,10 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 
   // Pagination path (normal UI listing)
   const countResult = await query<{ count: string }>(
-    `SELECT COUNT(*) as count FROM attendance_events ae WHERE ae.company_id = ANY($1)${extraWhere}`,
+    `SELECT COUNT(*) as count
+     FROM attendance_events ae
+     LEFT JOIN users u ON u.id = ae.user_id
+     WHERE ae.company_id = ANY($1)${extraWhere}`,
     params,
   );
   const total = parseInt(countResult[0].count, 10);
@@ -583,7 +592,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
 export const getAnomalies = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId, storeId: callerStoreId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const { store_id, date_from, date_to } = req.query as Record<string, string>;
+  const { store_id, user_id, search, date_from, date_to } = req.query as Record<string, string>;
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   if (date_from && !DATE_RE.test(date_from)) {
@@ -591,6 +600,14 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   }
   if (date_to && !DATE_RE.test(date_to)) {
     badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  let filterUserId: number | null = null;
+  if (user_id) {
+    const uid = parseInt(user_id, 10);
+    if (isNaN(uid) || uid < 1) {
+      badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
+    }
+    filterUserId = uid;
   }
 
   const today = new Date().toISOString().split('T')[0];
@@ -636,6 +653,20 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
   // Fetch past non-cancelled shifts in date range
   const shiftScope = buildStoreWhere('s', 4);
+  let shiftExtraWhere = '';
+  const shiftExtraParams: Array<string | number> = [];
+  let shiftIdx = shiftScope.nextIdx;
+  if (filterUserId != null) {
+    shiftExtraWhere += ` AND s.user_id = $${shiftIdx}`;
+    shiftExtraParams.push(filterUserId);
+    shiftIdx++;
+  }
+  if (search) {
+    const escapedSearch = search.replace(/%/g, '\\%').replace(/_/g, '\\_');
+    shiftExtraWhere += ` AND (LOWER(u.name) LIKE LOWER($${shiftIdx}) ESCAPE '\\' OR LOWER(u.surname) LIKE LOWER($${shiftIdx}) ESCAPE '\\' OR u.unique_id ILIKE $${shiftIdx} ESCAPE '\\')`;
+    shiftExtraParams.push(`%${escapedSearch}%`);
+    shiftIdx++;
+  }
   const shifts = await query<{
     id: number; user_id: number; store_id: number; date: string;
     start_time: string; end_time: string;
@@ -655,8 +686,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
        AND s.status != 'cancelled'
        AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))
        ${shiftScope.clause}
+       ${shiftExtraWhere}
      ORDER BY s.date, s.user_id`,
-    [allowedCompanyIds, from, to, ...shiftScope.params],
+    [allowedCompanyIds, from, to, ...shiftScope.params, ...shiftExtraParams],
   );
 
   if (shifts.length === 0) {
@@ -666,6 +698,14 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
   // Fetch attendance events for the same period + scope
   const evScope = buildStoreWhere('ae', 4);
+  let evExtraWhere = '';
+  const evExtraParams: Array<string | number> = [];
+  let evIdx = evScope.nextIdx;
+  if (filterUserId != null) {
+    evExtraWhere += ` AND ae.user_id = $${evIdx}`;
+    evExtraParams.push(filterUserId);
+    evIdx++;
+  }
   const events = await query<{
     user_id: number; event_type: string; event_time: string;
   }>(
@@ -674,8 +714,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
      WHERE ae.company_id = ANY($1)
        AND ae.event_time::DATE BETWEEN $2 AND $3
        ${evScope.clause}
+       ${evExtraWhere}
      ORDER BY ae.user_id, ae.event_time`,
-    [allowedCompanyIds, from, to, ...evScope.params],
+    [allowedCompanyIds, from, to, ...evScope.params, ...evExtraParams],
   );
 
   // Group events by (user_id, date)

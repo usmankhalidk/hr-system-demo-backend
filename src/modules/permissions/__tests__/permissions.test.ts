@@ -3,6 +3,7 @@ import supertest from 'supertest';
 import authRoutes from '../../auth/auth.routes';
 import permissionsRoutes from '../permissions.routes';
 import { seedTestData, clearTestData, closeTestDb } from '../../../__tests__/helpers/db';
+import { query } from '../../../config/database';
 
 const app = express();
 app.use(express.json());
@@ -47,11 +48,11 @@ describe('GET /api/permissions', () => {
     expect(res.body.data.moduleMeta.impostazioni).toEqual({ active: true });
   });
 
-  it('hr → 403', async () => {
+  it('hr can access permissions grid', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request.get('/api/permissions').set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(403);
-    expect(res.body.success).toBe(false);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
   });
 
   it('unauthenticated → 401', async () => {
@@ -105,6 +106,17 @@ describe('PUT /api/permissions', () => {
     expect(res.body.code).toBe('MODULE_NOT_ACTIVE');
   });
 
+  it('ineligible role-module combo (employee + dipendenti) → 400 ROLE_NOT_ELIGIBLE', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request
+      .put('/api/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'employee', module: 'dipendenti', enabled: true }] });
+    expect(res.status).toBe(400);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('ROLE_NOT_ELIGIBLE');
+  });
+
   it('empty updates array → 400', async () => {
     const token = await loginAs('admin@acme-test.com');
     const res = await request
@@ -115,14 +127,20 @@ describe('PUT /api/permissions', () => {
     expect(res.body.success).toBe(false);
   });
 
-  it('hr → 403', async () => {
+  it('hr can update permissions', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request
       .put('/api/permissions')
       .set('Authorization', `Bearer ${token}`)
-      .send({ updates: [{ role: 'employee', module: 'dipendenti', enabled: true }] });
-    expect(res.status).toBe(403);
-    expect(res.body.success).toBe(false);
+      .send({ updates: [{ role: 'employee', module: 'turni', enabled: false }] });
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+
+    // Restore
+    await request
+      .put('/api/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ updates: [{ role: 'employee', module: 'turni', enabled: true }] });
   });
 
   it('unauthenticated → 401', async () => {
@@ -142,6 +160,14 @@ describe('GET /api/permissions/my', () => {
     expect(res.body.success).toBe(true);
     expect(res.body.data).toHaveProperty('dipendenti');
     expect(res.body.data.dipendenti).toBe(true);
+    expect(res.body.data.impostazioni).toBe(true);
+  });
+
+  it('hr has impostazioni enabled when configured', async () => {
+    const token = await loginAs('hr@acme-test.com');
+    const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
     expect(res.body.data.impostazioni).toBe(true);
   });
 
@@ -165,5 +191,120 @@ describe('GET /api/permissions/my', () => {
     const res = await request.get('/api/permissions/my');
     expect(res.status).toBe(401);
     expect(res.body.success).toBe(false);
+  });
+
+  it('messaggi defaults to true for eligible roles when DB row is missing', async () => {
+    await query(
+      `DELETE FROM role_module_permissions
+       WHERE company_id = $1 AND role = 'hr' AND module_name = 'messaggi'`,
+      [seeds.acmeId],
+    );
+    const token = await loginAs('hr@acme-test.com');
+    const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.messaggi).toBe(true);
+  });
+
+  it('negozi defaults to true for area_manager when DB row is missing', async () => {
+    await query(
+      `DELETE FROM role_module_permissions
+       WHERE company_id = $1 AND role = 'area_manager' AND module_name = 'negozi'`,
+      [seeds.acmeId],
+    );
+    const token = await loginAs('area@acme-test.com');
+    const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.negozi).toBe(true);
+  });
+
+  it('negozi defaults to true for hr when DB row is missing', async () => {
+    await query(
+      `DELETE FROM role_module_permissions
+       WHERE company_id = $1 AND role = 'hr' AND module_name = 'negozi'`,
+      [seeds.acmeId],
+    );
+    const token = await loginAs('hr@acme-test.com');
+    const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.negozi).toBe(true);
+  });
+
+  it('impostazioni defaults to true for admin when DB row is missing', async () => {
+    await query(
+      `DELETE FROM role_module_permissions
+       WHERE company_id = $1 AND role = 'admin' AND module_name = 'impostazioni'`,
+      [seeds.acmeId],
+    );
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request.get('/api/permissions/my').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.impostazioni).toBe(true);
+  });
+});
+
+describe('GET /api/permissions/effective', () => {
+  it('returns effective module map with role and target company', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request.get('/api/permissions/effective').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.role).toBe('admin');
+    expect(Array.isArray(res.body.data.allowedCompanyIds)).toBe(true);
+    expect(res.body.data.modules).toHaveProperty('dipendenti');
+    expect(res.body.data.modules.dipendenti).toBe(true);
+    expect(typeof res.body.data.modules.turni).toBe('boolean');
+  });
+
+  it('super admin can switch target company', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .get(`/api/permissions/effective?target_company_id=${seeds.betaId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.targetCompanyId).toBe(seeds.betaId);
+  });
+});
+
+describe('target_company_id scope semantics', () => {
+  it('admin updatePermissions only affects selected target company', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const disableRes = await request
+      .put('/api/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ target_company_id: seeds.acmeId, updates: [{ role: 'hr', module: 'negozi', enabled: false }] });
+    expect(disableRes.status).toBe(200);
+
+    const acmeGrid = await request
+      .get(`/api/permissions?target_company_id=${seeds.acmeId}`)
+      .set('Authorization', `Bearer ${token}`);
+    const betaGrid = await request
+      .get(`/api/permissions?target_company_id=${seeds.betaId}`)
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(acmeGrid.status).toBe(200);
+    expect(betaGrid.status).toBe(200);
+    expect(acmeGrid.body.data.grid.negozi.hr).toBe(false);
+    expect(betaGrid.body.data.grid.negozi.hr).toBe(true);
+
+    await request
+      .put('/api/permissions')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ target_company_id: seeds.acmeId, updates: [{ role: 'hr', module: 'negozi', enabled: true }] });
+  });
+
+  it('rejects invalid explicit target_company_id instead of fallback', async () => {
+    const token = await loginAs('admin@acme-test.com');
+    const res = await request
+      .get('/api/permissions?target_company_id=999999')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
+    expect(res.body.code).toBe('COMPANY_MISMATCH');
   });
 });

@@ -10,7 +10,7 @@ import {
   activateCompany,
   deleteCompany,
 } from './companies.controller';
-import { authenticate, requireRole, enforceCompany, requireSuperAdmin } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany, requireSuperAdmin, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
 
@@ -32,8 +32,8 @@ const updateCompanySettingsSchema = z.object({
 });
 
 router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, listCompanies);
-router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, getCompanySettings);
-router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, validate(updateCompanySettingsSchema), updateCompanySettings);
+router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, requireModulePermission('impostazioni', 'read'), getCompanySettings);
+router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, requireModulePermission('impostazioni', 'write'), validate(updateCompanySettingsSchema), updateCompanySettings);
 router.put('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
 router.post('/', authenticate, requireSuperAdmin, validate(createCompanySchema), auditLog('company'), createCompany);
 
