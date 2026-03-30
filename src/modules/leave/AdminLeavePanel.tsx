@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useAuth } from '../../context/AuthContext';
 import {
@@ -19,6 +19,7 @@ import { getEmployees } from '../../api/employees';
 import { DatePicker } from '../../components/ui/DatePicker';
 import { formatLocalDate } from '../../utils/date';
 import { LeaveRequestDrawer } from './LeaveRequestDrawer';
+import { translateApiError } from '../../utils/apiErrors';
 
 // ── Status badge ───────────────────────────────────────────────────────────
 
@@ -193,8 +194,7 @@ export function BalancesTab({ showFlash }: BalancesTabProps) {
         if (idx >= 0) newBalances[idx] = updated;
         else newBalances.push(updated);
       } catch (err: unknown) {
-        const e = err as { response?: { data?: { error?: string } } };
-        setEditError(e?.response?.data?.error ?? t('leave.balance_set_error'));
+        setEditError(translateApiError(err, t, t('leave.balance_set_error')) ?? t('leave.balance_set_error'));
         hasError = true;
       }
     }
@@ -213,8 +213,7 @@ export function BalancesTab({ showFlash }: BalancesTabProps) {
         else newBalances.push(updated);
       } catch (err: unknown) {
         if (!hasError) {
-          const e = err as { response?: { data?: { error?: string } } };
-          setEditError(e?.response?.data?.error ?? t('leave.balance_set_error'));
+          setEditError(translateApiError(err, t, t('leave.balance_set_error')) ?? t('leave.balance_set_error'));
         }
         hasError = true;
       }
@@ -449,6 +448,7 @@ export default function AdminLeavePanel() {
   const { user } = useAuth();
 
   const isAdmin = user?.role === 'admin';
+  const effectiveApproverRole = user?.role === 'admin' ? 'hr' : user?.role;
   const locale = i18n.language;
 
   const [panelTab, setPanelTab] = useState<PanelTab>('requests');
@@ -553,8 +553,7 @@ export default function AdminLeavePanel() {
       showFlash(t('leave.approved_success'));
       fetchRequests();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      setError(e?.response?.data?.error ?? t('common.error'));
+      setError(translateApiError(err, t, t('common.error')) ?? t('common.error'));
     }
   }
 
@@ -571,8 +570,7 @@ export default function AdminLeavePanel() {
       setRejectNotes('');
       fetchRequests();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      setRejectError(e?.response?.data?.error ?? t('common.error'));
+      setRejectError(translateApiError(err, t, t('common.error')) ?? t('common.error'));
     } finally {
       setRejectSaving(false);
     }
@@ -588,8 +586,7 @@ export default function AdminLeavePanel() {
       setDeleteTarget(null);
       fetchRequests();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      setError(e?.response?.data?.error ?? t('common.error'));
+      setError(translateApiError(err, t, t('common.error')) ?? t('common.error'));
       setDeleteTarget(null);
     } finally {
       setDeleting(false);
@@ -601,14 +598,20 @@ export default function AdminLeavePanel() {
     setCUserId(''); setCType('vacation'); setCStart(today); setCEnd(today); setCNotes(''); setCError(null);
     setCreateOpen(true);
     if (empList.length === 0) {
-      getEmployees({ limit: 200, status: 'active' })
-        .then((r) => setEmpList(r.employees.map((e) => ({ id: e.id, name: e.name, surname: e.surname }))))
+      getEmployees({ limit: 200, status: 'active', role: 'employee' })
+        .then((r) => {
+          const rows = r.employees
+            .filter((e) => (user?.id ? e.id !== user.id : true))
+            .map((e) => ({ id: e.id, name: e.name, surname: e.surname }));
+          setEmpList(rows);
+        })
         .catch(() => {});
     }
   }
 
   async function handleCreate() {
     if (!cUserId) { setCError(t('common.required')); return; }
+    if (user?.id && parseInt(cUserId, 10) === user.id) { setCError(t('leave.admin_cannot_create_self')); return; }
     if (new Date(cStart) > new Date(cEnd)) { setCError(t('leave.error_date_range')); return; }
     setCSaving(true);
     setCError(null);
@@ -624,8 +627,7 @@ export default function AdminLeavePanel() {
       setCreateOpen(false);
       fetchRequests();
     } catch (err: unknown) {
-      const e = err as { response?: { data?: { error?: string } } };
-      setCError(e?.response?.data?.error ?? t('common.error'));
+      setCError(translateApiError(err, t, t('common.error')) ?? t('common.error'));
     } finally {
       setCSaving(false);
     }
@@ -842,7 +844,11 @@ export default function AdminLeavePanel() {
                         const days = countWorkingDays(req.startDate, req.endDate);
                         const isVacation = req.leaveType === 'vacation';
                         const typeColor = isVacation ? '#3b82f6' : '#f59e0b';
-                        const canAct = req.status !== 'hr_approved' && req.status !== 'rejected';
+                        const canAct =
+                          req.status !== 'hr_approved' &&
+                          req.status !== 'rejected' &&
+                          !!effectiveApproverRole &&
+                          req.currentApproverRole === effectiveApproverRole;
                         return (
                           <tr
                             key={req.id}

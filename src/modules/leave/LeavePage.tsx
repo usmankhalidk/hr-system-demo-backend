@@ -30,7 +30,7 @@ type Tab = 'mine' | 'pending';
 export default function LeavePage() {
   const { user } = useAuth();
 
-  if (user && (ADMIN_ROLES as readonly string[]).includes(user.role)) {
+  if (user && (((ADMIN_ROLES as readonly string[]).includes(user.role)) || user.isSuperAdmin)) {
     return <AdminLeavePanel />;
   }
 
@@ -53,7 +53,7 @@ function PersonalLeavePage() {
   const [loadingPending, setLoadingPending] = useState(false);
   const [loadingBalance, setLoadingBalance] = useState(true);
 
-  const userIsApprover = user ? isApprover(user.role) : false;
+  const userIsApprover = user ? (isApprover(user.role) || user.isSuperAdmin) : false;
 
   // ---------------------------------------------------------------------------
   // Data fetching

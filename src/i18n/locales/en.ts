@@ -592,6 +592,16 @@ const en = {
     INVALID_QR_TOKEN: 'QR code invalid or expired. Please scan again.',
     QR_ALREADY_USED: 'This QR code has already been used. Please scan the latest code.',
     NO_ACTIVE_SHIFT: 'No shift scheduled for you today at this store. Contact your manager.',
+    // Leave
+    INVALID_DATE_FORMAT: 'Invalid date format.',
+    PAST_DATE_NOT_ALLOWED: 'Leave cannot be requested for past dates.',
+    INVALID_DATE_RANGE: 'Invalid date range.',
+    INVALID_FILE_TYPE: 'Invalid file type.',
+    LEAVE_OVERLAP: 'An overlapping leave request already exists for these dates.',
+    INSUFFICIENT_BALANCE: 'Insufficient balance to complete this operation.',
+    BALANCE_BELOW_USED: 'Total days cannot be lower than already used days.',
+    LEAVE_NOT_RESPONSIBLE: 'You are not responsible for this leave request.',
+    INVALID_STATE: 'This action is not allowed in the current request state.',
   },
   // ─── Shifts ───────────────────────────────────────────────────────────────
   shifts: {
@@ -967,7 +977,7 @@ const en = {
     notes_placeholder: 'Add a note (optional)...',
     submit_request: 'Submit request',
     medical_certificate: 'Medical Certificate',
-    medical_certificate_hint: '(optional, PDF/JPEG/PNG, max 5MB)',
+    medical_certificate_hint: '(optional, PDF only, max 5MB)',
     certificate_upload: 'Attach medical certificate',
     certificate_download_error: 'Unable to download certificate',
     certificate_btn: 'Certificate',
@@ -983,6 +993,7 @@ const en = {
     admin_new: 'Create Leave',
     admin_create_title: 'Create Leave for Employee',
     admin_create_success: 'Leave created and approved',
+    admin_cannot_create_self: 'For your own leave, use "My Leave".',
     admin_delete_confirm: 'Delete this leave request?',
     admin_delete_success: 'Request deleted',
     admin_stat_pending: 'Pending',

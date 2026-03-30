@@ -592,6 +592,16 @@ const it = {
     INVALID_QR_TOKEN: 'Codice QR non valido o scaduto. Esegui di nuovo la scansione.',
     QR_ALREADY_USED: 'Questo codice QR è già stato utilizzato. Scansiona il codice più recente.',
     NO_ACTIVE_SHIFT: 'Nessun turno programmato per oggi in questo negozio. Contatta il tuo responsabile.',
+    // Leave
+    INVALID_DATE_FORMAT: 'Formato data non valido.',
+    PAST_DATE_NOT_ALLOWED: 'Non è possibile richiedere permessi per date passate.',
+    INVALID_DATE_RANGE: 'Intervallo date non valido.',
+    INVALID_FILE_TYPE: 'Tipo file non valido.',
+    LEAVE_OVERLAP: 'Esiste già una richiesta che si sovrappone a queste date.',
+    INSUFFICIENT_BALANCE: 'Saldo insufficiente per completare l\'operazione.',
+    BALANCE_BELOW_USED: 'Il totale non può essere inferiore ai giorni già utilizzati.',
+    LEAVE_NOT_RESPONSIBLE: 'Non sei il responsabile di questa richiesta.',
+    INVALID_STATE: 'Operazione non consentita nello stato attuale della richiesta.',
   },
   // ─── Shifts ───────────────────────────────────────────────────────────────
   shifts: {
@@ -968,7 +978,7 @@ const it = {
     notes_placeholder: 'Aggiungi una nota (facoltativo)...',
     submit_request: 'Invia richiesta',
     medical_certificate: 'Certificato medico',
-    medical_certificate_hint: '(opzionale, PDF/JPEG/PNG, max 5MB)',
+    medical_certificate_hint: '(opzionale, solo PDF, max 5MB)',
     certificate_upload: 'Allega certificato medico',
     certificate_download_error: 'Impossibile scaricare il certificato',
     certificate_btn: 'Certificato',
@@ -984,6 +994,7 @@ const it = {
     admin_new: 'Crea Permesso',
     admin_create_title: 'Crea Permesso per Dipendente',
     admin_create_success: 'Permesso creato e approvato',
+    admin_cannot_create_self: 'Per i tuoi permessi usa "I Miei Permessi".',
     admin_delete_confirm: 'Eliminare questa richiesta di permesso?',
     admin_delete_success: 'Richiesta eliminata',
     admin_stat_pending: 'In attesa',

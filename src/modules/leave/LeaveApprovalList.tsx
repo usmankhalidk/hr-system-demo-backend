@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { LeaveRequest, LeaveStatus, approveLeaveRequest, rejectLeaveRequest, downloadCertificate } from '../../api/leave';
 import { getAvatarUrl } from '../../api/client';
 import { useToast } from '../../context/ToastContext';
+import { useAuth } from '../../context/AuthContext';
+import { translateApiError } from '../../utils/apiErrors';
 
 // ---------------------------------------------------------------------------
 // Status badge
@@ -232,9 +234,11 @@ interface Props {
 export function LeaveApprovalList({ requests, loading, onRefresh, showActions = false }: Props) {
   const { t, i18n } = useTranslation();
   const { showToast } = useToast();
+  const { user } = useAuth();
 
   const [rejectTarget, setRejectTarget] = useState<number | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
+  const effectiveApproverRole = user?.role === 'admin' ? 'hr' : user?.role;
 
   async function handleDownloadCertificate(req: LeaveRequest) {
     try {
@@ -256,8 +260,8 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
       await approveLeaveRequest(id);
       showToast(t('leave.approved_success'), 'success');
       onRefresh();
-    } catch (err: any) {
-      showToast(err?.response?.data?.error ?? t('common.error_generic'), 'error');
+    } catch (err: unknown) {
+      showToast(translateApiError(err, t, t('common.error_generic')) ?? t('common.error_generic'), 'error');
     } finally {
       setActionLoading(false);
     }
@@ -270,8 +274,8 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
       showToast(t('leave.rejected_success'), 'success');
       setRejectTarget(null);
       onRefresh();
-    } catch (err: any) {
-      showToast(err?.response?.data?.error ?? t('common.error_generic'), 'error');
+    } catch (err: unknown) {
+      showToast(translateApiError(err, t, t('common.error_generic')) ?? t('common.error_generic'), 'error');
     } finally {
       setActionLoading(false);
     }
@@ -446,7 +450,10 @@ export function LeaveApprovalList({ requests, loading, onRefresh, showActions = 
                 </div>
 
                 {/* Action buttons */}
-                {showActions && req.status !== 'hr_approved' && req.status !== 'rejected' && (
+                {showActions &&
+                  req.status !== 'hr_approved' &&
+                  req.status !== 'rejected' &&
+                  req.currentApproverRole === effectiveApproverRole && (
                   <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
                     <button
                       onClick={() => handleApprove(req.id)}

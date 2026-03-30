@@ -5,6 +5,7 @@ import { submitLeaveRequest, LeaveType } from '../../api/leave';
 import { useToast } from '../../context/ToastContext';
 import { DatePicker } from '../../components/ui/DatePicker';
 import { formatLocalDate } from '../../utils/date';
+import { translateApiError } from '../../utils/apiErrors';
 
 interface Props {
   open: boolean;
@@ -75,9 +76,8 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
       showToast(t('leave.submitted_success'), 'success');
       reset();
       onSubmitted();
-    } catch (err: any) {
-      const msg = err?.response?.data?.error ?? t('common.error_generic');
-      setError(msg);
+    } catch (err: unknown) {
+      setError(translateApiError(err, t, t('common.error_generic')) ?? t('common.error_generic'));
     } finally {
       setLoading(false);
     }
@@ -232,7 +232,7 @@ export function LeaveRequestDrawer({ open, onClose, onSubmitted }: Props) {
               }}>
                 <input
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png"
+                  accept=".pdf"
                   style={{ display: 'none' }}
                   onChange={(e) => { const f = e.target.files?.[0]; setCertificate(f ?? null); }}
                 />
