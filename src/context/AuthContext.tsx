@@ -20,6 +20,20 @@ const AuthContext = createContext<AuthContextValue | undefined>(undefined);
 
 const TOKEN_KEY = 'hr_token';
 
+function decodeJwtIat(token: string): number | null {
+  try {
+    const payloadPart = token.split('.')[1];
+    if (!payloadPart) return null;
+    // JWT payload is usually base64url; atob expects base64 with padding.
+    const normalized = payloadPart.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized + '='.repeat((4 - (normalized.length % 4)) % 4);
+    const decoded = JSON.parse(window.atob(padded)) as { iat?: number };
+    return Number.isFinite(decoded.iat) ? Number(decoded.iat) : null;
+  } catch {
+    return null;
+  }
+}
+
 interface EffectivePermissionsResponse {
   role: string;
   isSuperAdmin: boolean;
@@ -28,8 +42,43 @@ interface EffectivePermissionsResponse {
   modules: Record<string, boolean>;
 }
 
+export function resolveStoredToken(localToken: string | null, sessionToken: string | null): string | null {
+  if (!localToken && !sessionToken) return null;
+  if (localToken && !sessionToken) return localToken;
+  if (!localToken && sessionToken) return sessionToken;
+
+  const localIat = decodeJwtIat(localToken!);
+  const sessionIat = decodeJwtIat(sessionToken!);
+
+  // Prefer the token with a valid iat when only one is parseable.
+  if (localIat !== null && sessionIat === null) return localToken;
+  if (localIat === null && sessionIat !== null) return sessionToken;
+
+  // If both invalid/unparseable, keep localStorage precedence for remember-me continuity.
+  if (localIat === null && sessionIat === null) return localToken;
+
+  // Both parseable: choose the newest token.
+  if (sessionIat! >= localIat!) return sessionToken;
+  return localToken;
+}
+
 function getStoredToken(): string | null {
-  return localStorage.getItem(TOKEN_KEY) || sessionStorage.getItem(TOKEN_KEY);
+  const localToken = localStorage.getItem(TOKEN_KEY);
+  const sessionToken = sessionStorage.getItem(TOKEN_KEY);
+
+  const resolved = resolveStoredToken(localToken, sessionToken);
+  if (!resolved) return null;
+
+  // Normalize to a single authoritative storage when both exist.
+  if (localToken && sessionToken) {
+    if (resolved === sessionToken) {
+      localStorage.removeItem(TOKEN_KEY);
+    } else {
+      sessionStorage.removeItem(TOKEN_KEY);
+    }
+  }
+
+  return resolved;
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
@@ -133,6 +182,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const login = async (email: string, password: string, rememberMe = false) => {
     const { token, user: userData } = await apiLogin(email, password, rememberMe);
+    // Keep a single authoritative token location to avoid cross-tab/account confusion.
+    localStorage.removeItem(TOKEN_KEY);
+    sessionStorage.removeItem(TOKEN_KEY);
     if (rememberMe) {
       localStorage.setItem(TOKEN_KEY, token);
     } else {
