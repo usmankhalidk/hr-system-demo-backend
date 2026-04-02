@@ -14,6 +14,9 @@ import {
   getBalance,
   setBalance,
   downloadCertificate,
+  exportLeaveBalances,
+  importTemplate,
+  importLeaveBalances,
 } from './leave.controller';
 
 const router = Router();
@@ -27,6 +30,24 @@ const upload = multer({
       cb(null, true);
     } else {
       cb(new Error('Solo file PDF sono accettati'));
+    }
+  },
+});
+
+const uploadExcel = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const accepted =
+      file.mimetype === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' ||
+      file.mimetype === 'text/csv' ||
+      file.mimetype === 'application/vnd.ms-excel' ||
+      file.originalname.endsWith('.xlsx') ||
+      file.originalname.endsWith('.csv');
+    if (accepted) {
+      cb(null, true);
+    } else {
+      cb(new Error('Tipo file non supportato. Carica un file .xlsx o .csv'));
     }
   },
 });
@@ -99,6 +120,37 @@ router.get(
   requireRole(...managersRoles),
   requireModulePermission('permessi', 'read'),
   getPendingApprovals,
+);
+
+// GET /api/leave/balance/export — export leave balances
+router.get(
+  '/balance/export',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'read'),
+  exportLeaveBalances,
+);
+
+// GET /api/leave/balance/import-template — download template
+router.get(
+  '/balance/import-template',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'read'),
+  importTemplate,
+);
+
+// POST /api/leave/balance/import — import leave balances
+router.post(
+  '/balance/import',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'write'),
+  uploadExcel.single('file'),
+  importLeaveBalances,
 );
 
 // GET /api/leave/balance — leave balance for user

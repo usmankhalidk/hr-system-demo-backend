@@ -1,4 +1,5 @@
 import { Request, Response } from 'express';
+import * as XLSX from 'xlsx';
 import { query, queryOne, pool } from '../../config/database';
 import { ok, created, notFound, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -1011,3 +1012,157 @@ export const downloadCertificate = asyncHandler(async (req: Request, res: Respon
   res.setHeader('Content-Disposition', `attachment; filename="${row.medical_certificate_name ?? 'certificato-medico'}"`);
   res.send(row.medical_certificate_data);
 });
+
+// ---------------------------------------------------------------------------
+// GET /api/leave/balance/export
+// ---------------------------------------------------------------------------
+
+export const exportLeaveBalances = asyncHandler(async (req: Request, res: Response) => {
+  const { year } = req.query as Record<string, string>;
+  const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  
+  const rules = await query(`
+    SELECT u.id, u.name, u.surname,
+           COALESCE(lb_v.total_days, 0) AS vacation_total, COALESCE(lb_v.used_days, 0) AS vacation_used,
+           COALESCE(lb_s.total_days, 0) AS sick_total, COALESCE(lb_s.used_days, 0) AS sick_used
+    FROM users u
+    LEFT JOIN leave_balances lb_v ON lb_v.user_id = u.id AND lb_v.year = $1 AND lb_v.leave_type = 'vacation'
+    LEFT JOIN leave_balances lb_s ON lb_s.user_id = u.id AND lb_s.year = $1 AND lb_s.leave_type = 'sick'
+    WHERE u.company_id = ANY($2) AND u.status = 'active'
+    ORDER BY u.surname, u.name
+  `, [targetYear, allowedCompanyIds]);
+
+  const rows = rules.map(r => ({
+    Matricola: r.id,
+    Cognome: r.surname,
+    Nome: r.name,
+    Anno: targetYear,
+    'Totale Ferie': parseFloat(r.vacation_total),
+    'Ferie Godute': parseFloat(r.vacation_used),
+    'Totale ROL/Permessi': parseFloat(r.sick_total),
+    'ROL/Permessi Goduti': parseFloat(r.sick_used)
+  }));
+
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.json_to_sheet(rows);
+  XLSX.utils.book_append_sheet(wb, ws, 'Saldi Feri e Permessi');
+
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="saldi_${targetYear}.xlsx"`);
+  res.send(Buffer.from(buf));
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/leave/balance/import-template
+// ---------------------------------------------------------------------------
+
+export const importTemplate = asyncHandler(async (req: Request, res: Response) => {
+  const wb = XLSX.utils.book_new();
+  const ws = XLSX.utils.aoa_to_sheet([['Matricola', 'Nome', 'Cognome', 'Anno', 'Totale Ferie', 'Ferie Godute', 'Totale ROL/Permessi', 'ROL/Permessi Goduti']]);
+  XLSX.utils.book_append_sheet(wb, ws, 'Template');
+
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', 'attachment; filename="import_template.xlsx"');
+  res.send(Buffer.from(buf));
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/leave/balance/import
+// ---------------------------------------------------------------------------
+
+export const importLeaveBalances = asyncHandler(async (req: Request, res: Response) => {
+  if (!req.file) { badRequest(res, 'File mancante'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  let wb: XLSX.WorkBook;
+  try {
+    wb = XLSX.read(req.file.buffer, { type: 'buffer' });
+  } catch (err) {
+    badRequest(res, 'Impossibile leggere il file. Assicurati che sia formato correttamente.');
+    return;
+  }
+  
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json<any>(ws);
+
+  let imported = 0, skipped = 0, failed = 0;
+  const errors: string[] = [];
+
+  for (const [idx, row] of rows.entries()) {
+    const rnum = idx + 2; // header is row 1
+    
+    // Fetch case-insensitive columns
+    let matricola: any, anno: any, totFerie: any, usedFerie: any, totPermessi: any, usedPermessi: any;
+    for (const key of Object.keys(row)) {
+      const k = key.toLowerCase().replace(/[\\s_/]/g, '');
+      if (k === 'matricola' || k === 'id' || k === 'userid') matricola = row[key];
+      if (k === 'anno' || k === 'year') anno = row[key];
+      if (k === 'totaleferie' || k === 'vacationtotal') totFerie = row[key];
+      if (k === 'feriegodute' || k === 'vacationused') usedFerie = row[key];
+      if (k === 'totalerolpermessi' || k === 'totalepermessi' || k === 'sicktotal') totPermessi = row[key];
+      if (k === 'rolpermessigoduti' || k === 'permessigoduti' || k === 'sickused') usedPermessi = row[key];
+    }
+
+    if (!matricola || !anno) {
+      skipped++;
+      errors.push(`Riga ${rnum}: Matricola e Anno sono obbligatori.`);
+      continue;
+    }
+
+    const emp = await queryOne<{ id: number, company_id: number }>(
+      `SELECT id, company_id FROM users WHERE id = $1 AND company_id = ANY($2) AND status = 'active'`,
+      [matricola, allowedCompanyIds]
+    );
+
+    if (!emp) {
+      failed++;
+      errors.push(`Riga ${rnum}: Dipendente ${matricola} non trovato o inattivo.`);
+      continue;
+    }
+
+    const year = parseInt(anno, 10);
+    if (isNaN(year) || year < 2020 || year > 2100) {
+      failed++;
+      errors.push(`Riga ${rnum}: Anno ${anno} non valido.`);
+      continue;
+    }
+
+    let updated = false;
+
+    if (totFerie !== undefined || usedFerie !== undefined) {
+      const tot = parseFloat(totFerie) || 0;
+      const used = parseFloat(usedFerie) || 0;
+      await query(`
+        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
+        VALUES ($1, $2, $3, 'vacation', $4, $5, NOW())
+        ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
+        SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
+      `, [emp.company_id, matricola, year, tot, used]);
+      updated = true;
+    }
+    
+    if (totPermessi !== undefined || usedPermessi !== undefined) {
+      const tot = parseFloat(totPermessi) || 0;
+      const used = parseFloat(usedPermessi) || 0;
+      await query(`
+        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
+        VALUES ($1, $2, $3, 'sick', $4, $5, NOW())
+        ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
+        SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
+      `, [emp.company_id, matricola, year, tot, used]);
+      updated = true;
+    }
+
+    if (updated) {
+      imported++;
+    } else {
+      skipped++;
+    }
+  }
+
+  ok(res, { imported, skipped, failed, errors, total: rows.length }, 'Import completato');
+});
+
