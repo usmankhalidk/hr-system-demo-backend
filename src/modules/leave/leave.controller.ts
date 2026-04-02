@@ -630,7 +630,7 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Check company setting: employees cannot see balance if disabled
-  if (role === 'employee') {
+  if (role === 'employee' || role === 'store_manager' || role === 'area_manager') {
     const setting = await queryOne<{ show_leave_balance_to_employee: boolean }>(
       `SELECT show_leave_balance_to_employee FROM companies WHERE id = $1`,
       [companyId],
