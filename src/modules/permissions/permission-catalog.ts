@@ -12,6 +12,7 @@ export const ALL_MODULES = [
   'ats',
   'report',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export type ModuleName = typeof ALL_MODULES[number];
@@ -25,6 +26,7 @@ export const ACTIVE_MODULES = [
   'negozi',
   'messaggi',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export const ACTIVE_MODULE_SET: ReadonlySet<ModuleName> = new Set(ACTIVE_MODULES);
@@ -38,6 +40,7 @@ export const SYSTEM_MODULES = [
   'dipendenti',
   'messaggi',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export type SystemModuleName = typeof SYSTEM_MODULES[number];
@@ -67,6 +70,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   documenti: [],
   ats: [],
   report: [],
+  gestione_accessi: ['admin', 'hr', 'area_manager'],
 };
 
 export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleName): boolean {
@@ -78,5 +82,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'messaggi') return true;
   if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'impostazioni' && role === 'admin') return true;
+  if (moduleName === 'gestione_accessi' && role === 'admin') return true;
   return false;
 }

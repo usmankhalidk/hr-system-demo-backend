@@ -17,7 +17,7 @@ const storeSchema = z.object({
 });
 
 const storeReaders = ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'] as const;
-const storeWriters = ['admin', 'hr', 'area_manager'] as const;
+const storeWriters = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
 router.get('/', authenticate, requireRole(...storeReaders), enforceCompany, requireModulePermission('negozi', 'read'), listStores);
 router.get('/:id', authenticate, requireRole(...storeReaders), enforceCompany, requireModulePermission('negozi', 'read'), getStore);
