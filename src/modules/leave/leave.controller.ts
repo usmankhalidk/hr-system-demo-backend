@@ -1019,7 +1019,17 @@ export const downloadCertificate = asyncHandler(async (req: Request, res: Respon
 
 export const exportLeaveBalances = asyncHandler(async (req: Request, res: Response) => {
   const { year } = req.query as Record<string, string>;
-  const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+  let targetYear: number;
+  if (year !== undefined) {
+    const parsed = parseInt(year, 10);
+    if (!Number.isInteger(parsed) || parsed < 1900 || parsed > 2100) {
+      res.status(400).json({ error: `Anno non valido: "${year}". Deve essere un intero compreso tra 1900 e 2100.` });
+      return;
+    }
+    targetYear = parsed;
+  } else {
+    targetYear = new Date().getFullYear();
+  }
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   
   const rules = await query(`
@@ -1046,7 +1056,7 @@ export const exportLeaveBalances = asyncHandler(async (req: Request, res: Respon
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
-  XLSX.utils.book_append_sheet(wb, ws, 'Saldi Feri e Permessi');
+  XLSX.utils.book_append_sheet(wb, ws, 'Saldi Ferie e Permessi');
 
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1091,76 +1101,112 @@ export const importLeaveBalances = asyncHandler(async (req: Request, res: Respon
   let imported = 0, skipped = 0, failed = 0;
   const errors: string[] = [];
 
-  for (const [idx, row] of rows.entries()) {
-    const rnum = idx + 2; // header is row 1
-    
-    // Fetch case-insensitive columns
-    let matricola: any, anno: any, totFerie: any, usedFerie: any, totPermessi: any, usedPermessi: any;
-    for (const key of Object.keys(row)) {
-      const k = key.toLowerCase().replace(/[\\s_/]/g, '');
-      if (k === 'matricola' || k === 'id' || k === 'userid') matricola = row[key];
-      if (k === 'anno' || k === 'year') anno = row[key];
-      if (k === 'totaleferie' || k === 'vacationtotal') totFerie = row[key];
-      if (k === 'feriegodute' || k === 'vacationused') usedFerie = row[key];
-      if (k === 'totalerolpermessi' || k === 'totalepermessi' || k === 'sicktotal') totPermessi = row[key];
-      if (k === 'rolpermessigoduti' || k === 'permessigoduti' || k === 'sickused') usedPermessi = row[key];
+  await query('BEGIN');
+  try {
+    for (const [idx, row] of rows.entries()) {
+      const rnum = idx + 2; // header is row 1
+      
+      // Fetch case-insensitive columns
+      let matricola: any, anno: any, totFerie: any, usedFerie: any, totPermessi: any, usedPermessi: any;
+      for (const key of Object.keys(row)) {
+        const k = key.toLowerCase().replace(/[\\s_/]/g, '');
+        if (k === 'matricola' || k === 'id' || k === 'userid') matricola = row[key];
+        if (k === 'anno' || k === 'year') anno = row[key];
+        if (k === 'totaleferie' || k === 'vacationtotal') totFerie = row[key];
+        if (k === 'feriegodute' || k === 'vacationused') usedFerie = row[key];
+        if (k === 'totalerolpermessi' || k === 'totalepermessi' || k === 'sicktotal') totPermessi = row[key];
+        if (k === 'rolpermessigoduti' || k === 'permessigoduti' || k === 'sickused') usedPermessi = row[key];
+      }
+
+      if (!matricola || !anno) {
+        skipped++;
+        errors.push(`Riga ${rnum}: Matricola e Anno sono obbligatori.`);
+        continue;
+      }
+
+      const emp = await queryOne<{ id: number, company_id: number }>(
+        `SELECT id, company_id FROM users WHERE id = $1 AND company_id = ANY($2) AND status = 'active'`,
+        [matricola, allowedCompanyIds]
+      );
+
+      if (!emp) {
+        failed++;
+        errors.push(`Riga ${rnum}: Dipendente ${matricola} non trovato o inattivo.`);
+        continue;
+      }
+
+      const year = parseInt(anno, 10);
+      if (isNaN(year) || year < 2020 || year > 2100) {
+        failed++;
+        errors.push(`Riga ${rnum}: Anno ${anno} non valido.`);
+        continue;
+      }
+
+      let updated = false;
+
+      if (totFerie !== undefined || usedFerie !== undefined) {
+        const tot = parseFloat(totFerie) || 0;
+        const used = parseFloat(usedFerie) || 0;
+        if (used > tot) {
+          failed++;
+          errors.push(`Riga ${rnum}: I giorni usati di ferie (${used}) non possono superare il totale (${tot}).`);
+          continue;
+        }
+        try {
+          await query(`
+            INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
+            VALUES ($1, $2, $3, 'vacation', $4, $5, NOW())
+            ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
+            SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
+          `, [emp.company_id, matricola, year, tot, used]);
+          updated = true;
+        } catch (dbErr: any) {
+          if (dbErr?.code === '23514') {
+            failed++;
+            errors.push(`Riga ${rnum}: Violazione vincolo ferie — i giorni usati non possono superare il totale.`);
+            continue;
+          }
+          throw dbErr;
+        }
+      }
+      
+      if (totPermessi !== undefined || usedPermessi !== undefined) {
+        const tot = parseFloat(totPermessi) || 0;
+        const used = parseFloat(usedPermessi) || 0;
+        if (used > tot) {
+          failed++;
+          errors.push(`Riga ${rnum}: I giorni usati di malattia (${used}) non possono superare il totale (${tot}).`);
+          continue;
+        }
+        try {
+          await query(`
+            INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
+            VALUES ($1, $2, $3, 'sick', $4, $5, NOW())
+            ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
+            SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
+          `, [emp.company_id, matricola, year, tot, used]);
+          updated = true;
+        } catch (dbErr: any) {
+          if (dbErr?.code === '23514') {
+            failed++;
+            errors.push(`Riga ${rnum}: Violazione vincolo malattia — i giorni usati non possono superare il totale.`);
+            continue;
+          }
+          throw dbErr;
+        }
+      }
+
+      if (updated) {
+        imported++;
+      } else {
+        skipped++;
+      }
     }
 
-    if (!matricola || !anno) {
-      skipped++;
-      errors.push(`Riga ${rnum}: Matricola e Anno sono obbligatori.`);
-      continue;
-    }
-
-    const emp = await queryOne<{ id: number, company_id: number }>(
-      `SELECT id, company_id FROM users WHERE id = $1 AND company_id = ANY($2) AND status = 'active'`,
-      [matricola, allowedCompanyIds]
-    );
-
-    if (!emp) {
-      failed++;
-      errors.push(`Riga ${rnum}: Dipendente ${matricola} non trovato o inattivo.`);
-      continue;
-    }
-
-    const year = parseInt(anno, 10);
-    if (isNaN(year) || year < 2020 || year > 2100) {
-      failed++;
-      errors.push(`Riga ${rnum}: Anno ${anno} non valido.`);
-      continue;
-    }
-
-    let updated = false;
-
-    if (totFerie !== undefined || usedFerie !== undefined) {
-      const tot = parseFloat(totFerie) || 0;
-      const used = parseFloat(usedFerie) || 0;
-      await query(`
-        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
-        VALUES ($1, $2, $3, 'vacation', $4, $5, NOW())
-        ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
-        SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
-      `, [emp.company_id, matricola, year, tot, used]);
-      updated = true;
-    }
-    
-    if (totPermessi !== undefined || usedPermessi !== undefined) {
-      const tot = parseFloat(totPermessi) || 0;
-      const used = parseFloat(usedPermessi) || 0;
-      await query(`
-        INSERT INTO leave_balances (company_id, user_id, year, leave_type, total_days, used_days, updated_at)
-        VALUES ($1, $2, $3, 'sick', $4, $5, NOW())
-        ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
-        SET total_days = EXCLUDED.total_days, used_days = EXCLUDED.used_days, updated_at = NOW()
-      `, [emp.company_id, matricola, year, tot, used]);
-      updated = true;
-    }
-
-    if (updated) {
-      imported++;
-    } else {
-      skipped++;
-    }
+    await query('COMMIT');
+  } catch (err) {
+    await query('ROLLBACK');
+    throw err;
   }
 
   ok(res, { imported, skipped, failed, errors, total: rows.length }, 'Import completato');
