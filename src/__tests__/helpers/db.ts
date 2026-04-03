@@ -51,6 +51,18 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
   `);
 
+  // Device binding columns (may not exist in older CI DB setups).
+  await testPool.query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS device_reset_pending BOOLEAN NOT NULL DEFAULT false,
+      ADD COLUMN IF NOT EXISTS registered_device_token VARCHAR(128),
+      ADD COLUMN IF NOT EXISTS registered_device_metadata JSONB,
+      ADD COLUMN IF NOT EXISTS registered_device_registered_at TIMESTAMPTZ;
+
+    CREATE INDEX IF NOT EXISTS idx_users_registered_device_token
+      ON users(registered_device_token);
+  `);
+
   // Companies
   const { rows: [acme] } = await testPool.query(
     `INSERT INTO companies (name, slug)

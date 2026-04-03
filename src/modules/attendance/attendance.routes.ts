@@ -11,6 +11,9 @@ const checkinSchema = z.object({
   event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
   user_id:    z.number().int().positive().optional(),
   unique_id:  z.string().optional(),
+  // Device binding: sent by the employee's own device.
+  // For non-employee roles we ignore it.
+  device_fingerprint: z.string().min(10).optional(),
   notes:      z.string().max(500).optional(),
 });
 

@@ -31,7 +31,10 @@ const DETAIL_FIELDS = `
   ${LIST_FIELDS},
   u.personal_email, u.date_of_birth, u.nationality, u.gender,
   u.iban, u.address, u.cap,
-  u.contract_type, u.probation_months
+  u.contract_type, u.probation_months,
+  u.device_reset_pending,
+  (u.registered_device_token IS NOT NULL) AS device_registered,
+  u.registered_device_registered_at AS device_registered_at
 `;
 
 // Base joins
@@ -603,4 +606,40 @@ export const activateEmployee = asyncHandler(async (req: Request, res: Response)
     return;
   }
   ok(res, employee, 'Dipendente riattivato');
+});
+
+// PATCH /api/employees/:id/device-reset — Admin/HR only
+// Clears the stored device binding so the employee becomes "not registered".
+export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Response) => {
+  const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) {
+    notFound(res, 'Dipendente non trovato');
+    return;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  const employee = await queryOne(
+    `UPDATE users
+     SET device_reset_pending = false,
+         registered_device_token = NULL,
+         registered_device_metadata = NULL,
+         registered_device_registered_at = NULL,
+         updated_at = NOW()
+     WHERE id = $1
+       AND company_id = ANY($2)
+       AND role = 'employee'
+       AND status = 'active'
+     RETURNING id, device_reset_pending,
+               (registered_device_token IS NOT NULL) AS device_registered,
+               registered_device_registered_at AS device_registered_at`,
+    [empId, allowedCompanyIds],
+  );
+
+  if (!employee) {
+    notFound(res, 'Dipendente non trovato o non attivo');
+    return;
+  }
+
+  ok(res, employee, 'Reset dispositivo richiesto');
 });
