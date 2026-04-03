@@ -40,6 +40,8 @@ export async function migrate() {
       '020_leave_certificate_type.sql',
       '021_attendance_sync_dedup.sql',
       '022_employee_module_defaults.sql',
+      '023_leave_indexes.sql',
+      '024_temporary_transfers.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -118,6 +120,8 @@ export async function seed() {
       '020_leave_certificate_type.sql',
       '021_attendance_sync_dedup.sql',
       '022_employee_module_defaults.sql',
+      '023_leave_indexes.sql',
+      '024_temporary_transfers.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -278,7 +282,7 @@ export async function seed() {
     console.log('✓ Employee medical checks seeded (6 records)');
 
     // ── role_module_permissions ───────────────────────────────────────────────
-    const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
+    const modules = ['dipendenti','turni','trasferimenti','presenze','permessi','documenti','ats','report','impostazioni'];
     const roles   = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
     const companies = [1, 2];
 
@@ -288,6 +292,7 @@ export async function seed() {
           const enabled =
             (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'turni'        && ['admin','hr','area_manager','store_manager'].includes(role)) ||
+            (mod === 'trasferimenti' && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'presenze'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'permessi'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
             (mod === 'impostazioni' && ['admin','hr'].includes(role));
@@ -311,6 +316,10 @@ export async function seed() {
           ($1, 'area_manager',  'turni',    true),
           ($1, 'store_manager', 'turni',    true),
           ($1, 'employee',      'turni',    true),
+          ($1, 'admin',         'trasferimenti', true),
+          ($1, 'hr',            'trasferimenti', true),
+          ($1, 'area_manager',  'trasferimenti', true),
+          ($1, 'store_manager', 'trasferimenti', true),
           ($1, 'admin',         'presenze', true),
           ($1, 'hr',            'presenze', true),
           ($1, 'area_manager',  'presenze', true),

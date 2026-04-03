@@ -22,6 +22,7 @@ import shiftsRoutes from './modules/shifts/shifts.routes';
 import attendanceRoutes from './modules/attendance/attendance.routes';
 import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
+import transfersRoutes from './modules/transfers/transfers.routes';
 
 dotenv.config();
 
@@ -119,6 +120,7 @@ app.use('/api/shifts', shiftsRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/leave', leaveRoutes);
+app.use('/api/transfers', transfersRoutes);
 
 // Communication board
 app.use('/api/messages', messagesRoutes);

@@ -229,9 +229,8 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   }
 
   const allParams = [...params, ...extraParams];
-  const needsCompany = hasCrossCompanyAccess && !targetCompanyId;
-  const selectFields = needsCompany ? LIST_FIELDS_WITH_COMPANY : LIST_FIELDS;
-  const joins = needsCompany ? BASE_JOINS_WITH_COMPANY : BASE_JOINS;
+  const selectFields = LIST_FIELDS_WITH_COMPANY;
+  const joins = BASE_JOINS_WITH_COMPANY;
 
   const countResult = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count ${joins} WHERE ${where}${extraWhere}`,
