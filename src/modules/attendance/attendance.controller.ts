@@ -64,10 +64,11 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const checkin = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId: callerId } = req.user!;
-  const { qr_token, event_type, notes } = req.body as {
+  const { qr_token, event_type, notes, device_fingerprint } = req.body as {
     qr_token: string;
     event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
     notes?: string;
+    device_fingerprint?: string;
   };
   // Employees can only check in for themselves — managers/terminals can specify any user
   let user_id: number;
@@ -121,8 +122,14 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Verify user_id belongs to this company
-  const targetUser = await queryOne<{ id: number }>(
-    `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND status = 'active'`,
+  const targetUser = await queryOne<{
+    id: number;
+    registered_device_token: string | null;
+    device_reset_pending: boolean;
+  }>(
+    `SELECT id, registered_device_token, device_reset_pending
+     FROM users
+     WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
   );
   if (!targetUser) {
@@ -130,20 +137,132 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // 4. Find active shift for this user — required for check-in; optional for other events
+  // Device binding enforcement (employee self-service only)
+  if (role === 'employee') {
+    if (!device_fingerprint || typeof device_fingerprint !== 'string') {
+      forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
+      return;
+    }
+    const isDeviceRegistered = targetUser.registered_device_token != null && targetUser.device_reset_pending === false;
+    if (!isDeviceRegistered) {
+      forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
+      return;
+    }
+
+    const secret = process.env.DEVICE_BINDING_SECRET || 'dev-device-binding-secret-change-me';
+    const currentToken = crypto
+      .createHash('sha256')
+      .update(secret)
+      .update(device_fingerprint)
+      .digest('hex');
+
+    if (currentToken !== targetUser.registered_device_token) {
+      forbidden(
+        res,
+        'Your device is different, you will not able to check in, check out, break start, break end',
+        'DEVICE_MISMATCH',
+      );
+      return;
+    }
+  }
+
+  // 4. Find active shift for this user/day/store.
   const today = new Date().toISOString().split('T')[0];
-  const currentShift = await queryOne<{ id: number }>(
-    `SELECT id FROM shifts
+  const currentShift = await queryOne<{ id: number; start_time: string; end_time: string }>(
+    `SELECT id, start_time::text, end_time::text FROM shifts
      WHERE company_id = $1 AND user_id = $2 AND date = $3
        AND store_id = $4 AND status != 'cancelled'
      ORDER BY start_time LIMIT 1`,
     [companyId, user_id, today, payload.storeId],
   );
 
-  // Reject check-in if no shift scheduled for today at this store
-  if (event_type === 'checkin' && !currentShift) {
+  // Shift and holiday rules:
+  // - no attendance actions when no scheduled shift for today in this store
+  // - no actions on approved leave day
+  if (!currentShift) {
     badRequest(res, 'Nessun turno programmato per oggi in questo negozio', 'NO_ACTIVE_SHIFT');
     return;
+  }
+
+  const approvedLeave = await queryOne<{ id: number }>(
+    `SELECT id
+     FROM leave_requests
+     WHERE company_id = $1
+       AND user_id = $2
+       AND status = 'hr_approved'
+       AND start_date <= $3::date
+       AND end_date >= $3::date
+     LIMIT 1`,
+    [companyId, user_id, today],
+  );
+  if (approvedLeave) {
+    forbidden(res, 'Non puoi registrare presenze durante ferie/permesso approvato', 'ON_HOLIDAY');
+    return;
+  }
+
+  const now = new Date();
+  const shiftStart = new Date(`${today}T${currentShift.start_time}`);
+  const shiftEnd = new Date(`${today}T${currentShift.end_time}`);
+
+  // Shift window restrictions for all attendance actions
+  if (now < shiftStart) {
+    forbidden(res, 'Azione non disponibile prima dell’inizio turno', 'BEFORE_SHIFT_START');
+    return;
+  }
+  if (now > shiftEnd) {
+    forbidden(res, 'Azione non disponibile dopo la fine turno', 'AFTER_SHIFT_END');
+    return;
+  }
+
+  // Current day sequence & single-action constraints
+  const dayEvents = await query<{ event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end'; event_time: string }>(
+    `SELECT event_type, event_time
+     FROM attendance_events
+     WHERE company_id = $1
+       AND user_id = $2
+       AND event_time >= $3::date
+       AND event_time < ($3::date + INTERVAL '1 day')
+     ORDER BY event_time ASC`,
+    [companyId, user_id, today],
+  );
+
+  const has = (type: 'checkin' | 'checkout' | 'break_start' | 'break_end') =>
+    dayEvents.some((e) => e.event_type === type);
+
+  if (has(event_type)) {
+    conflict(res, 'Azione già registrata oggi', 'EVENT_ALREADY_RECORDED');
+    return;
+  }
+
+  if (event_type === 'checkin') {
+    // First event of the day must be check-in
+    if (dayEvents.length > 0) {
+      conflict(res, 'Check-in già effettuato oggi', 'CHECKIN_ALREADY_DONE');
+      return;
+    }
+  } else if (event_type === 'break_start') {
+    if (!has('checkin')) {
+      conflict(res, 'Devi effettuare prima il check-in', 'CHECKIN_REQUIRED');
+      return;
+    }
+  } else if (event_type === 'break_end') {
+    if (!has('checkin')) {
+      conflict(res, 'Devi effettuare prima il check-in', 'CHECKIN_REQUIRED');
+      return;
+    }
+    if (!has('break_start')) {
+      conflict(res, 'Devi avviare la pausa prima di terminarla', 'BREAK_START_REQUIRED');
+      return;
+    }
+  } else if (event_type === 'checkout') {
+    if (!has('checkin')) {
+      conflict(res, 'Devi effettuare prima il check-in', 'CHECKIN_REQUIRED');
+      return;
+    }
+    if (has('break_start') && !has('break_end')) {
+      conflict(res, 'Termina prima la pausa', 'BREAK_END_REQUIRED');
+      return;
+    }
   }
 
   // 5 & 6: Use transaction — mark nonce used AND insert event atomically
@@ -166,7 +285,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
         user_id,
         event_type,
         qrToken.id,
-        currentShift?.id ?? null,
+        currentShift.id,
         notes ?? null,
       ],
     );
@@ -916,8 +1035,45 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, userId } = req.user!;
 
+  const deviceRow = await queryOne<{ registered_device_token: string | null; device_reset_pending: boolean }>(
+    `SELECT registered_device_token, device_reset_pending
+     FROM users
+     WHERE id = $1 AND company_id = $2 AND role = 'employee'`,
+    [userId, companyId],
+  );
+
+  if (!deviceRow || deviceRow.registered_device_token == null || deviceRow.device_reset_pending === true) {
+    forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
+    return;
+  }
+
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  const { date_from, date_to } = req.query as Record<string, string>;
+  const { date_from, date_to, device_fingerprint } = req.query as Record<string, string>;
+
+  if (!device_fingerprint || typeof device_fingerprint !== 'string') {
+    forbidden(
+      res,
+      'Your device is different, you will not able to check in, check out, break start, break end',
+      'DEVICE_MISMATCH',
+    );
+    return;
+  }
+
+  const secret = process.env.DEVICE_BINDING_SECRET || 'dev-device-binding-secret-change-me';
+  const currentToken = crypto
+    .createHash('sha256')
+    .update(secret)
+    .update(device_fingerprint)
+    .digest('hex');
+
+  if (currentToken !== deviceRow.registered_device_token) {
+    forbidden(
+      res,
+      'Your device is different, you will not able to check in, check out, break start, break end',
+      'DEVICE_MISMATCH',
+    );
+    return;
+  }
 
   if (date_from && !DATE_RE.test(date_from)) {
     badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;

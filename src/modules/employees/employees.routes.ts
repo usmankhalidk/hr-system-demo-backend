@@ -7,6 +7,7 @@ import {
   updateEmployee,
   deactivateEmployee,
   activateEmployee,
+  resetEmployeeDevice,
 } from './employees.controller';
 import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
@@ -110,6 +111,17 @@ router.patch(
   requireModulePermission('dipendenti', 'write'),
   auditLog('employee'),
   activateEmployee,
+);
+
+// PATCH /api/employees/:id/device-reset — Admin/HR only
+router.patch(
+  '/:id/device-reset',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('dipendenti', 'write'),
+  auditLog('employee'),
+  resetEmployeeDevice,
 );
 
 router.use('/:id/trainings', trainingsRoutes);

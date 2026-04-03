@@ -42,6 +42,7 @@ export async function migrate() {
       '022_employee_module_defaults.sql',
       '023_leave_indexes.sql',
       '024_temporary_transfers.sql',
+      '024_device_registration.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
@@ -122,6 +123,7 @@ export async function seed() {
       '022_employee_module_defaults.sql',
       '023_leave_indexes.sql',
       '024_temporary_transfers.sql',
+      '024_device_registration.sql',
     ]) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
