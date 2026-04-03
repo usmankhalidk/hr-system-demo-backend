@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { queryOne } from './config/database';
+import { resolveAllowedCompanyIds } from './utils/companyScope';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
@@ -80,7 +81,8 @@ app.get('/uploads/avatars/:filename', (req, res, next) => {
     `SELECT company_id AS "companyId" FROM users WHERE id = $1`,
     [userId]
   );
-  if (!owner || owner.companyId !== req.user!.companyId) {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (!owner || !allowedCompanyIds.includes(owner.companyId)) {
     res.status(403).end();
     return;
   }
