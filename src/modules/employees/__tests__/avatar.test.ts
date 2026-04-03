@@ -64,6 +64,15 @@ describe('POST /api/employees/:id/avatar', () => {
     expect(res.status).toBe(200);
   });
 
+  it('super admin can upload avatar for employees in allowed companies', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .post(`/api/employees/${seeds.employee1Id}/avatar`)
+      .set('Authorization', `Bearer ${token}`)
+      .attach('avatar', TINY_JPEG, { filename: 'photo.jpg', contentType: 'image/jpeg' });
+    expect(res.status).toBe(200);
+  });
+
   it('employee cannot upload avatar for another employee', async () => {
     const token = await loginAs('employee1@acme-test.com');
     const res = await request

@@ -3,6 +3,7 @@ import { UserRole } from '../../config/jwt';
 export const ALL_MODULES = [
   'dipendenti',
   'turni',
+  'trasferimenti',
   'presenze',
   'anomalie',
   'permessi',
@@ -21,6 +22,7 @@ export type ModuleName = typeof ALL_MODULES[number];
 export const ACTIVE_MODULES = [
   'dipendenti',
   'turni',
+  'trasferimenti',
   'presenze',
   'anomalie',
   'permessi',
@@ -35,6 +37,7 @@ export const ACTIVE_MODULE_SET: ReadonlySet<ModuleName> = new Set(ACTIVE_MODULES
 
 export const SYSTEM_MODULES = [
   'turni',
+  'trasferimenti',
   'permessi',
   'saldi',
   'presenze',
@@ -64,6 +67,7 @@ export const VALID_ROLES: UserRole[] = [...MANAGED_ROLES];
 export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]> = {
   dipendenti: ['admin', 'hr', 'area_manager', 'store_manager'],
   turni: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  trasferimenti: ['admin', 'hr', 'area_manager', 'store_manager'],
   presenze: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
   anomalie: ['admin', 'hr', 'area_manager', 'store_manager'],
   permessi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
@@ -84,6 +88,7 @@ export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleNam
 export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleName): boolean {
   if (!isRoleEligibleForModule(role, moduleName)) return false;
   if (moduleName === 'messaggi') return true;
+  if (moduleName === 'trasferimenti' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
   if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'impostazioni' && role === 'admin') return true;
   if (moduleName === 'gestione_accessi' && role === 'admin') return true;

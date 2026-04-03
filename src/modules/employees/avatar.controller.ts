@@ -5,6 +5,7 @@ import fs from 'fs';
 import { query, queryOne } from '../../config/database';
 import { ok, badRequest, forbidden, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 const UPLOAD_DIR =
   process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads', 'avatars');
@@ -67,7 +68,7 @@ export const uploadMiddleware = (req: Request, res: Response, next: NextFunction
 
 // POST /api/employees/:id/avatar
 export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, role, companyId } = req.user!;
+  const { userId, role } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
@@ -78,10 +79,12 @@ export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
-  // Verify employee exists in company
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  // Verify employee exists in one of the caller's allowed companies
   const emp = await queryOne<{ id: number }>(
-    `SELECT id FROM users WHERE id = $1 AND company_id = $2`,
-    [empId, companyId!],
+    `SELECT id FROM users WHERE id = $1 AND company_id = ANY($2)`,
+    [empId, allowedCompanyIds],
   );
   if (!emp) { cleanupUploadedFile(req); notFound(res, 'Dipendente non trovato'); return; }
 
@@ -102,7 +105,7 @@ export const uploadAvatar = asyncHandler(async (req: Request, res: Response) => 
 
 // DELETE /api/employees/:id/avatar
 export const deleteAvatar = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, role, companyId } = req.user!;
+  const { userId, role } = req.user!;
   const empId = parseInt(req.params.id, 10);
   if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
 
@@ -111,9 +114,11 @@ export const deleteAvatar = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
   const emp = await queryOne<{ id: number; avatar_filename: string | null }>(
-    `SELECT id, avatar_filename FROM users WHERE id = $1 AND company_id = $2`,
-    [empId, companyId!],
+    `SELECT id, avatar_filename FROM users WHERE id = $1 AND company_id = ANY($2)`,
+    [empId, allowedCompanyIds],
   );
   if (!emp) { notFound(res, 'Dipendente non trovato'); return; }
 

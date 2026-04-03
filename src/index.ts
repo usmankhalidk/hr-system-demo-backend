@@ -3,6 +3,7 @@ import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
 import { queryOne } from './config/database';
+import { resolveAllowedCompanyIds } from './utils/companyScope';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
@@ -21,6 +22,7 @@ import shiftsRoutes from './modules/shifts/shifts.routes';
 import attendanceRoutes from './modules/attendance/attendance.routes';
 import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
+import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
 
 dotenv.config();
@@ -81,7 +83,8 @@ app.get('/uploads/avatars/:filename', (req, res, next) => {
     `SELECT company_id AS "companyId" FROM users WHERE id = $1`,
     [userId]
   );
-  if (!owner || owner.companyId !== req.user!.companyId) {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (!owner || !allowedCompanyIds.includes(owner.companyId)) {
     res.status(403).end();
     return;
   }
@@ -118,6 +121,7 @@ app.use('/api/shifts', shiftsRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/leave', leaveRoutes);
+app.use('/api/transfers', transfersRoutes);
 app.use('/api/device', deviceRoutes);
 
 // Communication board

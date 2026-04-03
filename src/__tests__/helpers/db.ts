@@ -5,12 +5,29 @@ const TEST_DB_URL = process.env.TEST_DATABASE_URL ||
 
 export const testPool = new Pool({ connectionString: TEST_DB_URL, options: '-c timezone=UTC' });
 
+function assertSafeTestDatabase(): void {
+  // Allow explicit override only when intentionally needed.
+  if (process.env.ALLOW_NON_TEST_DATABASE === 'true') return;
+
+  const match = TEST_DB_URL.match(/\/([^/?]+)(?:\?|$)/);
+  const dbName = (match?.[1] || '').toLowerCase();
+
+  if (!dbName.includes('test')) {
+    throw new Error(
+      `Unsafe TEST_DATABASE_URL detected (${TEST_DB_URL}). ` +
+      'Refusing to run destructive test setup on a non-test database. ' +
+      'Use a *_test database or set ALLOW_NON_TEST_DATABASE=true if intentional.',
+    );
+  }
+}
+
 export async function clearTestData(): Promise<void> {
+  assertSafeTestDatabase();
   await testPool.query(`
     TRUNCATE messages, login_attempts, audit_logs, role_module_permissions,
              qr_tokens, attendance_events,
              leave_approvals, leave_balances, leave_requests,
-             store_affluence, shift_templates, shifts,
+             store_affluence, shift_templates, shifts, temporary_store_assignments,
              attendance, users, stores, companies,
              group_role_visibility, company_groups
     RESTART IDENTITY CASCADE
@@ -18,6 +35,7 @@ export async function clearTestData(): Promise<void> {
 }
 
 export async function seedTestData(): Promise<{ acmeId: number; betaId: number; adminId: number; hrId: number; areaManagerId: number; romaManagerId: number; employee1Id: number; terminalId: number; superAdminId: number; romaStoreId: number; shiftId: number; todayShiftId: number }> {
+  assertSafeTestDatabase();
   // Ensure group tables/columns exist in the test DB (some CI setups may not have
   // run the newest migrations yet).
   await testPool.query(`
@@ -43,6 +61,31 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     );
 
     CREATE INDEX IF NOT EXISTS idx_group_role_visibility_group_role ON group_role_visibility(group_id, role);
+
+    CREATE TABLE IF NOT EXISTS temporary_store_assignments (
+      id                  SERIAL PRIMARY KEY,
+      company_id          INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      origin_store_id     INTEGER NOT NULL REFERENCES stores(id),
+      target_store_id     INTEGER NOT NULL REFERENCES stores(id),
+      start_date          DATE NOT NULL,
+      end_date            DATE NOT NULL,
+      status              VARCHAR(20) NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'cancelled', 'completed')),
+      reason              TEXT,
+      notes               TEXT,
+      created_by          INTEGER REFERENCES users(id),
+      cancelled_by        INTEGER REFERENCES users(id),
+      cancelled_at        TIMESTAMPTZ,
+      cancellation_reason TEXT,
+      created_at          TIMESTAMPTZ DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ DEFAULT NOW(),
+      CHECK (start_date <= end_date),
+      CHECK (origin_store_id <> target_store_id)
+    );
+
+    ALTER TABLE shifts
+      ADD COLUMN IF NOT EXISTS assignment_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL;
   `);
 
   // Ensure companies.is_active exists (used to block operations on deactivated companies).
@@ -211,7 +254,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
   );
 
   // Seed module permissions for both companies
-  const modules = ['dipendenti','turni','presenze','permessi','negozi','messaggi','documenti','ats','report','impostazioni'];
+  const modules = ['dipendenti','turni','trasferimenti','presenze','permessi','negozi','messaggi','documenti','ats','report','impostazioni'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
   for (const cid of [acme.id, beta.id]) {
     for (const role of roles) {
@@ -219,6 +262,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
         const enabled =
           (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
           || (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'trasferimenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
           || (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'].includes(role))
           || (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
           || (mod === 'negozi' && ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'].includes(role))

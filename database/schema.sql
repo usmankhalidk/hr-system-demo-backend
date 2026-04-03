@@ -143,13 +143,46 @@ CREATE TABLE IF NOT EXISTS login_attempts (
 CREATE INDEX IF NOT EXISTS idx_login_attempts_email ON login_attempts(email, attempted_at DESC);
 
 -- ---------------------------------------------------------------------------
--- 8. shifts  (Phase 2)
+-- 8. temporary_store_assignments (Phase 3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS temporary_store_assignments (
+  id                  SERIAL PRIMARY KEY,
+  company_id          INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  user_id             INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  origin_store_id     INTEGER NOT NULL REFERENCES stores(id),
+  target_store_id     INTEGER NOT NULL REFERENCES stores(id),
+  start_date          DATE NOT NULL,
+  end_date            DATE NOT NULL,
+  status              VARCHAR(20) NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active', 'cancelled', 'completed')),
+  reason              TEXT,
+  notes               TEXT,
+  created_by          INTEGER REFERENCES users(id),
+  cancelled_by        INTEGER REFERENCES users(id),
+  cancelled_at        TIMESTAMPTZ,
+  cancellation_reason TEXT,
+  created_at          TIMESTAMPTZ DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ DEFAULT NOW(),
+  CHECK (start_date <= end_date),
+  CHECK (origin_store_id <> target_store_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_temp_assignments_company_user_range
+  ON temporary_store_assignments(company_id, user_id, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_temp_assignments_company_target_range
+  ON temporary_store_assignments(company_id, target_store_id, start_date, end_date);
+CREATE INDEX IF NOT EXISTS idx_temp_assignments_status
+  ON temporary_store_assignments(status);
+
+-- ---------------------------------------------------------------------------
+-- 9. shifts  (Phase 2)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS shifts (
   id           SERIAL PRIMARY KEY,
   company_id   INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
   store_id     INTEGER NOT NULL REFERENCES stores(id),
   user_id      INTEGER NOT NULL REFERENCES users(id),
+  assignment_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL,
   date         DATE NOT NULL,
   start_time   TIME NOT NULL,
   end_time     TIME NOT NULL,
@@ -171,6 +204,7 @@ CREATE TABLE IF NOT EXISTS shifts (
 CREATE INDEX IF NOT EXISTS idx_shifts_company_date ON shifts(company_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_user_date    ON shifts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_store_date   ON shifts(store_id, date);
+CREATE INDEX IF NOT EXISTS idx_shifts_assignment_id ON shifts(assignment_id);
 
 -- ---------------------------------------------------------------------------
 -- 9. qr_tokens  (Phase 2 — replay prevention)

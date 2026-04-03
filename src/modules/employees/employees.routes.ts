@@ -23,6 +23,7 @@ const createEmployeeSchema = z.object({
   surname: z.string().min(1, 'Cognome obbligatorio').max(100),
   email: z.string().email('Email non valida'),
   role: z.enum(['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal']),
+  company_id: z.number().int().nullable().optional(),
   store_id: z.number().int().optional().nullable(),
   supervisor_id: z.number().int().optional().nullable(),
   unique_id: z.string().max(100).optional().nullable(),
@@ -48,7 +49,7 @@ const createEmployeeSchema = z.object({
 });
 
 // Update schema: same as create but email changes restricted
-const updateEmployeeSchema = createEmployeeSchema.omit({ email: true });
+const updateEmployeeSchema = createEmployeeSchema.omit({ email: true, company_id: true });
 
 const allManagementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
