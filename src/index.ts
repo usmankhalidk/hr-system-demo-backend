@@ -2,8 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import { createServer } from 'http';
 import { queryOne } from './config/database';
 import { resolveAllowedCompanyIds } from './utils/companyScope';
+import { initSocket } from './config/socket';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
@@ -211,7 +213,10 @@ async function start() {
     await seed();
   }
 
-  app.listen(PORT, () => {
+  const httpServer = createServer(app);
+  initSocket(httpServer, allowedOrigins);
+
+  httpServer.listen(PORT, () => {
     console.log(`HR System backend running on http://localhost:${PORT}`);
   });
 }

@@ -10,6 +10,7 @@ import {
   resolveCompanyGroupId,
   resolveGroupRoleVisibility,
 } from '../../utils/companyScope';
+import { emitToCompany } from '../../config/socket';
 
 // Safe fields for list view (NO sensitive data)
 const LIST_FIELDS = `
@@ -20,6 +21,9 @@ const LIST_FIELDS = `
   u.first_aid_flag, u.marital_status,
   u.termination_date, u.termination_type, u.created_at,
   u.avatar_filename,
+  u.device_reset_pending,
+  (u.registered_device_token IS NOT NULL) AS device_registered,
+  u.registered_device_registered_at AS device_registered_at,
   s.name AS store_name,
   CONCAT(sup.name, ' ', sup.surname) AS supervisor_name
 `;
@@ -1090,16 +1094,19 @@ export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Respon
        AND company_id = ANY($2)
        AND role = 'employee'
        AND status = 'active'
-     RETURNING id, device_reset_pending,
+     RETURNING id, company_id, device_reset_pending,
                (registered_device_token IS NOT NULL) AS device_registered,
                registered_device_registered_at AS device_registered_at`,
     [empId, allowedCompanyIds],
   );
 
   if (!employee) {
-    notFound(res, 'Dipendente non trovato o non attivo');
+    notFound(res, 'Dipendente non trovato');
     return;
   }
+
+  // Real-time update for HR/Admin
+  emitToCompany((employee as any).company_id, 'DEVICE_RESET', { userId: employee.id });
 
   ok(res, employee, 'Reset dispositivo richiesto');
 });

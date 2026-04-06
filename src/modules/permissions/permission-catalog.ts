@@ -88,8 +88,9 @@ export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleNam
 export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleName): boolean {
   if (!isRoleEligibleForModule(role, moduleName)) return false;
   if (moduleName === 'messaggi') return true;
+  if (moduleName === 'presenze' && role === 'store_terminal') return true;
   if (moduleName === 'trasferimenti' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
-  if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
+  if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_terminal')) return true;
   if (moduleName === 'impostazioni' && role === 'admin') return true;
   if (moduleName === 'gestione_accessi' && role === 'admin') return true;
   return false;
