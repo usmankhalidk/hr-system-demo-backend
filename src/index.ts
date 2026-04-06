@@ -30,8 +30,7 @@ import deviceRoutes from './modules/device/device.routes';
 dotenv.config();
 
 const app = express();
-// const PORT = process.env.PORT || 3001;
-const PORT = Number(process.env.PORT) || 3001;
+const PORT = process.env.PORT || 3001;
 
 const rawCorsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -173,11 +172,8 @@ async function start() {
   const httpServer = createServer(app);
   initSocket(httpServer, allowedOrigins);
 
-  // httpServer.listen(PORT, () => {
-  //   console.log(`HR System backend running on http://localhost:${PORT}`);
-  // });
-  httpServer.listen(PORT, '0.0.0.0', () => {
-    console.log(`HR System backend running on http://192.168.1.22:${PORT}`);
+  httpServer.listen(PORT, () => {
+    console.log(`HR System backend running on http://localhost:${PORT}`);
   });
 }
 
