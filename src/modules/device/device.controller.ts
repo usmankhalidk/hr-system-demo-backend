@@ -3,6 +3,7 @@ import crypto from 'crypto';
 import { queryOne, query } from '../../config/database';
 import { ok, badRequest, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { emitToCompany } from '../../config/socket';
 
 function getDeviceBindingSecret(): string {
   // NOTE: In production you should set this env var.
@@ -97,6 +98,11 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
      VALUES ($1, $2, 'DEVICE_REGISTER', 'user', $2)`,
     [companyId, userId],
   ).catch(() => {});
+
+  // Real-time update for HR/Admin
+  if (companyId) {
+    emitToCompany(companyId, 'DEVICE_REGISTERED', { userId });
+  }
 
   ok(res, {
     isDeviceRegistered: true,
