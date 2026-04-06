@@ -2,8 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import dotenv from 'dotenv';
 import path from 'path';
+import { createServer } from 'http';
 import { queryOne } from './config/database';
 import { resolveAllowedCompanyIds } from './utils/companyScope';
+import { initSocket } from './config/socket';
 
 // Phase 1 modules
 import authRoutes from './modules/auth/auth.routes';
@@ -28,7 +30,8 @@ import deviceRoutes from './modules/device/device.routes';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+// const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT) || 3001;
 
 const rawCorsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -167,8 +170,14 @@ async function start() {
     await seed();
   }
 
-  app.listen(PORT, () => {
-    console.log(`HR System backend running on http://localhost:${PORT}`);
+  const httpServer = createServer(app);
+  initSocket(httpServer, allowedOrigins);
+
+  // httpServer.listen(PORT, () => {
+  //   console.log(`HR System backend running on http://localhost:${PORT}`);
+  // });
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`HR System backend running on http://192.168.1.22:${PORT}`);
   });
 }
 
