@@ -13,6 +13,7 @@ import {
 import { authenticate, requireRole, enforceCompany, requireSuperAdmin, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import { auditLog } from '../../middleware/auditLog';
+import { companyLogoUploadMiddleware, uploadCompanyLogo, deleteCompanyLogo } from './logo.controller';
 
 const router = Router();
 
@@ -35,6 +36,8 @@ router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforc
 router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, requireModulePermission('impostazioni', 'read'), getCompanySettings);
 router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, requireModulePermission('impostazioni', 'write'), validate(updateCompanySettingsSchema), updateCompanySettings);
 router.put('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
+router.post('/:id/logo', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, companyLogoUploadMiddleware, uploadCompanyLogo);
+router.delete('/:id/logo', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, deleteCompanyLogo);
 router.post('/', authenticate, requireSuperAdmin, validate(createCompanySchema), auditLog('company'), createCompany);
 
 // Super Admin: deactivate / activate / delete a company

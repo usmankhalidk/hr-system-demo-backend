@@ -63,13 +63,24 @@ describe('POST /api/messages', () => {
     expect(res.status).toBe(404);
   });
 
-  it('requires subject and body', async () => {
+  it('requires body', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request
       .post('/api/messages')
       .set('Authorization', `Bearer ${token}`)
       .send({ recipientId: seeds.employee1Id, subject: '', body: '' });
     expect(res.status).toBe(400);
+  });
+
+  it('allows empty subject', async () => {
+    const token = await loginAs('hr@acme-test.com');
+    const res = await request
+      .post('/api/messages')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ recipientId: seeds.employee1Id, body: 'Body without subject' });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.subject).toBe('');
   });
 });
 

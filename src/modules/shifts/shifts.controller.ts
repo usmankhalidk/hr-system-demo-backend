@@ -118,6 +118,7 @@ const SHIFT_FIELDS = `
   s.status, s.notes, s.created_by, s.created_at, s.updated_at,
   st.name AS store_name,
   u.name AS user_name, u.surname AS user_surname,
+  u.avatar_filename AS user_avatar_filename,
   ${shiftHoursExpr()}
 `;
 
@@ -1312,6 +1313,7 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   const params: any[] = [companyId];
   let extraWhere = '';
   let idx = 2;
+  let weekPlaceholder: number | null = null;
 
   if (store_id) {
     extraWhere += ` AND store_id = $${idx}`;
@@ -1320,8 +1322,9 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   }
   if (week) {
     const isoWeek = parseInt(week.replace(/.*W/, ''), 10);
-    extraWhere += ` AND iso_week = $${idx}`;
+    extraWhere += ` AND (iso_week = $${idx} OR iso_week IS NULL)`;
     params.push(isoWeek);
+    weekPlaceholder = idx;
     idx++;
   }
   if (day_of_week) {
@@ -1331,8 +1334,24 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   }
 
   const affluence = await query(
-    `SELECT * FROM store_affluence WHERE company_id = $1${extraWhere} ORDER BY day_of_week, time_slot`,
+    `SELECT *
+       FROM store_affluence
+      WHERE company_id = $1${extraWhere}
+      ORDER BY day_of_week,
+               time_slot,
+               ${weekPlaceholder != null ? `CASE WHEN iso_week = $${weekPlaceholder} THEN 0 ELSE 1 END` : '0'},
+               id DESC`,
     params,
   );
-  ok(res, { affluence });
+
+  // Prefer exact week-specific entries over default (iso_week IS NULL) per day/slot.
+  const seen = new Set<string>();
+  const merged = affluence.filter((row: any) => {
+    const key = `${row.day_of_week}|${row.time_slot}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  ok(res, { affluence: merged });
 });

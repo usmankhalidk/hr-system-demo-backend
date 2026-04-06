@@ -8,6 +8,7 @@ import {
   listTransferShifts,
   createTransfer,
   updateTransfer,
+  deleteTransfer,
   cancelTransfer,
   completeTransfer,
   listTransferBlocks,
@@ -131,6 +132,15 @@ router.put(
   requireModulePermission('trasferimenti', 'write'),
   validate(updateTransferSchema),
   updateTransfer,
+);
+
+router.delete(
+  '/:id',
+  authenticate,
+  enforceCompany,
+  requireRole(...writeRoles),
+  requireModulePermission('trasferimenti', 'write'),
+  deleteTransfer,
 );
 
 router.post(

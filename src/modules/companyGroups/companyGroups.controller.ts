@@ -9,6 +9,14 @@ type RoleVisibilityRow = {
   can_cross_company: boolean;
 };
 
+type GroupCompanyRoleRow = {
+  id: number;
+  name: string;
+  is_active: boolean;
+  has_active_hr: boolean;
+  has_active_area_manager: boolean;
+};
+
 export const listCompanyGroups = asyncHandler(async (req: Request, res: Response) => {
   const user = req.user;
   if (!user) {
@@ -91,7 +99,32 @@ export const getGroupRoleVisibility = asyncHandler(async (req: Request, res: Res
   const hr = row.find((r) => r.role === 'hr')?.can_cross_company ?? false;
   const area_manager = row.find((r) => r.role === 'area_manager')?.can_cross_company ?? false;
 
-  ok(res, { hr, area_manager });
+  const companies = await query<GroupCompanyRoleRow>(
+    `SELECT
+       c.id,
+       c.name,
+       c.is_active,
+       EXISTS(
+         SELECT 1
+         FROM users u
+         WHERE u.company_id = c.id
+           AND u.role = 'hr'
+           AND u.status = 'active'
+       ) AS has_active_hr,
+       EXISTS(
+         SELECT 1
+         FROM users u
+         WHERE u.company_id = c.id
+           AND u.role = 'area_manager'
+           AND u.status = 'active'
+       ) AS has_active_area_manager
+     FROM companies c
+     WHERE c.group_id = $1
+     ORDER BY c.name ASC`,
+    [id],
+  );
+
+  ok(res, { hr, area_manager, companies });
 });
 
 export const updateGroupRoleVisibility = asyncHandler(async (req: Request, res: Response) => {

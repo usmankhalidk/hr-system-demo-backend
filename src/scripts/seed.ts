@@ -5,6 +5,13 @@ import path from 'path';
 
 dotenv.config();
 
+function listMigrationFiles(migrationsDir: string): string[] {
+  return fs
+    .readdirSync(migrationsDir)
+    .filter((file) => file.endsWith('.sql'))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 // ---------------------------------------------------------------------------
 // migrate() — apply all SQL migration files (idempotent, safe on every boot)
 // Does NOT wipe data. Safe to call on every startup.
@@ -17,33 +24,7 @@ export async function migrate() {
     const standaloneDir = path.join(__dirname, '../../database/migrations');
     const monorepoDir = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
-    for (const file of [
-      '001_initial_schema.sql',
-      '002_phase1_schema.sql',
-      '003_phase2_shifts.sql',
-      '004_phase2_attendance.sql',
-      '005_phase2_leave.sql',
-      '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',
-      '008_termination_type.sql',
-      '009_flexible_break.sql',
-      '010_qr_tokens_cleanup_index.sql',
-      '011_login_attempts_index.sql',
-      '012_shifts_composite_index.sql',
-      '013_add_ip_index_to_login_attempts.sql',
-      '014_data_integrity_constraints.sql',
-      '015_system_admin_role.sql',
-      '016_avatar.sql',
-      '017_messages.sql',
-      '018_company_groups.sql',
-      '019_company_is_active.sql',
-      '020_leave_certificate_type.sql',
-      '021_attendance_sync_dedup.sql',
-      '022_employee_module_defaults.sql',
-      '023_leave_indexes.sql',
-      '024_temporary_transfers.sql',
-      '024_device_registration.sql',
-    ]) {
+    for (const file of listMigrationFiles(migrationsDir)) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -96,35 +77,8 @@ export async function seed() {
     const standaloneDir2 = path.join(__dirname, '../../database/migrations');
     const monorepoDir2 = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir2) ? standaloneDir2 : monorepoDir2;
-    // Apply base schema (001) then all migrations in order
-    // 002 is for upgrading legacy deployments — not needed on a fresh seed
-    for (const file of [
-      '001_initial_schema.sql',
-      '002_phase1_schema.sql',
-      '003_phase2_shifts.sql',
-      '004_phase2_attendance.sql',
-      '005_phase2_leave.sql',
-      '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',
-      '008_termination_type.sql',
-      '009_flexible_break.sql',
-      '010_qr_tokens_cleanup_index.sql',
-      '011_login_attempts_index.sql',
-      '012_shifts_composite_index.sql',
-      '013_add_ip_index_to_login_attempts.sql',
-      '014_data_integrity_constraints.sql',
-      '015_system_admin_role.sql',
-      '016_avatar.sql',
-      '017_messages.sql',
-      '018_company_groups.sql',
-      '019_company_is_active.sql',
-      '020_leave_certificate_type.sql',
-      '021_attendance_sync_dedup.sql',
-      '022_employee_module_defaults.sql',
-      '023_leave_indexes.sql',
-      '024_temporary_transfers.sql',
-      '024_device_registration.sql',
-    ]) {
+    // Apply all migrations in lexical order (001..N and same-prefix variants).
+    for (const file of listMigrationFiles(migrationsDir)) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }

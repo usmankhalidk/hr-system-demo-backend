@@ -291,6 +291,25 @@ describe('PUT /api/employees/:id', () => {
     await testPool.query(`UPDATE users SET name = 'Anna' WHERE id = $1`, [seeds.employee1Id]);
   });
 
+  it('admin updates employee email', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put(`/api/employees/${seeds.employee1Id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Anna',
+        surname: 'Test',
+        role: 'employee',
+        email: 'employee1.updated@acme-test.com',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('employee1.updated@acme-test.com');
+
+    // Restore original email for subsequent tests.
+    await testPool.query(`UPDATE users SET email = 'employee1@acme-test.com' WHERE id = $1`, [seeds.employee1Id]);
+  });
+
   it('hr updates employee', async () => {
     const token = await login('hr@acme-test.com');
     const res = await request

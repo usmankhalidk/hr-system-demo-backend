@@ -814,13 +814,27 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const detached = await query<{ id: number }>(
+  const cancelledShifts = await query<{ id: number }>(
     `UPDATE shifts
-     SET assignment_id = NULL
-     WHERE assignment_id = $1
-       AND date >= $2
+     SET status = 'cancelled',
+         updated_at = NOW()
+     WHERE company_id = $1
+       AND user_id = $2
+       AND status != 'cancelled'
+       AND date BETWEEN $3::date AND $4::date
+       AND (
+         assignment_id = $5
+         OR store_id = $6
+       )
      RETURNING id`,
-    [transfer.id, isoToday()],
+    [
+      transfer.company_id,
+      transfer.user_id,
+      transfer.start_date,
+      transfer.end_date,
+      transfer.id,
+      transfer.target_store_id,
+    ],
   );
 
   const cancelledTransfer = await getTransferByIdInScope(transfer.id, [transfer.company_id]);
@@ -833,9 +847,63 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
     res,
     {
       transfer: cancelledTransfer,
-      detached_shifts: detached.length,
+      cancelled_shifts: cancelledShifts.length,
+      // Keep legacy field for backward compatibility with older frontend clients.
+      detached_shifts: cancelledShifts.length,
     },
     'Trasferimento annullato',
+  );
+});
+
+export const deleteTransfer = asyncHandler(async (req: Request, res: Response) => {
+  const transferId = parseInt(req.params.id, 10);
+  if (Number.isNaN(transferId)) {
+    notFound(res, 'Trasferimento non trovato', 'TRANSFER_NOT_FOUND');
+    return;
+  }
+
+  const { role, userId, storeId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const transfer = await getTransferByIdInScope(transferId, allowedCompanyIds);
+
+  if (!transfer) {
+    notFound(res, 'Trasferimento non trovato', 'TRANSFER_NOT_FOUND');
+    return;
+  }
+
+  const allowed = await canReadTransfer(transfer, role, userId, storeId);
+  if (!allowed) {
+    forbidden(res, 'Accesso negato');
+    return;
+  }
+
+  const detached = await query<{ id: number }>(
+    `UPDATE shifts
+     SET assignment_id = NULL
+     WHERE assignment_id = $1
+     RETURNING id`,
+    [transfer.id],
+  );
+
+  const deleted = await queryOne<{ id: number }>(
+    `DELETE FROM temporary_store_assignments
+     WHERE id = $1
+     RETURNING id`,
+    [transfer.id],
+  );
+
+  if (!deleted) {
+    notFound(res, 'Trasferimento non trovato', 'TRANSFER_NOT_FOUND');
+    return;
+  }
+
+  ok(
+    res,
+    {
+      id: transfer.id,
+      detached_shifts: detached.length,
+    },
+    'Trasferimento eliminato',
   );
 });
 

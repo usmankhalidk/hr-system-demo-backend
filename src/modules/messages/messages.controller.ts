@@ -9,7 +9,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const { recipientId, recipient_id, subject, body } = req.body as {
     recipientId?: number;
     recipient_id?: number;
-    subject: string;
+    subject?: string;
     body: string;
   };
 
@@ -22,10 +22,12 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  if (!subject?.trim() || !body?.trim()) {
-    badRequest(res, 'Oggetto e corpo del messaggio sono obbligatori', 'MISSING_FIELDS');
+  if (!body?.trim()) {
+    badRequest(res, 'Il corpo del messaggio è obbligatorio', 'MISSING_FIELDS');
     return;
   }
+
+  const normalizedSubject = typeof subject === 'string' ? subject.trim() : '';
 
   // Verify recipient exists in same company and is active
   const recipient = await queryOne<{ id: number; role: string }>(
@@ -82,7 +84,7 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     `INSERT INTO messages (company_id, sender_id, recipient_id, subject, body)
      VALUES ($1, $2, $3, $4, $5)
      RETURNING id, company_id, sender_id, recipient_id, subject, body, is_read, created_at`,
-    [companyId, userId, numRecipientId, subject.trim(), body.trim()],
+    [companyId, userId, numRecipientId, normalizedSubject, body.trim()],
   );
 
   created(res, msg, 'Messaggio inviato');

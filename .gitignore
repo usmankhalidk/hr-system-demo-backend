@@ -3,5 +3,6 @@ dist/
 .env
 *.log
 uploads/avatars/*
+uploads/company-logos/*
 !uploads/.gitkeep
 .claude-flow/
