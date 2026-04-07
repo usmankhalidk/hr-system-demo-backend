@@ -11,7 +11,7 @@ const sendMessageSchema = z.object({
   // but some integrations/tests may still send recipientId.
   recipientId: z.number().int().positive().optional(),
   recipient_id: z.number().int().positive().optional(),
-  subject: z.string().min(1, 'Oggetto obbligatorio').max(255),
+  subject: z.string().max(255).optional(),
   body: z.string().min(1, 'Corpo obbligatorio'),
 }).refine(
   (data) => data.recipientId != null || data.recipient_id != null,

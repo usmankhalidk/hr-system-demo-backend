@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   listEmployees,
   getEmployee,
+  getEmployeeAssociations,
   createEmployee,
   updateEmployee,
   deactivateEmployee,
@@ -48,8 +49,13 @@ const createEmployeeSchema = z.object({
   password: z.string().min(8).optional(), // initial password
 });
 
-// Update schema: same as create but email changes restricted
-const updateEmployeeSchema = createEmployeeSchema.omit({ email: true, company_id: true });
+// Update schema: same as create but company reassignment is restricted.
+// Email is optional on edit to keep backward compatibility with older clients.
+const updateEmployeeSchema = createEmployeeSchema
+  .omit({ company_id: true })
+  .extend({
+    email: z.string().email('Email non valida').optional(),
+  });
 
 const allManagementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
@@ -69,6 +75,15 @@ router.get(
   requireRole(...allManagementRoles, 'employee'),
   requireModulePermission('dipendenti', 'read'),
   getEmployee,
+);
+
+router.get(
+  '/:id/associations',
+  authenticate,
+  enforceCompany,
+  requireRole(...allManagementRoles, 'employee'),
+  requireModulePermission('dipendenti', 'read'),
+  getEmployeeAssociations,
 );
 
 router.post(

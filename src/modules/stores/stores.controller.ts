@@ -8,6 +8,7 @@ interface StoreRow {
   id: number;
   company_id: number;
   company_name?: string;
+  company_logo_filename?: string | null;
   name: string;
   code: string;
   address: string | null;
@@ -45,6 +46,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     stores = await query<StoreRow>(`
       SELECT s.*,
         c.name AS company_name,
+        c.logo_filename AS company_logo_filename,
         (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id
@@ -58,6 +60,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       stores = await query<StoreRow>(`
         SELECT s.*,
           c.name AS company_name,
+          c.logo_filename AS company_logo_filename,
           (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
@@ -68,6 +71,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       stores = await query<StoreRow>(`
         SELECT DISTINCT s.*,
           c.name AS company_name,
+          c.logo_filename AS company_logo_filename,
           (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
@@ -80,6 +84,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     stores = await query<StoreRow>(`
       SELECT s.*,
         c.name AS company_name,
+        c.logo_filename AS company_logo_filename,
         (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id

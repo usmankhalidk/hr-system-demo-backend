@@ -5,7 +5,11 @@ import { query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
-import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import {
+  resolveAllowedCompanyIds,
+  resolveCompanyGroupId,
+  resolveGroupRoleVisibility,
+} from '../../utils/companyScope';
 import { emitToCompany } from '../../config/socket';
 
 // Safe fields for list view (NO sensitive data)
@@ -115,6 +119,38 @@ function buildScopeWhere(
     default:
       return { where: `${base} AND 1=0`, params: [companyId] }; // store_terminal — no access
   }
+}
+
+async function resolveScopeCompanyIdsForSubject(
+  subjectRole: UserRole,
+  subjectCompanyId: number,
+): Promise<number[]> {
+  const groupId = await resolveCompanyGroupId(subjectCompanyId);
+  if (groupId == null) {
+    return [subjectCompanyId];
+  }
+
+  if (subjectRole === 'admin') {
+    const rows = await query<{ id: number }>(
+      `SELECT id FROM companies WHERE group_id = $1 AND is_active = true ORDER BY id`,
+      [groupId],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  if (subjectRole === 'hr' || subjectRole === 'area_manager') {
+    const canCross = await resolveGroupRoleVisibility(groupId, subjectRole);
+    if (!canCross) {
+      return [subjectCompanyId];
+    }
+    const rows = await query<{ id: number }>(
+      `SELECT id FROM companies WHERE group_id = $1 AND is_active = true ORDER BY id`,
+      [groupId],
+    );
+    return rows.map((row) => row.id);
+  }
+
+  return [subjectCompanyId];
 }
 
 // GET /api/employees — list with filters, no sensitive fields
@@ -275,7 +311,7 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   const employee = await queryOne<Record<string, any>>(
     hasCrossCompanyAccess
       ? `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1`
-      : `SELECT ${fields} ${BASE_JOINS} WHERE u.id = $1 AND u.company_id = $2`,
+      : `SELECT ${fields}, c.name AS company_name ${BASE_JOINS} LEFT JOIN companies c ON c.id = u.company_id WHERE u.id = $1 AND u.company_id = $2`,
     hasCrossCompanyAccess ? [empId] : [empId, companyId],
   );
 
@@ -309,6 +345,416 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
   }
 
   ok(res, employee);
+});
+
+interface AssociationSubjectRow {
+  id: number;
+  company_id: number;
+  company_name: string | null;
+  store_id: number | null;
+  store_name: string | null;
+  supervisor_id: number | null;
+  name: string;
+  surname: string;
+  email: string;
+  role: UserRole;
+  status: 'active' | 'inactive';
+  avatar_filename: string | null;
+}
+
+interface AssociationCompanyRow {
+  id: number;
+  name: string;
+  slug: string;
+  is_active: boolean;
+}
+
+interface AssociationStoreRow {
+  id: number;
+  company_id: number;
+  name: string;
+  code: string;
+  is_active: boolean;
+}
+
+interface AssociationEmployeeRow {
+  id: number;
+  company_id: number;
+  company_name: string;
+  store_id: number | null;
+  store_name: string | null;
+  supervisor_id: number | null;
+  name: string;
+  surname: string;
+  email: string;
+  role: UserRole;
+  status: 'active' | 'inactive';
+  avatar_filename: string | null;
+}
+
+interface AssociationEmployeeItem {
+  id: number;
+  name: string;
+  surname: string;
+  email: string;
+  role: UserRole;
+  status: 'active' | 'inactive';
+  companyId: number;
+  companyName: string;
+  storeId: number | null;
+  storeName: string | null;
+  supervisorId: number | null;
+  avatarFilename: string | null;
+}
+
+interface AssociationStoreItem {
+  id: number;
+  name: string;
+  code: string;
+  isActive: boolean;
+  employees: AssociationEmployeeItem[];
+}
+
+interface AssociationCompanyItem {
+  id: number;
+  name: string;
+  slug: string;
+  isActive: boolean;
+  stores: AssociationStoreItem[];
+  unassignedEmployees: AssociationEmployeeItem[];
+  employeeCount: number;
+}
+
+// GET /api/employees/:id/associations — role-aware hierarchy for employee detail screen
+export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, role, userId, storeId } = req.user!;
+  const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
+
+  const subject = await queryOne<AssociationSubjectRow>(
+    `SELECT
+      u.id,
+      u.company_id,
+      c.name AS company_name,
+      u.store_id,
+      s.name AS store_name,
+      u.supervisor_id,
+      u.name,
+      u.surname,
+      u.email,
+      u.role,
+      u.status,
+      u.avatar_filename
+     FROM users u
+     LEFT JOIN companies c ON c.id = u.company_id
+     LEFT JOIN stores s ON s.id = u.store_id
+     WHERE u.id = $1`,
+    [empId],
+  );
+
+  if (!subject) {
+    notFound(res, 'Dipendente non trovato');
+    return;
+  }
+
+  if (!allowedCompanyIds.includes(subject.company_id)) {
+    forbidden(res, 'Accesso negato');
+    return;
+  }
+
+  if (!hasCrossCompanyAccess) {
+    if (role === 'employee' && userId !== empId) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+    if (role === 'store_manager' && subject.store_id !== storeId) {
+      forbidden(res, 'Accesso negato'); return;
+    }
+    if (role === 'area_manager' && empId !== userId) {
+      const supervised = await queryOne<{ id: number }>(
+        `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND supervisor_id = $3`,
+        [empId, companyId, userId],
+      );
+      if (!supervised) {
+        forbidden(res, 'Accesso negato'); return;
+      }
+    }
+  }
+
+  const roleScopeCompanyIds = await resolveScopeCompanyIdsForSubject(subject.role, subject.company_id);
+  const scopedCompanyIds = roleScopeCompanyIds.filter((id) => allowedCompanyIds.includes(id));
+
+  if (scopedCompanyIds.length === 0) {
+    ok(res, {
+      subject: {
+        id: subject.id,
+        role: subject.role,
+        companyId: subject.company_id,
+        companyName: subject.company_name,
+        storeId: subject.store_id,
+        storeName: subject.store_name,
+      },
+      scope: 'none',
+      summary: { companyCount: 0, storeCount: 0, employeeCount: 0 },
+      companies: [],
+    });
+    return;
+  }
+
+  let scope: 'company' | 'company_group' | 'managed' | 'store' | 'self' = 'company';
+  let stores: AssociationStoreRow[] = [];
+  let employees: AssociationEmployeeRow[] = [];
+
+  const loadStoreRows = async (storeIds?: number[]): Promise<AssociationStoreRow[]> => {
+    if (storeIds && storeIds.length === 0) return [];
+    if (storeIds) {
+      return query<AssociationStoreRow>(
+        `SELECT s.id, s.company_id, s.name, s.code, s.is_active
+         FROM stores s
+         WHERE s.company_id = ANY($1) AND s.id = ANY($2)
+         ORDER BY s.name`,
+        [scopedCompanyIds, storeIds],
+      );
+    }
+    return query<AssociationStoreRow>(
+      `SELECT s.id, s.company_id, s.name, s.code, s.is_active
+       FROM stores s
+       WHERE s.company_id = ANY($1)
+       ORDER BY s.name`,
+      [scopedCompanyIds],
+    );
+  };
+
+  switch (subject.role) {
+    case 'admin':
+    case 'hr': {
+      scope = scopedCompanyIds.length > 1 ? 'company_group' : 'company';
+      stores = await loadStoreRows();
+      employees = await query<AssociationEmployeeRow>(
+        `SELECT
+          u.id,
+          u.company_id,
+          c.name AS company_name,
+          u.store_id,
+          s.name AS store_name,
+          u.supervisor_id,
+          u.name,
+          u.surname,
+          u.email,
+          u.role,
+          u.status,
+          u.avatar_filename
+         FROM users u
+         JOIN companies c ON c.id = u.company_id
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE u.company_id = ANY($1)
+           AND u.status = 'active'
+           AND u.role <> 'store_terminal'
+         ORDER BY c.name, s.name NULLS LAST, u.surname, u.name`,
+        [scopedCompanyIds],
+      );
+      break;
+    }
+    case 'area_manager': {
+      scope = 'managed';
+      employees = await query<AssociationEmployeeRow>(
+        `SELECT
+          u.id,
+          u.company_id,
+          c.name AS company_name,
+          u.store_id,
+          s.name AS store_name,
+          u.supervisor_id,
+          u.name,
+          u.surname,
+          u.email,
+          u.role,
+          u.status,
+          u.avatar_filename
+         FROM users u
+         JOIN companies c ON c.id = u.company_id
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE u.company_id = ANY($1)
+           AND u.status = 'active'
+           AND u.supervisor_id = $2
+         ORDER BY c.name, s.name NULLS LAST, u.surname, u.name`,
+        [scopedCompanyIds, empId],
+      );
+      const managedStoreIds = Array.from(new Set(
+        employees
+          .map((row) => row.store_id)
+          .filter((value): value is number => value != null),
+      ));
+      stores = await loadStoreRows(managedStoreIds);
+      break;
+    }
+    case 'store_manager': {
+      scope = 'store';
+      const managedStoreIds = subject.store_id != null ? [subject.store_id] : [];
+      stores = await loadStoreRows(managedStoreIds);
+      employees = await query<AssociationEmployeeRow>(
+        `SELECT
+          u.id,
+          u.company_id,
+          c.name AS company_name,
+          u.store_id,
+          s.name AS store_name,
+          u.supervisor_id,
+          u.name,
+          u.surname,
+          u.email,
+          u.role,
+          u.status,
+          u.avatar_filename
+         FROM users u
+         JOIN companies c ON c.id = u.company_id
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE u.company_id = ANY($1)
+           AND u.status = 'active'
+           AND u.store_id = $2
+         ORDER BY u.surname, u.name`,
+        [scopedCompanyIds, subject.store_id ?? -1],
+      );
+      break;
+    }
+    case 'employee':
+    case 'store_terminal': {
+      scope = 'self';
+      const selfStoreIds = subject.store_id != null ? [subject.store_id] : [];
+      stores = await loadStoreRows(selfStoreIds);
+      employees = await query<AssociationEmployeeRow>(
+        `SELECT
+          u.id,
+          u.company_id,
+          c.name AS company_name,
+          u.store_id,
+          s.name AS store_name,
+          u.supervisor_id,
+          u.name,
+          u.surname,
+          u.email,
+          u.role,
+          u.status,
+          u.avatar_filename
+         FROM users u
+         JOIN companies c ON c.id = u.company_id
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE u.id = $1`,
+        [empId],
+      );
+      break;
+    }
+    default: {
+      stores = [];
+      employees = [];
+      break;
+    }
+  }
+
+  const companies = await query<AssociationCompanyRow>(
+    `SELECT id, name, slug, is_active
+     FROM companies
+     WHERE id = ANY($1)
+     ORDER BY name`,
+    [scopedCompanyIds],
+  );
+
+  const companyItems: AssociationCompanyItem[] = companies.map((company) => ({
+    id: company.id,
+    name: company.name,
+    slug: company.slug,
+    isActive: company.is_active,
+    stores: [],
+    unassignedEmployees: [],
+    employeeCount: 0,
+  }));
+
+  const companyMap = new Map<number, AssociationCompanyItem>(
+    companyItems.map((company) => [company.id, company]),
+  );
+
+  const storeMap = new Map<number, AssociationStoreItem>();
+  for (const store of stores) {
+    const parentCompany = companyMap.get(store.company_id);
+    if (!parentCompany) continue;
+    const storeItem: AssociationStoreItem = {
+      id: store.id,
+      name: store.name,
+      code: store.code,
+      isActive: store.is_active,
+      employees: [],
+    };
+    parentCompany.stores.push(storeItem);
+    storeMap.set(store.id, storeItem);
+  }
+
+  for (const employee of employees) {
+    const parentCompany = companyMap.get(employee.company_id);
+    if (!parentCompany) continue;
+
+    const employeeItem: AssociationEmployeeItem = {
+      id: employee.id,
+      name: employee.name,
+      surname: employee.surname,
+      email: employee.email,
+      role: employee.role,
+      status: employee.status,
+      companyId: employee.company_id,
+      companyName: employee.company_name,
+      storeId: employee.store_id,
+      storeName: employee.store_name,
+      supervisorId: employee.supervisor_id,
+      avatarFilename: employee.avatar_filename,
+    };
+
+    parentCompany.employeeCount += 1;
+    if (employee.store_id != null) {
+      const parentStore = storeMap.get(employee.store_id);
+      if (parentStore) {
+        parentStore.employees.push(employeeItem);
+      } else {
+        parentCompany.unassignedEmployees.push(employeeItem);
+      }
+    } else {
+      parentCompany.unassignedEmployees.push(employeeItem);
+    }
+  }
+
+  for (const company of companyItems) {
+    company.stores.sort((a, b) => a.name.localeCompare(b.name));
+    for (const store of company.stores) {
+      store.employees.sort((a, b) => `${a.surname} ${a.name}`.localeCompare(`${b.surname} ${b.name}`));
+    }
+    company.unassignedEmployees.sort((a, b) => `${a.surname} ${a.name}`.localeCompare(`${b.surname} ${b.name}`));
+  }
+
+  const summary = {
+    companyCount: companyItems.length,
+    storeCount: companyItems.reduce((acc, company) => acc + company.stores.length, 0),
+    employeeCount: companyItems.reduce((acc, company) => acc + company.employeeCount, 0),
+  };
+
+  ok(res, {
+    subject: {
+      id: subject.id,
+      role: subject.role,
+      companyId: subject.company_id,
+      companyName: subject.company_name,
+      storeId: subject.store_id,
+      storeName: subject.store_name,
+      supervisorId: subject.supervisor_id,
+      name: subject.name,
+      surname: subject.surname,
+      email: subject.email,
+      status: subject.status,
+      avatarFilename: subject.avatar_filename,
+    },
+    scope,
+    summary,
+    companies: companyItems,
+  });
 });
 
 // POST /api/employees
@@ -491,6 +937,19 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
+  // Check email uniqueness globally when email is being edited.
+  if (typeof body.email === 'string' && body.email.trim().length > 0) {
+    const nextEmail = body.email.trim();
+    const emailConflict = await queryOne<{ id: number }>(
+      `SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND id != $2`,
+      [nextEmail, empId],
+    );
+    if (emailConflict) {
+      conflict(res, 'Email già registrata nel sistema', 'EMAIL_CONFLICT');
+      return;
+    }
+  }
+
   // M11: Validate store_id if provided
   if (body.store_id) {
     const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
@@ -517,16 +976,17 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   const employee = await queryOne(
     `UPDATE users SET
       store_id = $1, supervisor_id = $2, name = $3, surname = $4,
-      role = $5, unique_id = $6, department = $7, hire_date = $8,
-      contract_end_date = $9, working_type = $10, weekly_hours = $11,
-      personal_email = $12, date_of_birth = $13, nationality = $14,
-      gender = $15, iban = $16, address = $17, cap = $18,
-      first_aid_flag = $19, marital_status = $20,
-      contract_type = $21, probation_months = $22,
-      termination_date = $23, termination_type = $24,
-      password_hash = COALESCE($25, password_hash),
+      email = COALESCE($5, email),
+      role = $6, unique_id = $7, department = $8, hire_date = $9,
+      contract_end_date = $10, working_type = $11, weekly_hours = $12,
+      personal_email = $13, date_of_birth = $14, nationality = $15,
+      gender = $16, iban = $17, address = $18, cap = $19,
+      first_aid_flag = $20, marital_status = $21,
+      contract_type = $22, probation_months = $23,
+      termination_date = $24, termination_type = $25,
+      password_hash = COALESCE($26, password_hash),
       updated_at = NOW()
-    WHERE id = $26 AND company_id = $27
+    WHERE id = $27 AND company_id = $28
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
@@ -536,6 +996,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.supervisor_id ?? null,
       body.name,
       body.surname,
+      typeof body.email === 'string' && body.email.trim().length > 0 ? body.email.trim() : null,
       body.role,
       body.unique_id ?? null,
       body.department ?? null,

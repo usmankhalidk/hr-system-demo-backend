@@ -104,6 +104,50 @@ app.get('/uploads/avatars/:filename', (req, res, next) => {
   res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
 });
 
+app.get('/uploads/company-logos/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  const match = /^company-(\d+)\.[a-zA-Z0-9]+$/.exec(filename);
+  if (!match) {
+    res.status(400).end();
+    return;
+  }
+
+  const companyId = parseInt(match[1], 10);
+  if (!Number.isFinite(companyId)) {
+    res.status(404).end();
+    return;
+  }
+
+  const company = await queryOne<{ id: number }>(
+    `SELECT id FROM companies WHERE id = $1`,
+    [companyId],
+  );
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (!company || !allowedCompanyIds.includes(companyId)) {
+    res.status(403).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const filePath = path.join(uploadsRoot, 'company-logos', filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
