@@ -65,7 +65,7 @@ export type ManagedRole = typeof MANAGED_ROLES[number];
 export const VALID_ROLES: UserRole[] = [...MANAGED_ROLES];
 
 export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]> = {
-  dipendenti: ['admin', 'hr', 'area_manager', 'store_manager'],
+  dipendenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   turni: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   trasferimenti: ['admin', 'hr', 'area_manager', 'store_manager'],
   presenze: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
@@ -93,5 +93,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_terminal')) return true;
   if (moduleName === 'impostazioni' && role === 'admin') return true;
   if (moduleName === 'gestione_accessi' && role === 'admin') return true;
+  if (moduleName === 'dipendenti' && role === 'employee') return true;
   return false;
 }
