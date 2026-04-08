@@ -76,6 +76,22 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
 
   const token = hashDeviceFingerprint(fingerprint);
 
+  // Prevent multiple employees from registering the same device.
+  // We check if this token is already used by another active user.
+  const existingUser = await queryOne<{ id: number; name: string; surname: string }>(
+    `SELECT id, name, surname FROM users WHERE registered_device_token = $1 AND id <> $2`,
+    [token, userId],
+  );
+
+  if (existingUser) {
+    badRequest(
+      res,
+      `Questo dispositivo è già registrato da un altro dipendente (${existingUser.name} ${existingUser.surname})`,
+      'DEVICE_ALREADY_REGISTERED',
+    );
+    return;
+  }
+
   // Pass a plain object for JSONB — node-pg serializes it; avoid JSON.stringify (double-encoding risk).
   const metadataJson: Record<string, unknown> | null =
     metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : null;
