@@ -228,10 +228,10 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
     case 'store_manager': {
       if (!storeId) {
-        ok(res, { store: null, employeeCount: 0, todayShifts: [], todayAttendance: {} });
+        ok(res, { store: null, employeeCount: 0, todayShifts: [], todayAttendance: {}, upcomingWeekShiftsPlanned: true, upcomingWeekNumber: 0 });
         break;
       }
-      const [store, employeeCount, todayShifts, todayAttendanceSummary] = await Promise.all([
+      const [store, employeeCount, todayShifts, todayAttendanceSummary, upcomingWeekCheck] = await Promise.all([
         queryOne(
           `SELECT id, name, code, max_staff FROM stores WHERE id = $1 AND company_id = $2`,
           [storeId, companyId]
@@ -267,6 +267,17 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            GROUP BY event_type`,
           [storeId, companyId]
         ),
+        queryOne<{ count: string; week_number: string }>(
+          `SELECT
+             COUNT(*)::text AS count,
+             EXTRACT(WEEK FROM DATE_TRUNC('week', CURRENT_DATE + INTERVAL '1 week'))::text AS week_number
+           FROM shifts
+           WHERE store_id = $1 AND company_id = $2
+             AND date >= DATE_TRUNC('week', CURRENT_DATE + INTERVAL '1 week')
+             AND date < DATE_TRUNC('week', CURRENT_DATE + INTERVAL '2 weeks')
+             AND status != 'cancelled'`,
+          [storeId, companyId]
+        ),
       ]);
       ok(res, {
         store,
@@ -275,6 +286,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         todayAttendance: Object.fromEntries(
           todayAttendanceSummary.map((r) => [r.event_type, parseInt(r.count, 10)])
         ),
+        upcomingWeekShiftsPlanned: parseInt(upcomingWeekCheck?.count || '0', 10) > 0,
+        upcomingWeekNumber: parseInt(upcomingWeekCheck?.week_number || '0', 10),
       });
       break;
     }

@@ -196,6 +196,37 @@ describe('POST /api/employees', () => {
     await testPool.query(`DELETE FROM users WHERE email = 'marco.bianchi@acme-test.com'`);
   });
 
+  it('hr can create an employee in another allowed company using company_id + store_id', async () => {
+    const token = await login('hr@acme-test.com');
+
+    const { rows: [betaStore] } = await testPool.query<{ id: number }>(
+      `INSERT INTO stores (company_id, name, code, max_staff)
+       VALUES ($1, 'Beta Test Store', 'BETA-T1', 8)
+       ON CONFLICT (company_id, code)
+       DO UPDATE SET name = EXCLUDED.name, max_staff = EXCLUDED.max_staff
+       RETURNING id`,
+      [seeds.betaId],
+    );
+
+    const res = await request
+      .post('/api/employees')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Cross',
+        surname: 'Company',
+        email: 'cross.company@acme-test.com',
+        role: 'employee',
+        company_id: seeds.betaId,
+        store_id: betaStore.id,
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.company_id).toBe(seeds.betaId);
+    expect(res.body.data.store_id).toBe(betaStore.id);
+
+    await testPool.query(`DELETE FROM users WHERE email = 'cross.company@acme-test.com'`);
+  });
+
   it('area_manager gets 403 attempting to create employee', async () => {
     const token = await login('area@acme-test.com');
     const res = await request
@@ -258,6 +289,25 @@ describe('PUT /api/employees/:id', () => {
     expect(res.body.data.name).toBe('Anna Updated');
     // Restore original name
     await testPool.query(`UPDATE users SET name = 'Anna' WHERE id = $1`, [seeds.employee1Id]);
+  });
+
+  it('admin updates employee email', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put(`/api/employees/${seeds.employee1Id}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        name: 'Anna',
+        surname: 'Test',
+        role: 'employee',
+        email: 'employee1.updated@acme-test.com',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('employee1.updated@acme-test.com');
+
+    // Restore original email for subsequent tests.
+    await testPool.query(`UPDATE users SET email = 'employee1@acme-test.com' WHERE id = $1`, [seeds.employee1Id]);
   });
 
   it('hr updates employee', async () => {

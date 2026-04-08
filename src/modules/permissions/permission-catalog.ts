@@ -3,8 +3,11 @@ import { UserRole } from '../../config/jwt';
 export const ALL_MODULES = [
   'dipendenti',
   'turni',
+  'trasferimenti',
   'presenze',
+  'anomalie',
   'permessi',
+  'saldi',
   'negozi',
   'messaggi',
   'documenti',
@@ -12,6 +15,7 @@ export const ALL_MODULES = [
   'onboarding',
   'report',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export type ModuleName = typeof ALL_MODULES[number];
@@ -19,26 +23,34 @@ export type ModuleName = typeof ALL_MODULES[number];
 export const ACTIVE_MODULES = [
   'dipendenti',
   'turni',
+  'trasferimenti',
   'presenze',
+  'anomalie',
   'permessi',
+  'saldi',
   'negozi',
   'messaggi',
   'documenti',
   'ats',
   'onboarding',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export const ACTIVE_MODULE_SET: ReadonlySet<ModuleName> = new Set(ACTIVE_MODULES);
 
 export const SYSTEM_MODULES = [
   'turni',
+  'trasferimenti',
   'permessi',
+  'saldi',
   'presenze',
+  'anomalie',
   'negozi',
   'dipendenti',
   'messaggi',
   'impostazioni',
+  'gestione_accessi',
 ] as const;
 
 export type SystemModuleName = typeof SYSTEM_MODULES[number];
@@ -57,10 +69,13 @@ export type ManagedRole = typeof MANAGED_ROLES[number];
 export const VALID_ROLES: UserRole[] = [...MANAGED_ROLES];
 
 export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]> = {
-  dipendenti: ['admin', 'hr', 'area_manager', 'store_manager'],
+  dipendenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   turni: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  trasferimenti: ['admin', 'hr', 'area_manager', 'store_manager'],
   presenze: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
+  anomalie: ['admin', 'hr', 'area_manager', 'store_manager'],
   permessi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  saldi: ['admin', 'hr'],
   negozi: ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'],
   messaggi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   impostazioni: ['admin', 'hr', 'area_manager'],
@@ -68,6 +83,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   ats: ['admin', 'hr', 'area_manager', 'store_manager'],
   onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   report: [],
+  gestione_accessi: ['admin', 'hr', 'area_manager'],
 };
 
 export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleName): boolean {
@@ -77,7 +93,11 @@ export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleNam
 export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleName): boolean {
   if (!isRoleEligibleForModule(role, moduleName)) return false;
   if (moduleName === 'messaggi') return true;
-  if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
+  if (moduleName === 'presenze' && role === 'store_terminal') return true;
+  if (moduleName === 'trasferimenti' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
+  if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_terminal')) return true;
   if (moduleName === 'impostazioni' && role === 'admin') return true;
+  if (moduleName === 'gestione_accessi' && role === 'admin') return true;
+  if (moduleName === 'dipendenti' && role === 'employee') return true;
   return false;
 }

@@ -110,13 +110,15 @@ function shiftHoursExpr(): string {
 }
 
 const SHIFT_FIELDS = `
-  s.id, s.company_id, s.store_id, s.user_id, s.date,
+  s.id, s.company_id, s.store_id, s.user_id, s.assignment_id,
+  TO_CHAR(s.date::date, 'YYYY-MM-DD') AS date,
   s.start_time, s.end_time, s.break_start, s.break_end,
   s.break_type, s.break_minutes,
   s.is_split, s.split_start2, s.split_end2,
   s.status, s.notes, s.created_by, s.created_at, s.updated_at,
   st.name AS store_name,
   u.name AS user_name, u.surname AS user_surname,
+  u.avatar_filename AS user_avatar_filename,
   ${shiftHoursExpr()}
 `;
 
@@ -125,6 +127,59 @@ const BASE_JOINS = `
   LEFT JOIN stores st ON st.id = s.store_id
   LEFT JOIN users u   ON u.id  = s.user_id
 `;
+
+async function getShiftById(shiftId: number, companyId: number) {
+  return queryOne(
+    `SELECT ${SHIFT_FIELDS}
+     ${BASE_JOINS}
+     WHERE s.id = $1
+       AND s.company_id = $2
+     LIMIT 1`,
+    [shiftId, companyId],
+  );
+}
+
+async function resolveShiftAssignmentForDate(params: {
+  companyId: number;
+  userId: number;
+  homeStoreId: number | null;
+  shiftStoreId: number;
+  shiftDate: string;
+}): Promise<{ assignmentId: number | null; errorCode?: string; errorMessage?: string }> {
+  const activeTransfer = await queryOne<{ id: number; target_store_id: number }>(
+    `SELECT id, target_store_id
+     FROM temporary_store_assignments
+     WHERE company_id = $1
+       AND user_id = $2
+       AND status = 'active'
+       AND start_date::date <= $3::date
+       AND end_date::date >= $3::date
+     ORDER BY start_date DESC
+     LIMIT 1`,
+    [params.companyId, params.userId, params.shiftDate],
+  );
+
+  if (activeTransfer) {
+    if (params.shiftStoreId !== activeTransfer.target_store_id) {
+      return {
+        assignmentId: null,
+        errorCode: 'TRANSFER_STORE_MISMATCH',
+        errorMessage: 'Durante un trasferimento attivo il turno deve essere nel negozio di destinazione',
+      };
+    }
+    return { assignmentId: activeTransfer.id };
+  }
+
+  if (params.homeStoreId != null && params.shiftStoreId !== params.homeStoreId) {
+    return {
+      assignmentId: null,
+      errorCode: 'TRANSFER_REQUIRED',
+      errorMessage: 'Per assegnare il turno a un negozio diverso serve un trasferimento temporaneo attivo',
+    };
+  }
+
+  return { assignmentId: null };
+}
 
 // ---------------------------------------------------------------------------
 // Role-based WHERE scope helper
@@ -222,7 +277,22 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
     if (store_id) {
       const storeIdNum = parseInt(store_id, 10);
       if (isNaN(storeIdNum)) { badRequest(res, 'store_id non valido'); return; }
-      extraWhere += ` AND s.store_id = $${idx}`;
+      if (role === 'store_manager') {
+        extraWhere += ` AND s.store_id = $${idx}`;
+      } else {
+        extraWhere += ` AND (
+          s.store_id = $${idx}
+          OR (
+            s.assignment_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM temporary_store_assignments tsa
+              WHERE tsa.id = s.assignment_id
+                AND (tsa.origin_store_id = $${idx} OR tsa.target_store_id = $${idx})
+            )
+          )
+        )`;
+      }
       extra.push(storeIdNum);
       idx++;
     }
@@ -258,8 +328,8 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Resolve target employee (must belong to one of the allowed companies)
-  const targetUser = await queryOne<{ id: number; company_id: number }>(
-    `SELECT id, company_id
+  const targetUser = await queryOne<{ id: number; company_id: number; store_id: number | null }>(
+    `SELECT id, company_id, store_id
      FROM users
      WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
     [body.user_id, allowedCompanyIds]
@@ -291,6 +361,22 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     if (!canManage) {
       forbidden(res, 'Accesso negato'); return;
     }
+  }
+
+  const assignmentResolution = await resolveShiftAssignmentForDate({
+    companyId: effectiveCompanyId,
+    userId: body.user_id,
+    homeStoreId: targetUser.store_id,
+    shiftStoreId: body.store_id,
+    shiftDate: body.date,
+  });
+  if (assignmentResolution.errorCode || assignmentResolution.errorMessage) {
+    badRequest(
+      res,
+      assignmentResolution.errorMessage ?? 'Assegnazione trasferimento non valida',
+      assignmentResolution.errorCode ?? 'TRANSFER_REQUIRED',
+    );
+    return;
   }
 
   // Overlap detection: check new main block AND new split block (if any)
@@ -343,14 +429,15 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const isFlexible = body.break_type === 'flexible';
-  const shift = await queryOne(
+  const createdShift = await queryOne<{ id: number }>(
     `INSERT INTO shifts (
        company_id, store_id, user_id, date, start_time, end_time,
+       assignment_id,
        break_start, break_end, break_type, break_minutes,
        is_split, split_start2, split_end2,
        notes, status, created_by
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-     RETURNING *`,
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+     RETURNING id`,
     [
       effectiveCompanyId,
       body.store_id,
@@ -358,6 +445,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       body.date,
       body.start_time,
       body.end_time,
+      assignmentResolution.assignmentId,
       isFlexible ? null : (body.break_start ?? null),
       isFlexible ? null : (body.break_end ?? null),
       body.break_type ?? 'fixed',
@@ -370,6 +458,17 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       callerId,
     ],
   );
+
+  if (!createdShift) {
+    badRequest(res, 'Impossibile creare il turno', 'SHIFT_CREATE_FAILED');
+    return;
+  }
+
+  const shift = await getShiftById(createdShift.id, effectiveCompanyId);
+  if (!shift) {
+    badRequest(res, 'Impossibile recuperare il turno creato', 'SHIFT_CREATE_FAILED');
+    return;
+  }
 
   created(res, shift, 'Turno creato');
 });
@@ -386,13 +485,13 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 
   // Fetch existing shift (include time fields for cross-field validation of partial patches)
   const existing = await queryOne<{
-    id: number; company_id: number; store_id: number; user_id: number; date: string;
+    id: number; company_id: number; store_id: number; user_id: number; assignment_id: number | null; date: string;
     start_time: string; end_time: string;
     break_start: string | null; break_end: string | null;
     break_type: string | null; break_minutes: number | null;
     is_split: boolean; split_start2: string | null; split_end2: string | null;
   }>(
-    `SELECT id, company_id, store_id, user_id, date,
+    `SELECT id, company_id, store_id, user_id, assignment_id, date,
             start_time, end_time, break_start, break_end,
             break_type, break_minutes, is_split, split_start2, split_end2
      FROM shifts WHERE id = $1 AND company_id = ANY($2)`,
@@ -403,6 +502,15 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   // store_manager can only update shifts in their store
   if (role === 'store_manager' && existing.store_id !== callerStoreId) {
     forbidden(res, 'Accesso negato'); return;
+  }
+
+  const targetUserId = body.user_id ?? existing.user_id;
+  const targetStoreId = body.store_id ?? existing.store_id;
+  const targetDate = body.date ?? existing.date;
+
+  if (role === 'store_manager' && targetStoreId !== callerStoreId) {
+    forbidden(res, 'Accesso negato');
+    return;
   }
 
   // area_manager can only update shifts in stores they supervise a store_manager for
@@ -416,7 +524,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
          AND store_id = $3
          AND status = 'active'
        LIMIT 1`,
-      [req.user!.userId, existing.company_id, existing.store_id],
+      [req.user!.userId, existing.company_id, targetStoreId],
     );
     if (!canManage) {
       forbidden(res, 'Accesso negato'); return;
@@ -425,9 +533,34 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 
   const effectiveCompanyId = existing.company_id;
 
+  const targetUser = await queryOne<{ id: number; store_id: number | null }>(
+    `SELECT id, store_id
+     FROM users
+     WHERE id = $1 AND company_id = $2`,
+    [targetUserId, effectiveCompanyId],
+  );
+  if (!targetUser) {
+    notFound(res, 'Dipendente non trovato');
+    return;
+  }
+
+  const assignmentResolution = await resolveShiftAssignmentForDate({
+    companyId: effectiveCompanyId,
+    userId: targetUserId,
+    homeStoreId: targetUser.store_id,
+    shiftStoreId: targetStoreId,
+    shiftDate: targetDate,
+  });
+  if (assignmentResolution.errorCode || assignmentResolution.errorMessage) {
+    badRequest(
+      res,
+      assignmentResolution.errorMessage ?? 'Assegnazione trasferimento non valida',
+      assignmentResolution.errorCode ?? 'TRANSFER_REQUIRED',
+    );
+    return;
+  }
+
   // Overlap detection (exclude self)
-  const targetUserId = body.user_id ?? existing.user_id;
-  const targetDate   = body.date ?? existing.date;
   const targetStart  = body.start_time;
   const targetEnd    = body.end_time;
 
@@ -498,7 +631,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const isFlexible = body.break_type === 'flexible';
-  const shift = await queryOne(
+  const updatedShift = await queryOne<{ id: number }>(
     `UPDATE shifts SET
        store_id      = COALESCE($1, store_id),
        user_id       = COALESCE($2, user_id),
@@ -513,10 +646,11 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
        split_start2  = $11,
        split_end2    = $12,
        notes         = $13,
-       status        = COALESCE($14, status),
+       assignment_id = $14,
+       status        = COALESCE($15, status),
        updated_at    = NOW()
-     WHERE id = $15 AND company_id = $16
-     RETURNING *`,
+     WHERE id = $16 AND company_id = $17
+     RETURNING id`,
     [
       body.store_id ?? null,
       body.user_id ?? null,
@@ -531,13 +665,21 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
       body.split_start2 ?? null,
       body.split_end2 ?? null,
       body.notes ?? null,
+      assignmentResolution.assignmentId,
       body.status ?? null,
       shiftId,
       effectiveCompanyId,
     ],
   );
 
-  if (!shift) { notFound(res, 'Turno non trovato'); return; }
+  if (!updatedShift) { notFound(res, 'Turno non trovato'); return; }
+
+  const shift = await getShiftById(updatedShift.id, effectiveCompanyId);
+  if (!shift) {
+    badRequest(res, 'Impossibile recuperare il turno aggiornato', 'SHIFT_UPDATE_FAILED');
+    return;
+  }
+
   ok(res, shift, 'Turno aggiornato');
 });
 
@@ -1171,6 +1313,7 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   const params: any[] = [companyId];
   let extraWhere = '';
   let idx = 2;
+  let weekPlaceholder: number | null = null;
 
   if (store_id) {
     extraWhere += ` AND store_id = $${idx}`;
@@ -1179,8 +1322,9 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   }
   if (week) {
     const isoWeek = parseInt(week.replace(/.*W/, ''), 10);
-    extraWhere += ` AND iso_week = $${idx}`;
+    extraWhere += ` AND (iso_week = $${idx} OR iso_week IS NULL)`;
     params.push(isoWeek);
+    weekPlaceholder = idx;
     idx++;
   }
   if (day_of_week) {
@@ -1190,8 +1334,24 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   }
 
   const affluence = await query(
-    `SELECT * FROM store_affluence WHERE company_id = $1${extraWhere} ORDER BY day_of_week, time_slot`,
+    `SELECT *
+       FROM store_affluence
+      WHERE company_id = $1${extraWhere}
+      ORDER BY day_of_week,
+               time_slot,
+               ${weekPlaceholder != null ? `CASE WHEN iso_week = $${weekPlaceholder} THEN 0 ELSE 1 END` : '0'},
+               id DESC`,
     params,
   );
-  ok(res, { affluence });
+
+  // Prefer exact week-specific entries over default (iso_week IS NULL) per day/slot.
+  const seen = new Set<string>();
+  const merged = affluence.filter((row: any) => {
+    const key = `${row.day_of_week}|${row.time_slot}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  ok(res, { affluence: merged });
 });

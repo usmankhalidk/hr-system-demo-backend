@@ -3,10 +3,12 @@ import { z } from 'zod';
 import {
   listEmployees,
   getEmployee,
+  getEmployeeAssociations,
   createEmployee,
   updateEmployee,
   deactivateEmployee,
   activateEmployee,
+  resetEmployeeDevice,
 } from './employees.controller';
 import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
@@ -22,6 +24,7 @@ const createEmployeeSchema = z.object({
   surname: z.string().min(1, 'Cognome obbligatorio').max(100),
   email: z.string().email('Email non valida'),
   role: z.enum(['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal']),
+  company_id: z.number().int().nullable().optional(),
   store_id: z.number().int().optional().nullable(),
   supervisor_id: z.number().int().optional().nullable(),
   unique_id: z.string().max(100).optional().nullable(),
@@ -46,8 +49,13 @@ const createEmployeeSchema = z.object({
   password: z.string().min(8).optional(), // initial password
 });
 
-// Update schema: same as create but email changes restricted
-const updateEmployeeSchema = createEmployeeSchema.omit({ email: true });
+// Update schema: same as create but company reassignment is restricted.
+// Email is optional on edit to keep backward compatibility with older clients.
+const updateEmployeeSchema = createEmployeeSchema
+  .omit({ company_id: true })
+  .extend({
+    email: z.string().email('Email non valida').optional(),
+  });
 
 const allManagementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
@@ -67,6 +75,15 @@ router.get(
   requireRole(...allManagementRoles, 'employee'),
   requireModulePermission('dipendenti', 'read'),
   getEmployee,
+);
+
+router.get(
+  '/:id/associations',
+  authenticate,
+  enforceCompany,
+  requireRole(...allManagementRoles, 'employee'),
+  requireModulePermission('dipendenti', 'read'),
+  getEmployeeAssociations,
 );
 
 router.post(
@@ -109,6 +126,17 @@ router.patch(
   requireModulePermission('dipendenti', 'write'),
   auditLog('employee'),
   activateEmployee,
+);
+
+// PATCH /api/employees/:id/device-reset — Admin/HR only
+router.patch(
+  '/:id/device-reset',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('dipendenti', 'write'),
+  auditLog('employee'),
+  resetEmployeeDevice,
 );
 
 router.use('/:id/trainings', trainingsRoutes);

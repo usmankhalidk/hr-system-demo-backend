@@ -9,6 +9,7 @@ interface CompanyRow {
   name: string;
   slug: string;
   is_active: boolean;
+  logo_filename: string | null;
   group_id: number | null;
   store_count: number;
   employee_count: number;
@@ -22,6 +23,7 @@ export const listCompanies = asyncHandler(async (req: Request, res: Response) =>
   const companies = await query<CompanyRow>(`
       SELECT c.id, c.name, c.slug, c.created_at,
         c.is_active,
+        c.logo_filename,
         c.group_id,
         (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
         (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
@@ -88,8 +90,8 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
     const uniqueSlug = `${slug}-${id}`;
     const company = await queryOne<CompanyRow>(
       group_id !== undefined
-        ? `UPDATE companies SET name = $1, slug = $2, group_id = $3 WHERE id = $4 RETURNING id, name, slug, is_active, group_id, created_at`
-        : `UPDATE companies SET name = $1, slug = $2 WHERE id = $3 RETURNING id, name, slug, is_active, group_id, created_at`,
+        ? `UPDATE companies SET name = $1, slug = $2, group_id = $3 WHERE id = $4 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`
+        : `UPDATE companies SET name = $1, slug = $2 WHERE id = $3 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`,
       group_id !== undefined ? [name, uniqueSlug, group_id ?? null, id] : [name, uniqueSlug, id]
     );
     if (!company) { notFound(res, 'Azienda non trovata'); return; }
@@ -99,8 +101,8 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
 
   const company = await queryOne<CompanyRow>(
     group_id !== undefined
-      ? `UPDATE companies SET name = $1, slug = $2, group_id = $3 WHERE id = $4 RETURNING id, name, slug, is_active, group_id, created_at`
-      : `UPDATE companies SET name = $1, slug = $2 WHERE id = $3 RETURNING id, name, slug, is_active, group_id, created_at`,
+      ? `UPDATE companies SET name = $1, slug = $2, group_id = $3 WHERE id = $4 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`
+      : `UPDATE companies SET name = $1, slug = $2 WHERE id = $3 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`,
     group_id !== undefined ? [name, slug, group_id ?? null, id] : [name, slug, id]
   );
   if (!company) {
@@ -164,6 +166,7 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
   const company = await queryOne<CompanyRow>(
     `SELECT c.id, c.name, c.slug, c.created_at,
       c.is_active,
+      c.logo_filename,
       c.group_id,
       (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
       (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
@@ -212,7 +215,7 @@ export const deactivateCompany = asyncHandler(async (req: Request, res: Response
   if (isNaN(targetCompanyId)) { notFound(res, 'Azienda non trovata'); return; }
 
   const updated = await queryOne(
-    `UPDATE companies SET is_active = false WHERE id = $1 RETURNING id, name, slug, is_active, group_id, created_at`,
+    `UPDATE companies SET is_active = false WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`,
     [targetCompanyId]
   );
   if (!updated) { notFound(res, 'Azienda non trovata'); return; }
@@ -227,7 +230,7 @@ export const activateCompany = asyncHandler(async (req: Request, res: Response) 
   if (isNaN(targetCompanyId)) { notFound(res, 'Azienda non trovata'); return; }
 
   const updated = await queryOne(
-    `UPDATE companies SET is_active = true WHERE id = $1 RETURNING id, name, slug, is_active, group_id, created_at`,
+    `UPDATE companies SET is_active = true WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, group_id, created_at`,
     [targetCompanyId]
   );
   if (!updated) { notFound(res, 'Azienda non trovata'); return; }

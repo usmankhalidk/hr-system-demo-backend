@@ -5,6 +5,13 @@ import path from 'path';
 
 dotenv.config();
 
+function listMigrationFiles(migrationsDir: string): string[] {
+  return fs
+    .readdirSync(migrationsDir)
+    .filter((file) => file.endsWith('.sql'))
+    .sort((a, b) => a.localeCompare(b));
+}
+
 // ---------------------------------------------------------------------------
 // migrate() — apply all SQL migration files (idempotent, safe on every boot)
 // Does NOT wipe data. Safe to call on every startup.
@@ -17,30 +24,8 @@ export async function migrate() {
     const standaloneDir = path.join(__dirname, '../../database/migrations');
     const monorepoDir = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
-    for (const file of [
-      '001_initial_schema.sql',
-      '002_phase1_schema.sql',
-      '003_phase2_shifts.sql',
-      '004_phase2_attendance.sql',
-      '005_phase2_leave.sql',
-      '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',
-      '008_termination_type.sql',
-      '009_flexible_break.sql',
-      '010_qr_tokens_cleanup_index.sql',
-      '011_login_attempts_index.sql',
-      '012_shifts_composite_index.sql',
-      '013_add_ip_index_to_login_attempts.sql',
-      '014_data_integrity_constraints.sql',
-      '015_system_admin_role.sql',
-      '016_avatar.sql',
-      '017_messages.sql',
-      '018_company_groups.sql',
-      '019_company_is_active.sql',
-      '020_leave_certificate_type.sql',
-      '021_attendance_sync_dedup.sql',
-      '022_employee_module_defaults.sql',
-    ]) {
+    for (const file of listMigrationFiles(migrationsDir)) {
+      console.log(file);
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -93,32 +78,8 @@ export async function seed() {
     const standaloneDir2 = path.join(__dirname, '../../database/migrations');
     const monorepoDir2 = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir2) ? standaloneDir2 : monorepoDir2;
-    // Apply base schema (001) then all migrations in order
-    // 002 is for upgrading legacy deployments — not needed on a fresh seed
-    for (const file of [
-      '001_initial_schema.sql',
-      '002_phase1_schema.sql',
-      '003_phase2_shifts.sql',
-      '004_phase2_attendance.sql',
-      '005_phase2_leave.sql',
-      '006_leave_certificate.sql',
-      '007_phase1_client_feedback.sql',
-      '008_termination_type.sql',
-      '009_flexible_break.sql',
-      '010_qr_tokens_cleanup_index.sql',
-      '011_login_attempts_index.sql',
-      '012_shifts_composite_index.sql',
-      '013_add_ip_index_to_login_attempts.sql',
-      '014_data_integrity_constraints.sql',
-      '015_system_admin_role.sql',
-      '016_avatar.sql',
-      '017_messages.sql',
-      '018_company_groups.sql',
-      '019_company_is_active.sql',
-      '020_leave_certificate_type.sql',
-      '021_attendance_sync_dedup.sql',
-      '022_employee_module_defaults.sql',
-    ]) {
+    // Apply all migrations in lexical order (001..N and same-prefix variants).
+    for (const file of listMigrationFiles(migrationsDir)) {
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -278,19 +239,20 @@ export async function seed() {
     console.log('✓ Employee medical checks seeded (6 records)');
 
     // ── role_module_permissions ───────────────────────────────────────────────
-    const modules = ['dipendenti','turni','presenze','permessi','documenti','ats','report','impostazioni'];
-    const roles   = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
+    const modules = ['dipendenti', 'turni', 'trasferimenti', 'presenze', 'permessi', 'documenti', 'ats', 'report', 'impostazioni'];
+    const roles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'];
     const companies = [1, 2];
 
     for (const cid of companies) {
       for (const role of roles) {
         for (const mod of modules) {
           const enabled =
-            (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'turni'        && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'presenze'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'permessi'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'impostazioni' && ['admin','hr'].includes(role));
+            (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'trasferimenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'impostazioni' && ['admin', 'hr'].includes(role));
           await client.query(
             `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
              VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
@@ -311,6 +273,10 @@ export async function seed() {
           ($1, 'area_manager',  'turni',    true),
           ($1, 'store_manager', 'turni',    true),
           ($1, 'employee',      'turni',    true),
+          ($1, 'admin',         'trasferimenti', true),
+          ($1, 'hr',            'trasferimenti', true),
+          ($1, 'area_manager',  'trasferimenti', true),
+          ($1, 'store_manager', 'trasferimenti', true),
           ($1, 'admin',         'presenze', true),
           ($1, 'hr',            'presenze', true),
           ($1, 'area_manager',  'presenze', true),
@@ -385,7 +351,7 @@ export async function seed() {
 
     // Insert approval records for approved/in-flow/rejected requests
     for (const lr of lrRows) {
-      if (['supervisor_approved','area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
+      if (['supervisor_approved', 'area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
         // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
         const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
         await client.query(`
@@ -393,7 +359,7 @@ export async function seed() {
           VALUES ($1, $2, 'store_manager', 'approved', NULL)
         `, [lr.id, smId]);
       }
-      if (['area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
+      if (['area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
         // Step 2: area_manager approval (Giuseppe=3 for company 1)
         await client.query(`
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
@@ -834,7 +800,7 @@ export async function seed() {
 
     await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     throw err;
   } finally {
     client.release();
