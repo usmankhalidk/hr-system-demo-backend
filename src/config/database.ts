@@ -1,7 +1,12 @@
-import { Pool } from 'pg';
+import { Pool, types } from 'pg';
 import dotenv from 'dotenv';
 
 dotenv.config();
+
+// Force the DATE OID (1082) to be returned as a string (YYYY-MM-DD)
+// This prevents node-postgres from converting it to a local Date object,
+// which avoids timezone-shift bugs and allows standard string manipulation.
+types.setTypeParser(1082, (val) => val);
 
 export const pool = new Pool({
   connectionString: process.env.DATABASE_URL,

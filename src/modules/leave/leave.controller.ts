@@ -35,11 +35,15 @@ function sanitiseCertificateName(raw: string): string {
  * new Date(isoString) to avoid UTC-midnight-vs-local-midnight shift that
  * causes getDay() to return the wrong weekday on non-UTC servers.
  */
-function countWorkingDays(startDate: string, endDate: string): number {
-  const [sy, sm, sd] = startDate.split('-').map(Number);
-  const [ey, em, ed] = endDate.split('-').map(Number);
-  const start   = new Date(sy, sm - 1, sd);
-  const end     = new Date(ey, em - 1, ed);
+function countWorkingDays(startDateIn: string | Date, endDateIn: string | Date): number {
+  const parse = (d: string | Date) => {
+    if (d instanceof Date) return d;
+    const [y, m, day] = d.split('T')[0].split('-').map(Number);
+    return new Date(y, m - 1, day);
+  };
+
+  const start = parse(startDateIn);
+  const end = parse(endDateIn);
   const current = new Date(start);
   let count = 0;
   while (current <= end) {
@@ -52,38 +56,116 @@ function countWorkingDays(startDate: string, endDate: string): number {
 
 /**
  * Determine the first approver role for a given company/store combination.
- * Skip-stage rule: if no store_manager exists for the store, escalate to
- * area_manager; if no area_manager exists for the company, escalate to hr.
+ * Skip-stage rule: if no store_manager exists for the store, or they are on leave, escalate to
+ * area_manager; if no area_manager exists for the company, or they are on leave, escalate to hr.
  */
-async function determineFirstApprover(companyId: number, storeId: number | null): Promise<string> {
-  if (storeId) {
-    const sm = await queryOne<{ id: number }>(
-      `SELECT id FROM users
-       WHERE role = 'store_manager' AND store_id = $1 AND company_id = $2 AND status = 'active'`,
-      [storeId, companyId],
-    );
-    if (sm) return 'store_manager';
-  }
-  const am = await queryOne<{ id: number }>(
-    `SELECT id FROM users
-     WHERE role = 'area_manager' AND company_id = $1 AND status = 'active'`,
-    [companyId],
-  );
-  if (am) return 'area_manager';
-  return 'hr';
-}
+/**
+ * Final authority chain for leave approvals.
+ */
+const APPROVAL_CHAIN = ['store_manager', 'area_manager', 'hr', 'admin'];
 
 /**
  * State machine transitions for the approval chain.
- * store_manager → supervisor_approved  → area_manager
- * area_manager  → area_manager_approved → hr
- * hr            → hr_approved           → null (terminal)
  */
 const TRANSITIONS: Record<string, { nextStatus: string; nextApprover: string | null }> = {
   store_manager: { nextStatus: 'supervisor_approved',   nextApprover: 'area_manager' },
   area_manager:  { nextStatus: 'area_manager_approved', nextApprover: 'hr' },
-  hr:            { nextStatus: 'hr_approved',           nextApprover: null },
+  hr:            { nextStatus: 'hr_approved',           nextApprover: 'admin' },
+  admin:         { nextStatus: 'admin_approved',        nextApprover: null }, 
 };
+
+/**
+ * Helper to check if a specific user is on leave (Approved or Pending) during the requested dates
+ * OR is currently away TODAY (which means they can't approve immediately).
+ */
+async function isUserOnLeave(userId: number, startDate: string, endDate: string) {
+  const today = new Date().toISOString().slice(0, 10);
+  const leave = await queryOne(
+    `SELECT id FROM leave_requests 
+     WHERE user_id = $1 
+       AND status IN ('pending', 'supervisor_approved', 'area_manager_approved', 'hr_approved', 'admin_approved')
+       AND (
+         (start_date <= $2 AND end_date >= $3) OR -- Overlaps with requested leave dates
+         (start_date <= $4 AND end_date >= $4)    -- Overlaps with TODAY
+       )`,
+    [userId, endDate, startDate, today]
+  );
+  return !!leave;
+}
+
+/**
+ * Recursively find the next active approver in the chain, skipping those on leave.
+ */
+async function findNextActiveApprover(
+  companyId: number,
+  storeId: number | null,
+  startDate: string,
+  endDate: string,
+  submitterId: number,
+  startRole: string | null
+): Promise<{ approver: string | null, status: string, skipped: string[] }> {
+  const skipped: string[] = [];
+  
+  const startIndex = startRole ? APPROVAL_CHAIN.indexOf(startRole) : 0;
+  if (startIndex === -1) return { approver: 'hr', status: 'area_manager_approved', skipped };
+
+  for (let i = startIndex; i < APPROVAL_CHAIN.length; i++) {
+    const role = APPROVAL_CHAIN[i];
+
+    // 1. Get potential approver ID
+    let potentialApprover: { id: number } | null = null;
+    if (role === 'store_manager' && storeId) {
+      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'store_manager' AND store_id = $1 AND company_id = $2 AND status = 'active' LIMIT 1`, [storeId, companyId]);
+    } else if (role === 'area_manager') {
+      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'area_manager' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+    } else if (role === 'hr') {
+        potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'hr' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+    } else if (role === 'admin') {
+        potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'admin' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+    }
+
+    if (!potentialApprover) {
+      skipped.push(role);
+      continue;
+    }
+
+    // 2. Check if they are the submitter or on leave
+    if (potentialApprover.id === submitterId || await isUserOnLeave(potentialApprover.id, startDate, endDate)) {
+      skipped.push(role);
+      continue;
+    }
+
+    // Correctly calculate the status based on who was JUST completed/skipped
+    let finalStatus = 'pending';
+    if (i > 0) {
+      finalStatus = TRANSITIONS[APPROVAL_CHAIN[i-1]].nextStatus;
+    }
+
+    return { approver: role, status: finalStatus, skipped };
+  }
+
+  return { approver: null, status: 'admin_approved', skipped };
+}
+
+/**
+ * Determine the first approver role for a given company/store combination.
+ */
+async function determineFirstApprover(
+  companyId: number, 
+  storeId: number | null,
+  startDate: string,
+  endDate: string,
+  submitterId: number,
+  submitterRole: string
+): Promise<{ approver: string | null, status: string, skipped: string[] }> {
+  const lowerRole = submitterRole?.toLowerCase();
+  
+  if (lowerRole === 'admin') {
+    return { approver: 'admin', status: 'hr_approved', skipped: [] };
+  }
+
+  return findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, null);
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/leave — submit a leave request
@@ -142,11 +224,11 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  // Overlap check — uses idx_leave_requests_overlap (migration 023)
+  // Overlap check — ONLY FOR THE SAME USER (user_id = $2)
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved')
+       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved','admin_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [companyId, userId, end_date, start_date],
   );
@@ -155,22 +237,55 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // --- Leave Balance Validation ---
+  const workingDays = countWorkingDays(start_date, end_date);
+  if (workingDays > 0) {
+    const year = new Date(start_date).getFullYear();
+    const defaultTotal = leave_type === 'vacation' ? 25 : 10;
+    
+    // Attempt to select the balance
+    const balance = await queryOne<{ used_days: number, total_days: number }>(
+      `SELECT used_days, total_days FROM leave_balances 
+       WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
+      [companyId, userId, year, leave_type]
+    );
+
+    const currentUsed = parseFloat(String(balance?.used_days ?? 0));
+    const limit = parseFloat(String(balance?.total_days ?? defaultTotal));
+
+    if (currentUsed + workingDays > limit) {
+      res.status(400).json({
+        success: false,
+        error: "Your leaves are full, you will not able to request this leave.",
+        code: "LEAVES_FULL"
+      });
+      return;
+    }
+  }
+
   const certificateName = file ? sanitiseCertificateName(file.originalname) : null;
   const certificateData = file?.buffer ?? null;
   const certificateMime = file?.mimetype ?? null;
 
-  const firstApprover = await determineFirstApprover(companyId, storeId ?? null);
+  const { approver, status: initialStatus, skipped } = await determineFirstApprover(
+    companyId, storeId ?? null, 
+    start_date, end_date, 
+    userId, role
+  );
+  const firstApprover = approver;
+  const skippedApprovers = skipped;
 
   const leaveRequest = await queryOne(
     `INSERT INTO leave_requests
       (company_id, user_id, store_id, leave_type, start_date, end_date,
        status, current_approver_role, notes,
-       medical_certificate_name, medical_certificate_data, medical_certificate_type)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10,$11)
+       medical_certificate_name, medical_certificate_data, medical_certificate_type, skipped_approvers)
+     VALUES ($1,$2,$3,$4,$5,$6,$13,$7,$8,$9,$10,$11,$12)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
-               status, current_approver_role, notes, medical_certificate_name, created_at`,
+               status, current_approver_role, notes, medical_certificate_name, 
+               skipped_approvers, escalated, is_emergency_override, last_action_at, created_at, updated_at`,
     [companyId, userId, storeId ?? null, leave_type, start_date, end_date,
-     firstApprover, notes ?? null, certificateName, certificateData, certificateMime],
+     firstApprover, notes ?? null, certificateName, certificateData, certificateMime, JSON.stringify(skippedApprovers), initialStatus],
   );
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
@@ -206,8 +321,8 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       scopeParams = [allowedCompanyIds, userId];
       break;
     case 'store_manager':
-      scopeWhere  = 'lr.company_id = ANY($1) AND lr.store_id = $2';
-      scopeParams = [allowedCompanyIds, storeId];
+      scopeWhere  = '(lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3';
+      scopeParams = [allowedCompanyIds, storeId, userId];
       break;
     case 'area_manager': {
       const amStores = await query<{ store_id: number }>(
@@ -218,11 +333,13 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       );
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
-        ok(res, { requests: [], total: 0, page, limit, pages: 0 });
-        return;
+        // If they manage NO stores, they should still see their OWN requests
+        scopeWhere  = 'lr.company_id = ANY($1) AND lr.user_id = $2';
+        scopeParams = [allowedCompanyIds, userId];
+      } else {
+        scopeWhere  = `(lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3`;
+        scopeParams = [allowedCompanyIds, storeIds, userId];
       }
-      scopeWhere  = `lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])`;
-      scopeParams = [allowedCompanyIds, storeIds];
       break;
     }
     case 'admin':
@@ -243,6 +360,9 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
 
   if (status) {
     extraWhere += ` AND lr.status = $${paramIdx}`;    extraParams.push(status);    paramIdx++;
+  } else if (role !== 'employee') {
+    // Managers, HR, and Admin do not see cancelled requests in their dashboard
+    extraWhere += ` AND lr.status != 'cancelled'`;
   }
   if (leave_type) {
     extraWhere += ` AND lr.leave_type = $${paramIdx}`; extraParams.push(leave_type); paramIdx++;
@@ -271,6 +391,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
        lr.start_date, lr.end_date, lr.status, lr.current_approver_role,
        lr.notes, lr.created_at, lr.updated_at,
        lr.medical_certificate_name,
+       lr.skipped_approvers, lr.escalated, lr.is_emergency_override,
        u.name AS user_name, u.surname AS user_surname,
        u.avatar_filename AS user_avatar_filename
      FROM leave_requests lr
@@ -331,8 +452,8 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
       case 'hr':
       case 'admin':
       default:
-        scopeWhere  = `lr.company_id = ANY($1) AND lr.current_approver_role = 'hr'`;
-        scopeParams = [allowedCompanyIds];
+        scopeWhere  = `lr.company_id = ANY($1) AND lr.current_approver_role = $2`;
+        scopeParams = [allowedCompanyIds, role];
         break;
     }
   }
@@ -361,7 +482,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
 
 export const approveLeave = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId } = req.user!;
-  const effectiveRole = role === 'admin' ? 'hr' : role;
+  const effectiveRole = role;
   const isSuperAdmin  = req.user!.is_super_admin === true;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
@@ -374,7 +495,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
-  const { notes } = req.body as { notes?: string };
+  const { notes, emergency_override } = req.body as { notes?: string, emergency_override?: boolean };
 
   const leaveRequest = await queryOne<{
     id: number;
@@ -386,9 +507,10 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     start_date: string;
     end_date: string;
     store_id: number | null;
+    skipped_approvers: string[] | null;
   }>(
     `SELECT id, company_id, user_id, status, current_approver_role,
-            leave_type, start_date, end_date, store_id
+            leave_type, start_date, end_date, store_id, skipped_approvers
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -398,26 +520,41 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
-  if (leaveRequest.status === 'rejected' || leaveRequest.status === 'hr_approved') {
+  if (leaveRequest.status === 'rejected' || leaveRequest.status === 'admin_approved') {
     badRequest(res, 'Operazione non consentita nello stato attuale della richiesta', 'INVALID_STATE');
     return;
   }
 
   const stageRole    = leaveRequest.current_approver_role;
-  if (!isSuperAdmin && stageRole !== effectiveRole) {
+  const isOverride   = (role === 'admin' || role === 'hr') && (emergency_override === true);
+
+  if (!isSuperAdmin && !isOverride && role !== 'admin' && stageRole !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta", 'LEAVE_NOT_RESPONSIBLE');
     return;
   }
 
-  const transitionKey = isSuperAdmin ? stageRole : effectiveRole;
-  const transition    = TRANSITIONS[transitionKey];
+  // If HR/Admin use emergency override OR are normal Admin, prioritize terminal transition
+  let transitionKey = isSuperAdmin ? stageRole : effectiveRole;
+  if (isOverride) {
+    transitionKey = (role === 'admin' ? 'admin' : 'hr_override');
+  } else if (role === 'admin') {
+    transitionKey = 'admin';
+  }
+  
+  // Custom transition for HR override to move directly to terminal
+  const getTransition = (key: string) => {
+    if (key === 'hr_override') return { nextStatus: 'admin_approved', nextApprover: null };
+    return TRANSITIONS[key];
+  };
+
+  const transition = getTransition(transitionKey);
   if (!transition) {
     forbidden(res, 'Ruolo non autorizzato ad approvare');
     return;
   }
 
-  // Final step (HR): check balance atomically
-  if (transitionKey === 'hr') {
+  // Final step: update balance only when fully approved
+  if (!transition.nextApprover) {
     const workingDays  = countWorkingDays(leaveRequest.start_date, leaveRequest.end_date);
     const year         = new Date(leaveRequest.start_date).getFullYear();
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
@@ -455,17 +592,17 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 
       const updated = await client.query(
         `UPDATE leave_requests
-         SET status=$1, current_approver_role=$2, updated_at=NOW()
-         WHERE id=$3
+         SET status=$1, current_approver_role=$2, updated_at=NOW(), is_emergency_override=$3
+         WHERE id=$4
          RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                    status, current_approver_role, notes, created_at, updated_at`,
-        [transition.nextStatus, transition.nextApprover, leaveId],
+        [transition.nextStatus, transition.nextApprover, isOverride, leaveId],
       );
 
       await client.query(
         `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
          VALUES ($1,$2,$3,'approved',$4)`,
-        [leaveId, userId, transitionKey, notes ?? null],
+        [leaveId, userId, isOverride ? role : transitionKey, notes ?? (isOverride ? 'Emergency Override' : null)],
       );
 
       const balanceUpdate = await client.query(
@@ -505,17 +642,33 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   }
 
   // Non-final approval
+  const { approver: nextActiveRole, status: nextStatus, skipped: additionalSkipped } = await findNextActiveApprover(
+    leaveRequest.company_id,
+    leaveRequest.store_id,
+    leaveRequest.start_date,
+    leaveRequest.end_date,
+    leaveRequest.user_id,
+    transition.nextApprover
+  );
+
+  const finalNextRole = nextActiveRole;
+  const finalNextStatus = nextStatus;
+
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
+    const currentSkipped = Array.isArray(leaveRequest.skipped_approvers) ? leaveRequest.skipped_approvers : [];
+    const updatedSkipped = Array.from(new Set([...currentSkipped, ...additionalSkipped]));
+
     const updatedResult = await client.query(
       `UPDATE leave_requests
-       SET status=$1, current_approver_role=$2, updated_at=NOW()
-       WHERE id=$3
+       SET status=$1, current_approver_role=$2, updated_at=NOW(), last_action_at=NOW(),
+           skipped_approvers=$3
+       WHERE id=$4
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                  status, current_approver_role, notes, created_at, updated_at`,
-      [transition.nextStatus, transition.nextApprover, leaveId],
+      [finalNextStatus, finalNextRole, JSON.stringify(updatedSkipped), leaveId],
     );
 
     await client.query(
@@ -540,7 +693,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 
 export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId } = req.user!;
-  const effectiveRole = role === 'admin' ? 'hr' : role;
+  const effectiveRole = role;
   const isSuperAdmin  = req.user!.is_super_admin === true;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
@@ -554,7 +707,7 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
   // FIX 5: notes is optional — a manager may reject without a written reason
-  const { notes } = req.body as { notes?: string };
+  const { notes, emergency_override } = req.body as { notes?: string, emergency_override?: boolean };
 
   const leaveRequest = await queryOne<{
     id: number;
@@ -572,18 +725,25 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  if (leaveRequest.status === 'rejected' || leaveRequest.status === 'hr_approved') {
+  if (leaveRequest.status === 'rejected' || leaveRequest.status === 'admin_approved') {
     badRequest(res, 'Impossibile rifiutare una richiesta già finalizzata', 'INVALID_STATE');
     return;
   }
 
   const stageRole = leaveRequest.current_approver_role;
-  if (!isSuperAdmin && stageRole !== effectiveRole) {
+  const isOverride   = (role === 'admin' || role === 'hr') && (emergency_override === true);
+  if (!isSuperAdmin && !isOverride && role !== 'admin' && stageRole !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta", 'LEAVE_NOT_RESPONSIBLE');
     return;
   }
 
-  const approverRoleForRecord = isSuperAdmin ? stageRole : effectiveRole;
+  // If HR/Admin use emergency override OR are normal Admin, prioritize terminal transition
+  let approverRoleForRecord = isSuperAdmin ? stageRole : effectiveRole;
+  if (isOverride) {
+    approverRoleForRecord = role;
+  } else if (role === 'admin') {
+    approverRoleForRecord = 'admin';
+  }
 
   const client = await pool.connect();
   try {
@@ -591,17 +751,17 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
 
     const updatedResult = await client.query(
       `UPDATE leave_requests
-       SET status='rejected', current_approver_role=NULL, updated_at=NOW()
-       WHERE id=$1
+       SET status='rejected', current_approver_role=NULL, updated_at=NOW(), is_emergency_override=$1
+       WHERE id=$2
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                  status, current_approver_role, notes, created_at, updated_at`,
-      [leaveId],
+      [isOverride, leaveId],
     );
 
     await client.query(
       `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
        VALUES ($1,$2,$3,'rejected',$4)`,
-      [leaveId, userId, approverRoleForRecord, notes ?? null],
+      [leaveId, userId, approverRoleForRecord, notes ?? (isOverride ? 'Emergency Override' : null)],
     );
 
     await client.query('COMMIT');
@@ -612,6 +772,44 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   } finally {
     client.release();
   }
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/leave/:id/cancel — employee retracts their own pending request
+// ---------------------------------------------------------------------------
+
+export const cancelLeave = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.user!;
+  const leaveId = parseInt(req.params.id, 10);
+  if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
+
+  const leaveRequest = await queryOne<{ id: number; user_id: number; status: string }>(
+    `SELECT id, user_id, status FROM leave_requests WHERE id = $1`,
+    [leaveId]
+  );
+
+  if (!leaveRequest) {
+    notFound(res, 'Richiesta non trovata');
+    return;
+  }
+
+  if (leaveRequest.user_id !== userId) {
+    forbidden(res, 'Non puoi cancellare la richiesta di un altro dipendente');
+    return;
+  }
+
+  if (leaveRequest.status !== 'pending') {
+    badRequest(res, 'Puoi cancellare solo le richieste in stato "pending"', 'ONLY_PENDING_CANCELLABLE');
+    return;
+  }
+
+  const result = await queryOne(
+    `UPDATE leave_requests SET status = 'cancelled', current_approver_role = NULL, updated_at = NOW()
+     WHERE id = $1 RETURNING id, status, updated_at`,
+    [leaveId]
+  );
+
+  ok(res, result, 'Richiesta cancellata con successo');
 });
 
 // ---------------------------------------------------------------------------
@@ -749,10 +947,11 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
 
   const effectiveCompanyId = targetUser.company_id;
 
+  // Overlap check — ONLY FOR THE SAME USER (target user_id = $2)
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved')
+       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved','admin_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [effectiveCompanyId, user_id, end_date, start_date],
   );
@@ -796,7 +995,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
       `INSERT INTO leave_requests
          (company_id, user_id, store_id, leave_type, start_date, end_date,
           status, current_approver_role, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,'hr_approved',NULL,$7)
+       VALUES ($1,$2,$3,$4,$5,$6,'admin_approved',NULL,$7)
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                  status, current_approver_role, notes, created_at`,
       [effectiveCompanyId, user_id, targetUser.store_id, leave_type, start_date, end_date, notes ?? null],
@@ -1210,5 +1409,74 @@ export const importLeaveBalances = asyncHandler(async (req: Request, res: Respon
   }
 
   ok(res, { imported, skipped, failed, errors, total: rows.length }, 'Import completato');
+});
+
+// ---------------------------------------------------------------------------
+// Auto-Escalation Logic
+// ---------------------------------------------------------------------------
+
+export async function processEscalationLogic() {
+  const stalled = await query<{
+    id: number;
+    company_id: number;
+    user_id: number;
+    store_id: number | null;
+    start_date: string;
+    end_date: string;
+    current_approver_role: string;
+    escalated: boolean;
+    skipped_approvers: string[] | null;
+  }>(
+    `SELECT id, company_id, user_id, store_id, start_date, end_date, current_approver_role, escalated, skipped_approvers
+     FROM leave_requests
+     WHERE status NOT IN ('admin_approved', 'rejected', 'cancelled')
+       AND last_action_at < NOW() - INTERVAL '2 days'
+       AND current_approver_role IS NOT NULL`
+  );
+
+  let escalatedCount = 0;
+
+  for (const req of stalled) {
+    const transition = TRANSITIONS[req.current_approver_role];
+    if (!transition) continue;
+
+    // Use findNextActiveApprover to skip anyone on leave during escalation
+    const { approver: nextActiveRole, status: nextStatus, skipped: additionalSkipped } = await findNextActiveApprover(
+      req.company_id,
+      req.store_id,
+      req.start_date,
+      req.end_date,
+      req.user_id,
+      transition.nextApprover
+    );
+
+    const finalNextRole = nextActiveRole;
+    const finalNextStatus = nextStatus;
+    const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
+
+    await query(
+      `UPDATE leave_requests
+       SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
+           skipped_approvers = $3
+       WHERE id = $4`,
+      [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
+    );
+
+    // Record the escalation
+    await query(
+      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+       VALUES ($1, NULL, 'system', 'escalated', $2)`,
+      [req.id, `System auto-approved at ${req.current_approver_role} stage and escalated to ${finalNextRole || 'final'} due to inactivity.`]
+    );
+
+    escalatedCount++;
+  }
+
+  return escalatedCount;
+}
+
+export const executeEscalation = asyncHandler(async (req: Request, res: Response) => {
+  const count = await processEscalationLogic();
+  res.json({ success: true, escalated: count });
 });
 

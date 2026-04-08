@@ -26,6 +26,7 @@ import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
+import { processEscalationLogic } from './modules/leave/leave.controller';
 
 dotenv.config();
 
@@ -219,6 +220,20 @@ async function start() {
   httpServer.listen(PORT, () => {
     console.log(`HR System backend running on http://localhost:${PORT}`);
   });
+
+  // Background auto-escalation task (runs every hour)
+  setInterval(() => {
+    console.log('Running background auto-escalation task...');
+    processEscalationLogic()
+      .then((count) => {
+        if (count > 0) {
+          console.log(`Auto-escalated ${count} leave requests.`);
+        }
+      })
+      .catch((err) => {
+        console.error('Error running auto-escalation:', err);
+      });
+  }, 1000 * 60 * 60);
 }
 
 start().catch((err) => {
