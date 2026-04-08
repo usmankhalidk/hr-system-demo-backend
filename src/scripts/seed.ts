@@ -25,6 +25,7 @@ export async function migrate() {
     const monorepoDir = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
     for (const file of listMigrationFiles(migrationsDir)) {
+      console.log(file);
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
       await client.query(sql);
     }
@@ -238,20 +239,20 @@ export async function seed() {
     console.log('✓ Employee medical checks seeded (6 records)');
 
     // ── role_module_permissions ───────────────────────────────────────────────
-    const modules = ['dipendenti','turni','trasferimenti','presenze','permessi','documenti','ats','report','impostazioni'];
-    const roles   = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
+    const modules = ['dipendenti', 'turni', 'trasferimenti', 'presenze', 'permessi', 'documenti', 'ats', 'report', 'impostazioni'];
+    const roles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'];
     const companies = [1, 2];
 
     for (const cid of companies) {
       for (const role of roles) {
         for (const mod of modules) {
           const enabled =
-            (mod === 'dipendenti'   && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'turni'        && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'trasferimenti' && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'presenze'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'permessi'     && ['admin','hr','area_manager','store_manager'].includes(role)) ||
-            (mod === 'impostazioni' && ['admin','hr'].includes(role));
+            (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'trasferimenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role)) ||
+            (mod === 'impostazioni' && ['admin', 'hr'].includes(role));
           await client.query(
             `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
              VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`,
@@ -350,7 +351,7 @@ export async function seed() {
 
     // Insert approval records for approved/in-flow/rejected requests
     for (const lr of lrRows) {
-      if (['supervisor_approved','area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
+      if (['supervisor_approved', 'area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
         // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
         const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
         await client.query(`
@@ -358,7 +359,7 @@ export async function seed() {
           VALUES ($1, $2, 'store_manager', 'approved', NULL)
         `, [lr.id, smId]);
       }
-      if (['area_manager_approved','hr_approved','rejected'].includes(lr.status)) {
+      if (['area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
         // Step 2: area_manager approval (Giuseppe=3 for company 1)
         await client.query(`
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
@@ -799,7 +800,7 @@ export async function seed() {
 
     await client.query('COMMIT');
   } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
+    await client.query('ROLLBACK').catch(() => { });
     throw err;
   } finally {
     client.release();
