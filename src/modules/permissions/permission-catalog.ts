@@ -9,6 +9,7 @@ export const ALL_MODULES = [
   'messaggi',
   'documenti',
   'ats',
+  'onboarding',
   'report',
   'impostazioni',
 ] as const;
@@ -22,6 +23,9 @@ export const ACTIVE_MODULES = [
   'permessi',
   'negozi',
   'messaggi',
+  'documenti',
+  'ats',
+  'onboarding',
   'impostazioni',
 ] as const;
 
@@ -60,8 +64,9 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   negozi: ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'],
   messaggi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   impostazioni: ['admin', 'hr', 'area_manager'],
-  documenti: [],
-  ats: [],
+  documenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  ats: ['admin', 'hr', 'area_manager', 'store_manager'],
+  onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   report: [],
 };
 
