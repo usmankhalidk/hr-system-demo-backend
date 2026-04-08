@@ -15,6 +15,7 @@ interface TransferRow {
   target_store_id: number;
   start_date: string;
   end_date: string;
+  cancel_origin_shifts: boolean;
   status: TransferStatus;
   reason: string | null;
   notes: string | null;
@@ -32,8 +33,15 @@ interface TransferWithNames extends TransferRow {
   user_email: string;
   user_avatar_filename: string | null;
   company_name: string;
+  group_name: string | null;
   origin_store_name: string;
   target_store_name: string;
+  created_by_name: string | null;
+  created_by_surname: string | null;
+  created_by_avatar_filename: string | null;
+  cancelled_by_name: string | null;
+  cancelled_by_surname: string | null;
+  cancelled_by_avatar_filename: string | null;
 }
 
 interface ShiftWarningCounts {
@@ -50,6 +58,7 @@ const TRANSFER_SELECT = `
   tsa.target_store_id,
   TO_CHAR(tsa.start_date::date, 'YYYY-MM-DD') AS start_date,
   TO_CHAR(tsa.end_date::date, 'YYYY-MM-DD') AS end_date,
+  tsa.cancel_origin_shifts,
   tsa.status,
   tsa.reason,
   tsa.notes,
@@ -64,16 +73,26 @@ const TRANSFER_SELECT = `
   u.email AS user_email,
   u.avatar_filename AS user_avatar_filename,
   c.name AS company_name,
+  cg.name AS group_name,
   s_from.name AS origin_store_name,
-  s_to.name AS target_store_name
+  s_to.name AS target_store_name,
+  creator.name AS created_by_name,
+  creator.surname AS created_by_surname,
+  creator.avatar_filename AS created_by_avatar_filename,
+  canceller.name AS cancelled_by_name,
+  canceller.surname AS cancelled_by_surname,
+  canceller.avatar_filename AS cancelled_by_avatar_filename
 `;
 
 const TRANSFER_JOINS = `
   FROM temporary_store_assignments tsa
   JOIN users u ON u.id = tsa.user_id
   JOIN companies c ON c.id = tsa.company_id
+  LEFT JOIN company_groups cg ON cg.id = c.group_id
   JOIN stores s_from ON s_from.id = tsa.origin_store_id
   JOIN stores s_to ON s_to.id = tsa.target_store_id
+  LEFT JOIN users creator ON creator.id = tsa.created_by
+  LEFT JOIN users canceller ON canceller.id = tsa.cancelled_by
 `;
 
 function isoToday(): string {
@@ -467,6 +486,7 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
     origin_store_id?: number | null;
     start_date: string;
     end_date: string;
+    cancel_origin_shifts?: boolean;
     reason?: string | null;
     notes?: string | null;
   };
@@ -494,6 +514,7 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
 
   const companyId = employee.company_id;
   const originStoreId = body.origin_store_id ?? employee.store_id;
+  const shouldCancelOriginShifts = body.cancel_origin_shifts !== false;
 
   if (!originStoreId) {
     badRequest(res, 'Il dipendente non ha un negozio di origine assegnato', 'MISSING_ORIGIN_STORE');
@@ -555,11 +576,11 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
   const createdRow = await queryOne<TransferWithNames>(
     `INSERT INTO temporary_store_assignments (
        company_id, user_id, origin_store_id, target_store_id,
-       start_date, end_date, status, reason, notes, created_by
+       start_date, end_date, cancel_origin_shifts, status, reason, notes, created_by
      )
-     VALUES ($1, $2, $3, $4, $5::date, $6::date, 'active', $7, $8, $9)
+     VALUES ($1, $2, $3, $4, $5::date, $6::date, $7, 'active', $8, $9, $10)
      RETURNING id, company_id, user_id, origin_store_id, target_store_id,
-               start_date, end_date, status, reason, notes, created_by,
+               start_date, end_date, cancel_origin_shifts, status, reason, notes, created_by,
                cancelled_by, cancelled_at, cancellation_reason, created_at, updated_at`,
     [
       companyId,
@@ -568,6 +589,7 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
       body.target_store_id,
       body.start_date,
       body.end_date,
+      shouldCancelOriginShifts,
       body.reason ?? null,
       body.notes ?? null,
       callerId,
@@ -579,9 +601,28 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
+  let cancelledOriginShiftsCount = 0;
+  if (shouldCancelOriginShifts) {
+    const cancelledOriginShifts = await query<{ id: number }>(
+      `UPDATE shifts
+       SET status = 'cancelled',
+           cancelled_by_transfer_id = $1,
+           updated_at = NOW()
+       WHERE company_id = $2
+         AND user_id = $3
+         AND store_id = $4
+         AND status != 'cancelled'
+         AND date BETWEEN $5 AND $6
+       RETURNING id`,
+      [createdRow.id, companyId, body.user_id, originStoreId, body.start_date, body.end_date],
+    );
+    cancelledOriginShiftsCount = cancelledOriginShifts.length;
+  }
+
   await query(
     `UPDATE shifts
-     SET assignment_id = $1
+     SET assignment_id = $1,
+         cancelled_by_transfer_id = NULL
      WHERE company_id = $2
        AND user_id = $3
        AND store_id = $4
@@ -601,6 +642,7 @@ export const createTransfer = asyncHandler(async (req: Request, res: Response) =
     {
       transfer: createdTransfer,
       warnings,
+      origin_shifts_cancelled: cancelledOriginShiftsCount,
     },
     'Trasferimento temporaneo creato',
   );
@@ -619,6 +661,7 @@ export const updateTransfer = asyncHandler(async (req: Request, res: Response) =
     target_store_id?: number;
     start_date?: string;
     end_date?: string;
+    cancel_origin_shifts?: boolean;
     reason?: string | null;
     notes?: string | null;
   };
@@ -648,6 +691,7 @@ export const updateTransfer = asyncHandler(async (req: Request, res: Response) =
   const nextTargetStoreId = body.target_store_id ?? existing.target_store_id;
   const nextStartDate = body.start_date ?? existing.start_date;
   const nextEndDate = body.end_date ?? existing.end_date;
+  const nextCancelOriginShifts = body.cancel_origin_shifts ?? existing.cancel_origin_shifts;
 
   if (nextStartDate > nextEndDate) {
     badRequest(res, 'La data di inizio non puo essere successiva alla data di fine', 'INVALID_DATE_RANGE');
@@ -713,19 +757,21 @@ export const updateTransfer = asyncHandler(async (req: Request, res: Response) =
          target_store_id = $2,
        start_date = $3::date,
        end_date = $4::date,
-         reason = $5,
-         notes = $6,
+         cancel_origin_shifts = $5,
+         reason = $6,
+         notes = $7,
          updated_at = NOW()
-     WHERE id = $7
-       AND company_id = $8
+     WHERE id = $8
+       AND company_id = $9
      RETURNING id, company_id, user_id, origin_store_id, target_store_id,
-               start_date, end_date, status, reason, notes, created_by,
+               start_date, end_date, cancel_origin_shifts, status, reason, notes, created_by,
                cancelled_by, cancelled_at, cancellation_reason, created_at, updated_at`,
     [
       nextOriginStoreId,
       nextTargetStoreId,
       nextStartDate,
       nextEndDate,
+      nextCancelOriginShifts,
       body.reason !== undefined ? body.reason : existing.reason,
       body.notes !== undefined ? body.notes : existing.notes,
       existing.id,
@@ -748,7 +794,8 @@ export const updateTransfer = asyncHandler(async (req: Request, res: Response) =
 
   await query(
     `UPDATE shifts
-     SET assignment_id = $1
+     SET assignment_id = $1,
+         cancelled_by_transfer_id = NULL
      WHERE company_id = $2
        AND user_id = $3
        AND store_id = $4
@@ -757,13 +804,56 @@ export const updateTransfer = asyncHandler(async (req: Request, res: Response) =
     [existing.id, existing.company_id, existing.user_id, nextTargetStoreId, nextStartDate, nextEndDate],
   );
 
+  const restoredOriginShifts = await query<{ id: number }>(
+    `UPDATE shifts
+     SET status = 'scheduled',
+         cancelled_by_transfer_id = NULL,
+         updated_at = NOW()
+     WHERE cancelled_by_transfer_id = $1
+       AND (
+         $2::boolean = false
+         OR store_id != $3
+         OR date < $4::date
+         OR date > $5::date
+       )
+     RETURNING id`,
+    [existing.id, nextCancelOriginShifts, nextOriginStoreId, nextStartDate, nextEndDate],
+  );
+
+  let cancelledOriginShiftsCount = 0;
+  if (nextCancelOriginShifts) {
+    const cancelledOriginShifts = await query<{ id: number }>(
+      `UPDATE shifts
+       SET status = 'cancelled',
+           cancelled_by_transfer_id = $1,
+           updated_at = NOW()
+       WHERE company_id = $2
+         AND user_id = $3
+         AND store_id = $4
+         AND status != 'cancelled'
+         AND date BETWEEN $5::date AND $6::date
+       RETURNING id`,
+      [existing.id, existing.company_id, existing.user_id, nextOriginStoreId, nextStartDate, nextEndDate],
+    );
+    cancelledOriginShiftsCount = cancelledOriginShifts.length;
+  }
+
   const updatedTransfer = await getTransferByIdInScope(existing.id, [existing.company_id]);
   if (!updatedTransfer) {
     badRequest(res, 'Impossibile recuperare il trasferimento aggiornato', 'TRANSFER_UPDATE_FAILED');
     return;
   }
 
-  ok(res, { transfer: updatedTransfer, warnings }, 'Trasferimento aggiornato');
+  ok(
+    res,
+    {
+      transfer: updatedTransfer,
+      warnings,
+      origin_shifts_cancelled: cancelledOriginShiftsCount,
+      origin_shifts_restored: restoredOriginShifts.length,
+    },
+    'Trasferimento aggiornato',
+  );
 });
 
 export const cancelTransfer = asyncHandler(async (req: Request, res: Response) => {
@@ -774,7 +864,11 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
   }
 
   const { role, userId: callerId, storeId } = req.user!;
-  const { reason } = req.body as { reason?: string | null };
+  const { reason, restore_origin_shifts } = req.body as {
+    reason?: string | null;
+    restore_origin_shifts?: boolean;
+  };
+  const shouldRestoreOriginShifts = restore_origin_shifts !== false;
 
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const transfer = await getTransferByIdInScope(transferId, allowedCompanyIds);
@@ -804,7 +898,7 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
          updated_at = NOW()
      WHERE id = $3
      RETURNING id, company_id, user_id, origin_store_id, target_store_id,
-               start_date, end_date, status, reason, notes, created_by,
+               start_date, end_date, cancel_origin_shifts, status, reason, notes, created_by,
                cancelled_by, cancelled_at, cancellation_reason, created_at, updated_at`,
     [callerId, reason ?? null, transfer.id],
   );
@@ -814,9 +908,11 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const cancelledShifts = await query<{ id: number }>(
+  const cancelledTargetShifts = await query<{ id: number }>(
     `UPDATE shifts
      SET status = 'cancelled',
+         assignment_id = $5,
+         cancelled_by_transfer_id = NULL,
          updated_at = NOW()
      WHERE company_id = $1
        AND user_id = $2
@@ -837,6 +933,25 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
     ],
   );
 
+  let restoredOriginShifts: Array<{ id: number }> = [];
+  if (shouldRestoreOriginShifts) {
+    restoredOriginShifts = await query<{ id: number }>(
+      `UPDATE shifts
+       SET status = 'scheduled',
+           cancelled_by_transfer_id = NULL,
+           updated_at = NOW()
+       WHERE company_id = $1
+         AND user_id = $2
+         AND cancelled_by_transfer_id = $3
+       RETURNING id`,
+      [
+        transfer.company_id,
+        transfer.user_id,
+        transfer.id,
+      ],
+    );
+  }
+
   const cancelledTransfer = await getTransferByIdInScope(transfer.id, [transfer.company_id]);
   if (!cancelledTransfer) {
     badRequest(res, 'Impossibile recuperare il trasferimento annullato', 'TRANSFER_CANCEL_FAILED');
@@ -847,9 +962,12 @@ export const cancelTransfer = asyncHandler(async (req: Request, res: Response) =
     res,
     {
       transfer: cancelledTransfer,
-      cancelled_shifts: cancelledShifts.length,
+      cancelled_shifts: cancelledTargetShifts.length,
+      cancelled_target_shifts: cancelledTargetShifts.length,
+      restored_origin_shifts: restoredOriginShifts.length,
+      restore_original_shifts_enabled: shouldRestoreOriginShifts,
       // Keep legacy field for backward compatibility with older frontend clients.
-      detached_shifts: cancelledShifts.length,
+      detached_shifts: cancelledTargetShifts.length,
     },
     'Trasferimento annullato',
   );
@@ -877,12 +995,43 @@ export const deleteTransfer = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const detached = await query<{ id: number }>(
+  const restoredOriginShifts = await query<{ id: number }>(
     `UPDATE shifts
-     SET assignment_id = NULL
-     WHERE assignment_id = $1
+     SET status = 'scheduled',
+         cancelled_by_transfer_id = NULL,
+         updated_at = NOW()
+     WHERE company_id = $1
+       AND user_id = $2
+       AND cancelled_by_transfer_id = $3
      RETURNING id`,
-    [transfer.id],
+    [transfer.company_id, transfer.user_id, transfer.id],
+  );
+
+  const deletedTargetShifts = await query<{ id: number }>(
+    `DELETE FROM shifts
+     WHERE company_id = $1
+       AND user_id = $2
+       AND (
+         assignment_id = $3
+         OR (
+           $4 = 'cancelled'
+           AND store_id = $5
+           AND status = 'cancelled'
+           AND date BETWEEN $6::date AND $7::date
+           AND updated_at >= COALESCE($8::timestamptz, '-infinity'::timestamptz)
+         )
+       )
+     RETURNING id`,
+    [
+      transfer.company_id,
+      transfer.user_id,
+      transfer.id,
+      transfer.status,
+      transfer.target_store_id,
+      transfer.start_date,
+      transfer.end_date,
+      transfer.cancelled_at,
+    ],
   );
 
   const deleted = await queryOne<{ id: number }>(
@@ -901,7 +1050,10 @@ export const deleteTransfer = asyncHandler(async (req: Request, res: Response) =
     res,
     {
       id: transfer.id,
-      detached_shifts: detached.length,
+      deleted_target_shifts: deletedTargetShifts.length,
+      restored_origin_shifts: restoredOriginShifts.length,
+      // Keep legacy field for backward compatibility with older frontend clients.
+      detached_shifts: deletedTargetShifts.length,
     },
     'Trasferimento eliminato',
   );
@@ -933,7 +1085,7 @@ export const completeTransfer = asyncHandler(async (req: Request, res: Response)
          updated_at = NOW()
      WHERE id = $1
      RETURNING id, company_id, user_id, origin_store_id, target_store_id,
-               start_date, end_date, status, reason, notes, created_by,
+               start_date, end_date, cancel_origin_shifts, status, reason, notes, created_by,
                cancelled_by, cancelled_at, cancellation_reason, created_at, updated_at`,
     [transfer.id],
   );

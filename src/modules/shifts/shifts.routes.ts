@@ -10,6 +10,7 @@ import {
   approveWeekForEmployee,
   listTemplates,
   createTemplate,
+  updateTemplate,
   deleteTemplate,
   exportShifts,
   importShifts,
@@ -166,6 +167,12 @@ const createTemplateSchema = z.object({
   template_data: z.record(z.string(), z.unknown()),
 });
 
+const updateTemplateSchema = z.object({
+  store_id:      z.number().int().positive(),
+  name:          z.string().min(1).max(100),
+  template_data: z.record(z.string(), z.unknown()),
+});
+
 // GET /api/shifts/export — must be BEFORE /:id to avoid route conflict
 router.get(
   '/export',
@@ -248,6 +255,17 @@ router.post(
   requireModulePermission('turni', 'write'),
   validate(createTemplateSchema),
   createTemplate,
+);
+
+// PUT /api/shifts/templates/:id — must be BEFORE /:id
+router.put(
+  '/templates/:id',
+  authenticate,
+  enforceCompany,
+  requireRole(...managementRoles),
+  requireModulePermission('turni', 'write'),
+  validate(updateTemplateSchema),
+  updateTemplate,
 );
 
 // DELETE /api/shifts/templates/:id — must be BEFORE /:id

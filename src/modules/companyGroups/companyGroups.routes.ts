@@ -13,6 +13,7 @@ const router = Router();
 
 const createGroupSchema = z.object({
   name: z.string().min(1, 'Nome gruppo obbligatorio').max(255),
+  owner_user_id: z.number().int().positive().optional(),
 });
 
 const roleVisibilitySchema = z.object({

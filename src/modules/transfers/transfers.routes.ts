@@ -29,6 +29,7 @@ const createTransferSchema = z.object({
   target_store_id: z.number().int().positive(),
   start_date: z.string().regex(isoDate, 'Formato data non valido (YYYY-MM-DD)'),
   end_date: z.string().regex(isoDate, 'Formato data non valido (YYYY-MM-DD)'),
+  cancel_origin_shifts: z.boolean().optional(),
   reason: z.string().max(500).optional().nullable(),
   notes: z.string().max(1500).optional().nullable(),
   target_company_id: z.number().int().positive().optional().nullable(),
@@ -42,6 +43,7 @@ const updateTransferSchema = z.object({
   target_store_id: z.number().int().positive().optional(),
   start_date: z.string().regex(isoDate, 'Formato data non valido (YYYY-MM-DD)').optional(),
   end_date: z.string().regex(isoDate, 'Formato data non valido (YYYY-MM-DD)').optional(),
+  cancel_origin_shifts: z.boolean().optional(),
   reason: z.string().max(500).optional().nullable(),
   notes: z.string().max(1500).optional().nullable(),
   target_company_id: z.number().int().positive().optional().nullable(),
@@ -50,6 +52,7 @@ const updateTransferSchema = z.object({
   || data.target_store_id !== undefined
   || data.start_date !== undefined
   || data.end_date !== undefined
+  || data.cancel_origin_shifts !== undefined
   || data.reason !== undefined
   || data.notes !== undefined
 ), {
@@ -58,6 +61,7 @@ const updateTransferSchema = z.object({
 
 const cancelSchema = z.object({
   reason: z.string().max(500).optional().nullable(),
+  restore_origin_shifts: z.boolean().optional(),
 });
 
 router.get(

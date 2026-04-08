@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS stores (
   address    TEXT,
   cap        VARCHAR(10),
   max_staff  INTEGER DEFAULT 0,
+  logo_filename VARCHAR(255),
   is_active  BOOLEAN DEFAULT true,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(company_id, code)
@@ -86,6 +87,175 @@ CREATE INDEX IF NOT EXISTS idx_users_company_id    ON users(company_id);
 CREATE INDEX IF NOT EXISTS idx_users_email         ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_store_id      ON users(store_id);
 CREATE INDEX IF NOT EXISTS idx_users_supervisor_id ON users(supervisor_id);
+
+ALTER TABLE companies
+  ADD COLUMN IF NOT EXISTS owner_user_id INTEGER,
+  ADD COLUMN IF NOT EXISTS banner_filename VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS registration_number VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS company_email VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS company_phone_numbers TEXT,
+  ADD COLUMN IF NOT EXISTS offices_locations TEXT,
+  ADD COLUMN IF NOT EXISTS country VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS city VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS state VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS address TEXT,
+  ADD COLUMN IF NOT EXISTS timezones VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS currency VARCHAR(50);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'companies'
+      AND constraint_type = 'FOREIGN KEY'
+      AND constraint_name = 'companies_owner_user_id_fkey'
+  ) THEN
+    ALTER TABLE companies
+      ADD CONSTRAINT companies_owner_user_id_fkey
+      FOREIGN KEY (owner_user_id)
+      REFERENCES users(id)
+      ON DELETE SET NULL;
+  END IF;
+EXCEPTION WHEN others THEN
+  NULL;
+END $$;
+
+DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1
+    FROM information_schema.tables
+    WHERE table_schema = 'public'
+      AND table_name = 'company_groups'
+  ) THEN
+    ALTER TABLE company_groups
+      ADD COLUMN IF NOT EXISTS owner_user_id INTEGER;
+
+    IF NOT EXISTS (
+      SELECT 1
+      FROM information_schema.table_constraints
+      WHERE table_name = 'company_groups'
+        AND constraint_type = 'FOREIGN KEY'
+        AND constraint_name = 'company_groups_owner_user_id_fkey'
+    ) THEN
+      ALTER TABLE company_groups
+        ADD CONSTRAINT company_groups_owner_user_id_fkey
+        FOREIGN KEY (owner_user_id)
+        REFERENCES users(id)
+        ON DELETE SET NULL;
+    END IF;
+  END IF;
+EXCEPTION WHEN others THEN
+  NULL;
+END $$;
+
+CREATE TABLE IF NOT EXISTS store_operating_hours (
+  id SERIAL PRIMARY KEY,
+  store_id INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+  day_of_week SMALLINT NOT NULL CHECK (day_of_week >= 0 AND day_of_week <= 6),
+  open_time TIME,
+  close_time TIME,
+  peak_start_time TIME,
+  peak_end_time TIME,
+  planned_shift_count INTEGER,
+  planned_staff_count INTEGER,
+  shift_plan_notes TEXT,
+  is_closed BOOLEAN NOT NULL DEFAULT false,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  updated_at TIMESTAMPTZ DEFAULT NOW(),
+  CHECK (
+    (is_closed = true AND open_time IS NULL AND close_time IS NULL)
+    OR (is_closed = false AND open_time IS NOT NULL AND close_time IS NOT NULL AND open_time < close_time)
+  ),
+  CHECK (
+    (peak_start_time IS NULL AND peak_end_time IS NULL)
+    OR (peak_start_time IS NOT NULL AND peak_end_time IS NOT NULL AND peak_start_time < peak_end_time)
+  ),
+  CHECK (planned_shift_count IS NULL OR planned_shift_count >= 0),
+  CHECK (planned_staff_count IS NULL OR planned_staff_count >= 0),
+  UNIQUE (store_id, day_of_week)
+);
+CREATE INDEX IF NOT EXISTS idx_store_operating_hours_store ON store_operating_hours(store_id);
+
+ALTER TABLE store_operating_hours
+  ADD COLUMN IF NOT EXISTS peak_start_time TIME,
+  ADD COLUMN IF NOT EXISTS peak_end_time TIME,
+  ADD COLUMN IF NOT EXISTS planned_shift_count INTEGER,
+  ADD COLUMN IF NOT EXISTS planned_staff_count INTEGER,
+  ADD COLUMN IF NOT EXISTS shift_plan_notes TEXT;
+
+UPDATE store_operating_hours
+SET peak_start_time = NULL,
+    peak_end_time = NULL
+WHERE (peak_start_time IS NULL) <> (peak_end_time IS NULL);
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'store_operating_hours'
+      AND constraint_type = 'CHECK'
+      AND constraint_name = 'store_operating_hours_peak_pair_chk'
+  ) THEN
+    ALTER TABLE store_operating_hours
+      ADD CONSTRAINT store_operating_hours_peak_pair_chk
+      CHECK (
+        (peak_start_time IS NULL AND peak_end_time IS NULL)
+        OR (peak_start_time IS NOT NULL AND peak_end_time IS NOT NULL AND peak_start_time < peak_end_time)
+      );
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'store_operating_hours'
+      AND constraint_type = 'CHECK'
+      AND constraint_name = 'store_operating_hours_peak_inside_opening_chk'
+  ) THEN
+    ALTER TABLE store_operating_hours
+      ADD CONSTRAINT store_operating_hours_peak_inside_opening_chk
+      CHECK (
+        is_closed = true
+        OR peak_start_time IS NULL
+        OR (peak_start_time >= open_time AND peak_end_time <= close_time)
+      );
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'store_operating_hours'
+      AND constraint_type = 'CHECK'
+      AND constraint_name = 'store_operating_hours_planned_shift_count_chk'
+  ) THEN
+    ALTER TABLE store_operating_hours
+      ADD CONSTRAINT store_operating_hours_planned_shift_count_chk
+      CHECK (planned_shift_count IS NULL OR planned_shift_count >= 0);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.table_constraints
+    WHERE table_name = 'store_operating_hours'
+      AND constraint_type = 'CHECK'
+      AND constraint_name = 'store_operating_hours_planned_staff_count_chk'
+  ) THEN
+    ALTER TABLE store_operating_hours
+      ADD CONSTRAINT store_operating_hours_planned_staff_count_chk
+      CHECK (planned_staff_count IS NULL OR planned_staff_count >= 0);
+  END IF;
+END $$;
 
 DO $$
 BEGIN
@@ -153,6 +323,7 @@ CREATE TABLE IF NOT EXISTS temporary_store_assignments (
   target_store_id     INTEGER NOT NULL REFERENCES stores(id),
   start_date          DATE NOT NULL,
   end_date            DATE NOT NULL,
+  cancel_origin_shifts BOOLEAN NOT NULL DEFAULT true,
   status              VARCHAR(20) NOT NULL DEFAULT 'active'
                     CHECK (status IN ('active', 'cancelled', 'completed')),
   reason              TEXT,
@@ -183,6 +354,7 @@ CREATE TABLE IF NOT EXISTS shifts (
   store_id     INTEGER NOT NULL REFERENCES stores(id),
   user_id      INTEGER NOT NULL REFERENCES users(id),
   assignment_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL,
+  cancelled_by_transfer_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL,
   date         DATE NOT NULL,
   start_time   TIME NOT NULL,
   end_time     TIME NOT NULL,
@@ -205,6 +377,7 @@ CREATE INDEX IF NOT EXISTS idx_shifts_company_date ON shifts(company_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_user_date    ON shifts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_store_date   ON shifts(store_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_assignment_id ON shifts(assignment_id);
+CREATE INDEX IF NOT EXISTS idx_shifts_cancelled_by_transfer_id ON shifts(cancelled_by_transfer_id);
 
 -- ---------------------------------------------------------------------------
 -- 9. qr_tokens  (Phase 2 — replay prevention)
