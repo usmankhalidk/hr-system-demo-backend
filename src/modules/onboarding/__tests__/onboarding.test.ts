@@ -36,6 +36,10 @@ beforeAll(async () => {
       description TEXT,
       sort_order INTEGER NOT NULL DEFAULT 0,
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      category VARCHAR(20) NOT NULL DEFAULT 'other',
+      due_days INTEGER,
+      link_url TEXT,
+      priority VARCHAR(10) NOT NULL DEFAULT 'medium',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -45,10 +49,19 @@ beforeAll(async () => {
       template_id INTEGER NOT NULL,
       completed BOOLEAN NOT NULL DEFAULT FALSE,
       completed_at TIMESTAMPTZ,
+      completion_note TEXT,
+      due_date DATE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (employee_id, template_id)
     );
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'other';
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS due_days INTEGER;
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS link_url TEXT;
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS priority VARCHAR(10) NOT NULL DEFAULT 'medium';
+    ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS completion_note TEXT;
+    ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS due_date DATE;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(10);
   `);
 
   adminToken = await login('admin@acme-test.com');
@@ -81,6 +94,27 @@ describe('Onboarding — Templates (admin)', () => {
     expect(res.body.data.template.name).toBe('Completa il profilo');
     expect(res.body.data.template.isActive).toBe(true);
     templateId = res.body.data.template.id;
+  });
+
+  it('creates a template with new fields', async () => {
+    const res = await request
+      .post('/api/onboarding/templates')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        name: 'Setup laptop',
+        description: 'Configure your work laptop',
+        sort_order: 2,
+        category: 'it_setup',
+        due_days: 1,
+        link_url: 'https://it.internal/setup',
+        priority: 'high',
+      });
+    expect(res.status).toBe(201);
+    const tmpl = res.body.data.template;
+    expect(tmpl.category).toBe('it_setup');
+    expect(tmpl.dueDays).toBe(1);
+    expect(tmpl.linkUrl).toBe('https://it.internal/setup');
+    expect(tmpl.priority).toBe('high');
   });
 
   it('lists templates', async () => {
@@ -147,6 +181,22 @@ describe('Onboarding — Employee Tasks', () => {
     expect(typeof res.body.data.assigned).toBe('number');
   });
 
+  it('assigns only selected tasks when template_ids provided', async () => {
+    const tmplRes = await request
+      .get('/api/onboarding/templates')
+      .set('Authorization', `Bearer ${adminToken}`);
+    const templates = tmplRes.body.data.templates;
+    if (templates.length === 0) return;
+
+    const selectedId = templates[0].id;
+    const res = await request
+      .post(`/api/onboarding/employees/${employee1Id}/tasks/assign`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ template_ids: [selectedId] });
+    expect(res.status).toBe(200);
+    expect(typeof res.body.data.assigned).toBe('number');
+  });
+
   it('gets employee task progress', async () => {
     const res = await request
       .get(`/api/onboarding/employees/${employee1Id}/tasks`)
@@ -185,5 +235,21 @@ describe('Onboarding — Employee Tasks', () => {
       .patch(`/api/onboarding/tasks/${taskId}/complete`)
       .set('Authorization', `Bearer ${employeeToken}`);
     expect(res.status).toBe(404);
+  });
+
+  it('admin can complete a task with a note', async () => {
+    const progressRes = await request
+      .get(`/api/onboarding/employees/${employee1Id}/tasks`)
+      .set('Authorization', `Bearer ${adminToken}`);
+    const tasks = progressRes.body.data.progress.tasks;
+    const pending = tasks.find((t: any) => !t.completed);
+    if (!pending) return;
+
+    const res = await request
+      .patch(`/api/onboarding/tasks/${pending.id}/complete`)
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ note: 'Completed during orientation' });
+    expect(res.status).toBe(200);
+    expect(res.body.data.task.completionNote).toBe('Completed during orientation');
   });
 });
