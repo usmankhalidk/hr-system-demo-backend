@@ -7,6 +7,7 @@ import {
   listCandidates, getCandidate, createCandidate,
   updateCandidateStage, markCandidateRead, deleteCandidate,
   listInterviews, createInterview, updateInterview, deleteInterview,
+  getPublishedJobsForFeed,
   CandidateStatus,
 } from './ats.service';
 import { getHRAlerts } from './ats.alerts.service';
@@ -362,3 +363,60 @@ export const getRisksHandler = asyncHandler(async (req: Request, res: Response) 
   const risks = await evaluateAllJobRisks(companyId);
   ok(res, { risks });
 });
+
+// ---------------------------------------------------------------------------
+// Public job feed (no auth) — Indeed XML + generic RSS feed
+// ---------------------------------------------------------------------------
+
+function xmlEscape(s: string): string {
+  return s
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
+export const jobFeedHandler = async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { slug } = req.params;
+    const { company, jobs } = await getPublishedJobsForFeed(slug);
+
+    if (!company) {
+      res.status(404).type('text/plain').send('Company not found');
+      return;
+    }
+
+    const baseUrl = process.env.PUBLIC_APP_URL ?? `${req.protocol}://${req.get('host')}`;
+    const careersBase = `${baseUrl}/careers/${xmlEscape(company.slug)}`;
+
+    const jobItems = jobs.map((job) => {
+      const pubDate = new Date(job.publishedAt ?? job.createdAt).toUTCString();
+      const desc = xmlEscape(job.description ?? job.title);
+      const title = xmlEscape(job.title);
+      const tags = job.tags.map(xmlEscape).join(', ');
+      return `  <job>
+    <title><![CDATA[${title}]]></title>
+    <date><![CDATA[${pubDate}]]></date>
+    <referencenumber><![CDATA[JOB-${job.id}]]></referencenumber>
+    <url><![CDATA[${careersBase}/jobs/${job.id}]]></url>
+    <company><![CDATA[${xmlEscape(company.name)}]]></company>
+    <description><![CDATA[${desc}${tags ? `\n\nSkills: ${tags}` : ''}]]></description>
+    <jobtype><![CDATA[fulltime]]></jobtype>
+  </job>`;
+    }).join('\n');
+
+    const xml = `<?xml version="1.0" encoding="UTF-8"?>
+<source>
+  <publisherurl>${careersBase}</publisherurl>
+  <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+${jobItems}
+</source>`;
+
+    res.setHeader('Content-Type', 'application/xml; charset=UTF-8');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.send(xml);
+  } catch (err) {
+    res.status(500).type('text/plain').send('Internal server error');
+  }
+};

@@ -2,8 +2,9 @@ import { Request, Response } from 'express';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound } from '../../utils/response';
 import {
-  getTemplates, createTemplate, updateTemplate,
-  getEmployeeTasks, assignTasksToEmployee, completeTask,
+  getTemplates, createTemplate, updateTemplate, deleteTemplate,
+  getEmployeeTasks, assignTasksToEmployee, completeTask, uncompleteTask,
+  getOnboardingOverview, bulkAssignAll, getOnboardingStats,
 } from './onboarding.service';
 import { sendNotification } from '../notifications/notifications.service';
 
@@ -114,4 +115,82 @@ export const completeTaskHandler = asyncHandler(async (req: Request, res: Respon
   if (!task) { notFound(res, 'Attività non trovata o già completata'); return; }
 
   ok(res, { task }, 'Attività completata');
+});
+
+export const deleteTemplateHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  const result = await deleteTemplate(id, companyId);
+  if (!result.deleted && !result.deactivated) {
+    notFound(res, 'Template non trovato');
+    return;
+  }
+
+  const message = result.deactivated
+    ? 'Template disattivato (ha attività assegnate)'
+    : 'Template eliminato';
+  ok(res, result, message);
+});
+
+export const getOverviewHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+
+  const overview = await getOnboardingOverview(companyId);
+  ok(res, { overview });
+});
+
+export const uncompleteTaskHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, role } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+  if (role === 'employee') { forbidden(res, 'Accesso negato'); return; }
+
+  const taskId = parseInt(req.params.taskId, 10);
+  if (Number.isNaN(taskId)) { badRequest(res, 'ID attività non valido'); return; }
+
+  const task = await uncompleteTask(taskId, companyId);
+  if (!task) { notFound(res, 'Attività non trovata o non ancora completata'); return; }
+  ok(res, { task }, 'Attività ripristinata');
+});
+
+export const bulkAssignAllHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+
+  const result = await bulkAssignAll(companyId);
+
+  ok(res, result, `Attività assegnate a ${result.employees} dipendenti`);
+});
+
+export const getStatsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+  const stats = await getOnboardingStats(companyId);
+  ok(res, { stats });
+});
+
+export const sendReminderHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+
+  const employeeId = parseInt(req.params.employeeId, 10);
+  if (Number.isNaN(employeeId)) { badRequest(res, 'ID dipendente non valido'); return; }
+
+  const progress = await getEmployeeTasks(employeeId, companyId);
+  const pending = progress.total - progress.completed;
+
+  sendNotification({
+    companyId,
+    userId: employeeId,
+    type: 'onboarding.welcome',
+    title: 'Promemoria onboarding',
+    message: `Hai ancora ${pending} attività di onboarding da completare. Non dimenticarle!`,
+    priority: 'medium',
+  }).catch(() => undefined);
+
+  ok(res, { sent: true }, 'Promemoria inviato');
 });

@@ -157,6 +157,22 @@ export async function listJobs(
   return rows.map(mapJobPosting);
 }
 
+export async function getPublishedJobsForFeed(identifier: string): Promise<{ company: { id: number; name: string; slug: string } | null; jobs: JobPosting[] }> {
+  const numericId = /^\d+$/.test(identifier) ? parseInt(identifier, 10) : null;
+  const company = await queryOne<{ id: number; name: string; slug: string }>(
+    numericId
+      ? `SELECT id, name, slug FROM companies WHERE id = $1 AND is_active = true LIMIT 1`
+      : `SELECT id, name, slug FROM companies WHERE slug = $1 AND is_active = true LIMIT 1`,
+    [numericId ?? identifier],
+  );
+  if (!company) return { company: null, jobs: [] };
+  const rows = await query<Record<string, unknown>>(
+    `SELECT * FROM job_postings WHERE company_id = $1 AND status = 'published' ORDER BY published_at DESC`,
+    [company.id],
+  );
+  return { company, jobs: rows.map(mapJobPosting) };
+}
+
 export async function getJob(id: number, companyId: number): Promise<JobPosting | null> {
   const row = await queryOne<Record<string, unknown>>(
     `SELECT * FROM job_postings WHERE id = $1 AND company_id = $2`,

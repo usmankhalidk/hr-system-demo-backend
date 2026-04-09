@@ -131,6 +131,97 @@ export async function updateTemplate(
   return row ? mapTemplate(row) : null;
 }
 
+export async function deleteTemplate(
+  id: number,
+  companyId: number,
+): Promise<{ deleted: boolean; deactivated: boolean }> {
+  // Check if any tasks reference this template
+  const usage = await queryOne<{ count: string }>(
+    `SELECT COUNT(*)::text AS count FROM employee_onboarding_tasks WHERE template_id = $1`,
+    [id],
+  );
+  const hasUsage = parseInt(usage?.count ?? '0', 10) > 0;
+
+  if (hasUsage) {
+    // Soft-delete: deactivate instead of hard delete
+    const row = await queryOne<{ id: number }>(
+      `UPDATE onboarding_templates SET is_active = FALSE, updated_at = NOW()
+       WHERE id = $1 AND company_id = $2 RETURNING id`,
+      [id, companyId],
+    );
+    return { deleted: false, deactivated: row != null };
+  }
+
+  const row = await queryOne<{ id: number }>(
+    `DELETE FROM onboarding_templates WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [id, companyId],
+  );
+  return { deleted: row != null, deactivated: false };
+}
+
+export interface EmployeeOnboardingOverview {
+  employeeId: number;
+  name: string;
+  surname: string;
+  email: string;
+  storeName: string | null;
+  avatarFilename: string | null;
+  total: number;
+  completed: number;
+  percentage: number;
+  hasTasksAssigned: boolean;
+}
+
+export async function getOnboardingOverview(companyId: number): Promise<EmployeeOnboardingOverview[]> {
+  const rows = await query<{
+    employee_id: number;
+    name: string;
+    surname: string;
+    email: string;
+    store_name: string | null;
+    avatar_filename: string | null;
+    total: string;
+    completed: string;
+  }>(
+    `SELECT
+       u.id AS employee_id,
+       u.name,
+       u.surname,
+       u.email,
+       s.name AS store_name,
+       u.avatar_filename,
+       COUNT(t.id)::text AS total,
+       COUNT(t.id) FILTER (WHERE t.completed = TRUE)::text AS completed
+     FROM users u
+     LEFT JOIN stores s ON s.id = u.store_id
+     LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
+     LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = $1
+     WHERE u.company_id = $1
+       AND u.role = 'employee'
+       AND u.status = 'active'
+     GROUP BY u.id, u.name, u.surname, u.email, s.name, u.avatar_filename
+     ORDER BY u.surname ASC, u.name ASC`,
+    [companyId],
+  );
+
+  return rows.map((r) => {
+    const total = parseInt(r.total, 10);
+    const completed = parseInt(r.completed, 10);
+    return {
+      employeeId: r.employee_id,
+      name: r.name,
+      surname: r.surname,
+      email: r.email,
+      storeName: r.store_name,
+      avatarFilename: r.avatar_filename,
+      total,
+      completed,
+      percentage: total === 0 ? 0 : Math.round((completed / total) * 100),
+      hasTasksAssigned: total > 0,
+    };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Employee Tasks
 // ---------------------------------------------------------------------------
@@ -219,6 +310,96 @@ export async function completeTask(
     completedAt: row.completed_at,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+export async function uncompleteTask(
+  taskId: number,
+  companyId: number,
+): Promise<OnboardingTask | null> {
+  // Join through template to verify company ownership
+  const row = await queryOne<Record<string, unknown>>(
+    `UPDATE employee_onboarding_tasks t
+     SET completed = FALSE, completed_at = NULL, updated_at = NOW()
+     FROM onboarding_templates tmpl
+     WHERE t.id = $1
+       AND t.template_id = tmpl.id
+       AND tmpl.company_id = $2
+       AND t.completed = TRUE
+     RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
+               t.created_at, t.updated_at, tmpl.name AS template_name, tmpl.description AS template_description`,
+    [taskId, companyId],
+  );
+  return row ? mapTask(row) : null;
+}
+
+export async function bulkAssignAll(companyId: number): Promise<{ employees: number; tasks: number }> {
+  // Get all active employees with no tasks assigned
+  const unassigned = await query<{ id: number }>(
+    `SELECT u.id
+     FROM users u
+     WHERE u.company_id = $1
+       AND u.role = 'employee'
+       AND u.status = 'active'
+       AND NOT EXISTS (
+         SELECT 1 FROM employee_onboarding_tasks t
+         JOIN onboarding_templates tmpl ON tmpl.id = t.template_id
+         WHERE t.employee_id = u.id AND tmpl.company_id = $1
+       )`,
+    [companyId],
+  );
+
+  let totalTasks = 0;
+  for (const emp of unassigned) {
+    const count = await assignTasksToEmployee(emp.id, companyId);
+    totalTasks += count;
+  }
+
+  return { employees: unassigned.length, tasks: totalTasks };
+}
+
+export async function getOnboardingStats(companyId: number): Promise<{
+  totalEmployees: number;
+  notStarted: number;
+  inProgress: number;
+  complete: number;
+  avgPercentage: number;
+}> {
+  const row = await queryOne<{
+    total_employees: string;
+    not_started: string;
+    in_progress: string;
+    complete: string;
+    avg_pct: string;
+  }>(
+    `SELECT
+       COUNT(*)::text AS total_employees,
+       COUNT(*) FILTER (WHERE total_tasks = 0)::text AS not_started,
+       COUNT(*) FILTER (WHERE total_tasks > 0 AND completed_tasks < total_tasks)::text AS in_progress,
+       COUNT(*) FILTER (WHERE total_tasks > 0 AND completed_tasks = total_tasks)::text AS complete,
+       COALESCE(AVG(CASE WHEN total_tasks > 0 THEN ROUND(completed_tasks * 100.0 / total_tasks) ELSE 0 END), 0)::text AS avg_pct
+     FROM (
+       SELECT
+         u.id,
+         COUNT(t.id) AS total_tasks,
+         COUNT(t.id) FILTER (WHERE t.completed = TRUE) AS completed_tasks
+       FROM users u
+       LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
+       LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = $1
+       WHERE u.company_id = $1
+         AND u.role = 'employee'
+         AND u.status = 'active'
+       GROUP BY u.id
+     ) sub`,
+    [companyId],
+  );
+
+  return {
+    totalEmployees: parseInt(row?.total_employees ?? '0', 10),
+    notStarted:     parseInt(row?.not_started ?? '0', 10),
+    inProgress:     parseInt(row?.in_progress ?? '0', 10),
+    complete:       parseInt(row?.complete ?? '0', 10),
+    avgPercentage:  Math.round(parseFloat(row?.avg_pct ?? '0')),
   };
 }
 

@@ -256,6 +256,61 @@
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "src/modules/ats/ats.service.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775668870687,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/ats/ats.controller.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775668871181,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/ats/ats.routes.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775668871682,
+      "type": "file"
+    },
+    {
+      "path": "src/index.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775669209679,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/onboarding/onboarding.routes.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775669216470,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/onboarding/onboarding.controller.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775669216959,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/onboarding/onboarding.service.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775669217238,
+      "type": "file"
+    },
+    {
+      "path": "src/modules/onboarding/__tests__/onboarding.test.ts",
+      "accessCount": 1,
+      "lastAccessed": 1775669217460,
+      "type": "file"
+    },
+    {
+      "path": "database/migrations/026_phase3_notifications_onboarding.sql",
+      "accessCount": 1,
+      "lastAccessed": 1775669217557,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
 }

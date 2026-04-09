@@ -7,9 +7,16 @@ import {
   updateCandidateHandler, deleteCandidateHandler,
   listInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
+  jobFeedHandler,
 } from './ats.controller';
 
 const router = Router();
+
+// ── Public feed (no auth) ──────────────────────────────────────────────────
+// Indeed and other job boards crawl this XML feed. Register the URL in their
+// Publisher / Job Feed portal — no API key needed.
+// URL: GET /api/ats/feed/:slug/jobs.xml
+router.get('/feed/:slug/jobs.xml', jobFeedHandler);
 
 router.use(authenticate);
 
