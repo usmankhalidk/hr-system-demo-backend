@@ -115,13 +115,31 @@ export async function getTemplate(id: number, companyId: number): Promise<Onboar
 
 export async function createTemplate(
   companyId: number,
-  data: { name: string; description?: string; sortOrder?: number },
+  data: {
+    name: string;
+    description?: string;
+    sortOrder?: number;
+    category?: OnboardingTemplate['category'];
+    dueDays?: number;
+    linkUrl?: string;
+    priority?: OnboardingTemplate['priority'];
+  },
 ): Promise<OnboardingTemplate> {
   const row = await queryOne<Record<string, unknown>>(
-    `INSERT INTO onboarding_templates (company_id, name, description, sort_order)
-     VALUES ($1, $2, $3, $4)
+    `INSERT INTO onboarding_templates
+       (company_id, name, description, sort_order, category, due_days, link_url, priority)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
-    [companyId, data.name, data.description ?? null, data.sortOrder ?? 0],
+    [
+      companyId,
+      data.name,
+      data.description ?? null,
+      data.sortOrder ?? 0,
+      data.category ?? 'other',
+      data.dueDays ?? null,
+      data.linkUrl ?? null,
+      data.priority ?? 'medium',
+    ],
   );
   return mapTemplate(row!);
 }
@@ -129,7 +147,16 @@ export async function createTemplate(
 export async function updateTemplate(
   id: number,
   companyId: number,
-  data: { name?: string; description?: string; sortOrder?: number; isActive?: boolean },
+  data: {
+    name?: string;
+    description?: string;
+    sortOrder?: number;
+    isActive?: boolean;
+    category?: OnboardingTemplate['category'];
+    dueDays?: number | null;
+    linkUrl?: string | null;
+    priority?: OnboardingTemplate['priority'];
+  },
 ): Promise<OnboardingTemplate | null> {
   const setParts: string[] = [];
   const params: unknown[] = [];
@@ -139,6 +166,10 @@ export async function updateTemplate(
   if (data.description !== undefined) { setParts.push(`description = $${idx++}`); params.push(data.description); }
   if (data.sortOrder !== undefined)   { setParts.push(`sort_order = $${idx++}`);  params.push(data.sortOrder); }
   if (data.isActive !== undefined)    { setParts.push(`is_active = $${idx++}`);   params.push(data.isActive); }
+  if (data.category !== undefined)    { setParts.push(`category = $${idx++}`);    params.push(data.category); }
+  if (data.dueDays !== undefined)     { setParts.push(`due_days = $${idx++}`);    params.push(data.dueDays); }
+  if (data.linkUrl !== undefined)     { setParts.push(`link_url = $${idx++}`);    params.push(data.linkUrl); }
+  if (data.priority !== undefined)    { setParts.push(`priority = $${idx++}`);    params.push(data.priority); }
 
   if (setParts.length === 0) return getTemplate(id, companyId);
 
@@ -254,8 +285,11 @@ export async function getEmployeeTasks(
   companyId: number,
 ): Promise<OnboardingProgress> {
   const rows = await query<Record<string, unknown>>(
-    `SELECT t.id, t.employee_id, t.template_id, t.completed, t.completed_at, t.created_at, t.updated_at,
-            tmpl.name AS template_name, tmpl.description AS template_description
+    `SELECT t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
+            t.completion_note, t.due_date, t.created_at, t.updated_at,
+            tmpl.name AS template_name, tmpl.description AS template_description,
+            tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+            tmpl.priority AS template_priority
      FROM employee_onboarding_tasks t
      JOIN onboarding_templates tmpl ON tmpl.id = t.template_id
      WHERE t.employee_id = $1 AND tmpl.company_id = $2
@@ -278,21 +312,34 @@ export async function getEmployeeTasks(
 export async function assignTasksToEmployee(
   employeeId: number,
   companyId: number,
+  templateIds?: number[],
 ): Promise<number> {
-  const templates = await getTemplates(companyId);
-  let assigned = 0;
+  const templates = templateIds
+    ? (await Promise.all(templateIds.map((id) => getTemplate(id, companyId)))).filter(Boolean) as OnboardingTemplate[]
+    : await getTemplates(companyId);
 
+  // Get employee hire date for due_date calculation
+  const emp = await queryOne<{ hire_date: string | null }>(
+    `SELECT hire_date FROM users WHERE id = $1`,
+    [employeeId],
+  );
+  const hireDate = emp?.hire_date ? new Date(emp.hire_date) : new Date();
+
+  let assigned = 0;
   for (const tmpl of templates) {
+    const dueDate = tmpl.dueDays != null
+      ? new Date(hireDate.getTime() + tmpl.dueDays * 86400000).toISOString().slice(0, 10)
+      : null;
+
     const inserted = await query<{ id: number }>(
-      `INSERT INTO employee_onboarding_tasks (employee_id, template_id)
-       VALUES ($1, $2)
+      `INSERT INTO employee_onboarding_tasks (employee_id, template_id, due_date)
+       VALUES ($1, $2, $3)
        ON CONFLICT (employee_id, template_id) DO NOTHING
        RETURNING id`,
-      [employeeId, tmpl.id],
+      [employeeId, tmpl.id, dueDate],
     );
     if (inserted.length > 0) assigned++;
   }
-
   return assigned;
 }
 
@@ -300,6 +347,7 @@ export async function completeTask(
   taskId: number,
   employeeId?: number,
   companyId?: number,
+  note?: string,
 ): Promise<OnboardingTask | null> {
   let row: Record<string, unknown> | null;
 
@@ -307,24 +355,27 @@ export async function completeTask(
     // Employee completing their own task — filter by employee_id
     row = await queryOne<Record<string, unknown>>(
       `UPDATE employee_onboarding_tasks
-       SET completed = TRUE, completed_at = NOW(), updated_at = NOW()
+       SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
        WHERE id = $1 AND employee_id = $2 AND completed = FALSE
        RETURNING *`,
-      [taskId, employeeId],
+      [taskId, employeeId, note ?? null],
     );
   } else if (companyId) {
     // Admin completing on behalf — verify company ownership via template
     row = await queryOne<Record<string, unknown>>(
       `UPDATE employee_onboarding_tasks t
-       SET completed = TRUE, completed_at = NOW(), updated_at = NOW()
+       SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
        FROM onboarding_templates tmpl
        WHERE t.id = $1
          AND t.template_id = tmpl.id
          AND tmpl.company_id = $2
          AND t.completed = FALSE
        RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-                 t.created_at, t.updated_at, tmpl.name AS template_name, tmpl.description AS template_description`,
-      [taskId, companyId],
+                 t.completion_note, t.due_date, t.created_at, t.updated_at,
+                 tmpl.name AS template_name, tmpl.description AS template_description,
+                 tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+                 tmpl.priority AS template_priority`,
+      [taskId, companyId, note ?? null],
     );
     if (row) return mapTask(row);
   } else {
@@ -338,17 +389,14 @@ export async function completeTask(
     [row.template_id as number],
   );
 
-  return {
-    id: row.id as number,
-    employeeId: row.employee_id as number,
-    templateId: row.template_id as number,
-    templateName: tmpl?.name ?? '',
-    templateDescription: tmpl?.description ?? null,
-    completed: row.completed as boolean,
-    completedAt: row.completed_at as string | null,
-    createdAt: row.created_at as string,
-    updatedAt: row.updated_at as string,
-  };
+  return mapTask({
+    ...row,
+    template_name: tmpl?.name ?? '',
+    template_description: tmpl?.description ?? null,
+    template_category: 'other',
+    template_link_url: null,
+    template_priority: 'medium',
+  });
 }
 
 export async function uncompleteTask(
@@ -365,7 +413,10 @@ export async function uncompleteTask(
        AND tmpl.company_id = $2
        AND t.completed = TRUE
      RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-               t.created_at, t.updated_at, tmpl.name AS template_name, tmpl.description AS template_description`,
+               t.completion_note, t.due_date, t.created_at, t.updated_at,
+               tmpl.name AS template_name, tmpl.description AS template_description,
+               tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+               tmpl.priority AS template_priority`,
     [taskId, companyId],
   );
   return row ? mapTask(row) : null;
