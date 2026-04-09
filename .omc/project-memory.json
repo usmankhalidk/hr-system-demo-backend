@@ -258,6 +258,12 @@
   },
   "hotPaths": [
     {
+      "path": "src/index.ts",
+      "accessCount": 4,
+      "lastAccessed": 1775730727763,
+      "type": "file"
+    },
+    {
       "path": "src/modules/ats/ats.service.ts",
       "accessCount": 1,
       "lastAccessed": 1775668870687,
@@ -273,12 +279,6 @@
       "path": "src/modules/ats/ats.routes.ts",
       "accessCount": 1,
       "lastAccessed": 1775668871682,
-      "type": "file"
-    },
-    {
-      "path": "src/index.ts",
-      "accessCount": 1,
-      "lastAccessed": 1775669209679,
       "type": "file"
     },
     {
