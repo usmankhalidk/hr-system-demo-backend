@@ -153,7 +153,7 @@ export async function seed() {
         (1, 'Negozio Milano Duomo', 'MIL-01', 'Corso Vittorio Emanuele 10', '20122', 12),
         (2, 'Negozio Napoli',       'NAP-01', 'Via Toledo 50',               '80134',  8),
         (3, 'Downtown London Store', 'LDN-01', '221B Baker Street, London',   'NW16XE', 22),
-        (3, 'Manchester Central Store', 'MAN-01', '1 St Peter\'s Square, Manchester', 'M26AE', 18)
+        (3, 'Manchester Central Store', 'MAN-01', '1 St Peter''s Square, Manchester', 'M26AE', 18)
     `);
     console.log('✓ Stores seeded');
 
