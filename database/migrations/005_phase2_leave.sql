@@ -13,8 +13,13 @@ CREATE TABLE IF NOT EXISTS leave_requests (
   leave_type            VARCHAR(20) NOT NULL CHECK (leave_type IN ('vacation','sick')),
   start_date            DATE NOT NULL,
   end_date              DATE NOT NULL,
-  status                VARCHAR(30) NOT NULL DEFAULT 'pending'
-    CHECK (status IN ('pending','supervisor_approved','area_manager_approved','hr_approved','rejected')),
+  status                VARCHAR(40) NOT NULL DEFAULT 'pending'
+    CHECK (status IN (
+      'pending',
+      'supervisor_approved', 'area_manager_approved', 'hr_approved',
+      'store manager approved', 'area manager approved', 'HR approved',
+      'approved', 'rejected', 'cancelled'
+    )),
   current_approver_role VARCHAR(30),
   notes                 TEXT,
   created_at            TIMESTAMPTZ DEFAULT NOW(),

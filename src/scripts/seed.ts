@@ -19,15 +19,39 @@ function listMigrationFiles(migrationsDir: string): string[] {
 export async function migrate() {
   const client = await pool.connect();
   try {
-    // Railway standalone repo: database/ is at /app/database (2 levels up from /app/dist/scripts)
-    // Monorepo Docker: database/ is at /database (3 levels up, copied to root by root Dockerfile)
+    // 1. Create migration_history table if it doesn't exist
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS migration_history (
+        id SERIAL PRIMARY KEY,
+        filename TEXT UNIQUE NOT NULL,
+        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 2. Identify migrations directory
     const standaloneDir = path.join(__dirname, '../../database/migrations');
     const monorepoDir = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
+
+    // 3. Get applied migrations
+    const { rows: applied } = await client.query('SELECT filename FROM migration_history');
+    const appliedFiles = new Set(applied.map(r => r.filename));
+
+    // 4. Apply new migrations in order
     for (const file of listMigrationFiles(migrationsDir)) {
-      console.log(file);
+      if (appliedFiles.has(file)) {
+        continue;
+      }
+      console.log(`Applying migration: ${file}`);
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-      await client.query(sql);
+      
+      try {
+        await client.query(sql);
+        await client.query('INSERT INTO migration_history (filename) VALUES ($1)', [file]);
+      } catch (err) {
+        console.error(`❌ Migration failed for file ${file}:`, err);
+        throw err;
+      }
     }
     console.log('✓ Migrations applied (schema up to date)');
   } finally {
@@ -92,7 +116,8 @@ export async function seed() {
     await client.query(`
       INSERT INTO companies (name, slug) VALUES
         ('FUSARO UOMO',     'fusaro-uomo'),
-        ('Beta Industries', 'beta')
+        ('Beta Industries', 'beta'),
+        ('Paradise Limited', 'paradise-limited')
     `);
     console.log('✓ Companies seeded');
 
@@ -126,7 +151,9 @@ export async function seed() {
       INSERT INTO stores (company_id, name, code, address, cap, max_staff) VALUES
         (1, 'Negozio Roma Centro',  'ROM-01', 'Via del Corso 100',           '00186', 15),
         (1, 'Negozio Milano Duomo', 'MIL-01', 'Corso Vittorio Emanuele 10', '20122', 12),
-        (2, 'Negozio Napoli',       'NAP-01', 'Via Toledo 50',               '80134',  8)
+        (2, 'Negozio Napoli',       'NAP-01', 'Via Toledo 50',               '80134',  8),
+        (3, 'Downtown London Store', 'LDN-01', '221B Baker Street, London',   'NW16XE', 22),
+        (3, 'Manchester Central Store', 'MAN-01', '1 St Peter\'s Square, Manchester', 'M26AE', 18)
     `);
     console.log('✓ Stores seeded');
 
@@ -241,7 +268,7 @@ export async function seed() {
     // ── role_module_permissions ───────────────────────────────────────────────
     const modules = ['dipendenti', 'turni', 'trasferimenti', 'presenze', 'permessi', 'documenti', 'ats', 'report', 'impostazioni'];
     const roles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'];
-    const companies = [1, 2];
+    const companies = [1, 2, 3];
 
     for (const cid of companies) {
       for (const role of roles) {
@@ -325,23 +352,23 @@ export async function seed() {
         (company_id, user_id, store_id, leave_type, start_date, end_date, status, current_approver_role, notes)
       VALUES
         -- Anna (6): approved vacation W12 — shows on shift calendar
-        (1, 6, 1, 'vacation', '2026-03-18', '2026-03-20', 'hr_approved',              NULL,             'Ferie primaverili'),
+        (1, 6, 1, 'vacation', '2026-03-18', '2026-03-20', 'HR approved',              NULL,             'Ferie primaverili'),
         -- Roberto (7): approved sick W11 — shows on shift calendar
-        (1, 7, 1, 'sick',     '2026-03-10', '2026-03-10', 'hr_approved',              NULL,             'Influenza'),
+        (1, 7, 1, 'sick',     '2026-03-10', '2026-03-10', 'HR approved',              NULL,             'Influenza'),
         -- Anna (6): pending vacation W14 — shows as (att.) badge
         (1, 6, 1, 'vacation', '2026-03-30', '2026-04-03', 'pending',                  'store_manager',  NULL),
         -- Chiara (8): supervisor-approved vacation W13 — in approval chain
-        (1, 8, 2, 'vacation', '2026-03-24', '2026-03-26', 'supervisor_approved',      'area_manager',   'Vacanza breve'),
+        (1, 8, 2, 'vacation', '2026-03-24', '2026-03-26', 'store manager approved',    'area_manager',   'Vacanza breve'),
         -- Roberto (7): approved vacation W13 — shows on shift calendar
-        (1, 7, 1, 'vacation', '2026-03-23', '2026-03-24', 'hr_approved',              NULL,             NULL),
+        (1, 7, 1, 'vacation', '2026-03-23', '2026-03-24', 'HR approved',              NULL,             NULL),
         -- Carol (12): approved sick — Beta company
-        (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'hr_approved',              NULL,             'Certificato medico allegato'),
+        (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'HR approved',              NULL,             'Certificato medico allegato'),
         -- Marco B. (13): pending vacation — Beta company
         (2, 13, 3,'vacation', '2026-03-25', '2026-03-27', 'pending',                  'store_manager',  NULL),
         -- Anna (6): area_manager_approved vacation W15 — waiting for HR final step
-        (1, 6, 1, 'vacation', '2026-04-07', '2026-04-11', 'area_manager_approved',    'hr',             'Pasqua'),
+        (1, 6, 1, 'vacation', '2026-04-07', '2026-04-11', 'area manager approved',    'hr',             'Pasqua'),
         -- Roberto (7): supervisor_approved sick W14 — waiting for area_manager
-        (1, 7, 1, 'sick',     '2026-04-01', '2026-04-02', 'supervisor_approved',      'area_manager',   NULL),
+        (1, 7, 1, 'sick',     '2026-04-01', '2026-04-02', 'store manager approved',    'area_manager',   NULL),
         -- Chiara (8): rejected vacation — shows rejected state
         (1, 8, 2, 'vacation', '2026-04-14', '2026-04-18', 'rejected',                 NULL,             'Ponte aprile'),
         -- Chiara (8): new pending vacation W16 after rejection
@@ -351,7 +378,7 @@ export async function seed() {
 
     // Insert approval records for approved/in-flow/rejected requests
     for (const lr of lrRows) {
-      if (['supervisor_approved', 'area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
+      if (['store manager approved', 'area manager approved', 'HR approved', 'rejected'].includes(lr.status)) {
         // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
         const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
         await client.query(`
@@ -359,14 +386,14 @@ export async function seed() {
           VALUES ($1, $2, 'store_manager', 'approved', NULL)
         `, [lr.id, smId]);
       }
-      if (['area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
+      if (['area manager approved', 'HR approved', 'rejected'].includes(lr.status)) {
         // Step 2: area_manager approval (Giuseppe=3 for company 1)
         await client.query(`
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
           VALUES ($1, 3, 'area_manager', 'approved', NULL)
         `, [lr.id]);
       }
-      if (lr.status === 'hr_approved') {
+      if (lr.status === 'HR approved') {
         // Step 3: hr approval (Laura=2 for company 1, Giulia=10 for company 2)
         const hrId = (lr.user_id === 12 || lr.user_id === 13) ? 10 : 2;
         await client.query(`
@@ -383,8 +410,8 @@ export async function seed() {
       }
     }
 
-    // Update leave_balances used_days for hr_approved requests
-    const approvedReqs = lrRows.filter(r => r.status === 'hr_approved');
+    // Update leave_balances used_days for HR approved requests
+    const approvedReqs = lrRows.filter(r => r.status === 'HR approved');
     for (const lr of approvedReqs) {
       const days = Math.ceil(
         (new Date(lr.end_date).getTime() - new Date(lr.start_date).getTime()) / 86400000
@@ -417,6 +444,56 @@ export async function seed() {
         FROM (VALUES (1),(2),(3),(4),(5),(6),(7)) AS days(dow)
         CROSS JOIN (VALUES ('09:00-12:00'),('12:00-15:00'),('15:00-18:00'),('18:00-21:00')) AS slots(slot)
       `, [store.company_id, store.id]);
+    }
+
+    // Week-specific demo affluence for Paradise Limited flagship stores
+    const { rows: paradiseStores } = await client.query<{
+      id: number;
+      company_id: number;
+      name: string;
+    }>(`
+      SELECT s.id, s.company_id, s.name
+      FROM stores s
+      JOIN companies c ON c.id = s.company_id
+      WHERE c.slug = 'paradise-limited'
+        AND s.name IN ('Downtown London Store', 'Manchester Central Store')
+    `);
+
+    const paradiseSlots = [
+      { day: 1, slot: '09:00-12:00', level: 'medium' as const, london: 4, manchester: 3 },
+      { day: 1, slot: '12:00-15:00', level: 'high' as const, london: 6, manchester: 5 },
+      { day: 1, slot: '15:00-18:00', level: 'high' as const, london: 7, manchester: 6 },
+      { day: 1, slot: '18:00-21:00', level: 'medium' as const, london: 5, manchester: 4 },
+      { day: 5, slot: '09:00-12:00', level: 'medium' as const, london: 5, manchester: 4 },
+      { day: 5, slot: '12:00-15:00', level: 'high' as const, london: 8, manchester: 7 },
+      { day: 5, slot: '15:00-18:00', level: 'high' as const, london: 9, manchester: 8 },
+      { day: 5, slot: '18:00-21:00', level: 'high' as const, london: 7, manchester: 6 },
+      { day: 6, slot: '09:00-12:00', level: 'high' as const, london: 8, manchester: 7 },
+      { day: 6, slot: '12:00-15:00', level: 'high' as const, london: 10, manchester: 9 },
+      { day: 6, slot: '15:00-18:00', level: 'high' as const, london: 11, manchester: 10 },
+      { day: 6, slot: '18:00-21:00', level: 'high' as const, london: 9, manchester: 8 },
+      { day: 7, slot: '09:00-12:00', level: 'medium' as const, london: 6, manchester: 5 },
+      { day: 7, slot: '12:00-15:00', level: 'high' as const, london: 8, manchester: 7 },
+      { day: 7, slot: '15:00-18:00', level: 'high' as const, london: 9, manchester: 8 },
+      { day: 7, slot: '18:00-21:00', level: 'medium' as const, london: 6, manchester: 5 },
+    ];
+
+    for (const store of paradiseStores) {
+      const isLondon = store.name === 'Downtown London Store';
+      for (const slot of paradiseSlots) {
+        await client.query(
+          `INSERT INTO store_affluence (company_id, store_id, iso_week, day_of_week, time_slot, level, required_staff)
+           VALUES ($1, $2, 14, $3, $4, $5, $6)`,
+          [
+            store.company_id,
+            store.id,
+            slot.day,
+            slot.slot,
+            slot.level,
+            isLondon ? slot.london : slot.manchester,
+          ],
+        );
+      }
     }
     console.log('✓ Store affluence seeded');
 

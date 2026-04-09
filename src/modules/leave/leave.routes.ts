@@ -17,6 +17,8 @@ import {
   exportLeaveBalances,
   importTemplate,
   importLeaveBalances,
+  cancelLeave,
+  executeEscalation,
 } from './leave.controller';
 
 const router = Router();
@@ -236,6 +238,20 @@ router.put(
   requireModulePermission('permessi', 'write'),
   validate(rejectSchema),
   rejectLeave,
+);
+
+// PUT /api/leave/:id/cancel
+router.put(
+  '/:id/cancel',
+  authenticate,
+  enforceCompany,
+  cancelLeave,
+);
+
+// POST /api/leave/escalate - usually triggered internally or by superadmin
+router.post(
+  '/escalate',
+  executeEscalation,
 );
 
 export default router;

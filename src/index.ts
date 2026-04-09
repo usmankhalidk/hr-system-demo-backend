@@ -32,6 +32,7 @@ import onboardingRoutes from './modules/onboarding/onboarding.routes';
 import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
+import { processEscalationLogic } from './modules/leave/leave.controller';
 
 dotenv.config();
 
@@ -154,6 +155,94 @@ app.get('/uploads/company-logos/:filename', (req, res, next) => {
   res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
 });
 
+app.get('/uploads/company-banners/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  const match = /^company-banner-(\d+)\.[a-zA-Z0-9]+$/.exec(filename);
+  if (!match) {
+    res.status(400).end();
+    return;
+  }
+
+  const companyId = parseInt(match[1], 10);
+  if (!Number.isFinite(companyId)) {
+    res.status(404).end();
+    return;
+  }
+
+  const company = await queryOne<{ id: number }>(
+    `SELECT id FROM companies WHERE id = $1`,
+    [companyId],
+  );
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (!company || !allowedCompanyIds.includes(companyId)) {
+    res.status(403).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const filePath = path.join(uploadsRoot, 'company-banners', filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
+app.get('/uploads/store-logos/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  const match = /^store-(\d+)\.[a-zA-Z0-9]+$/.exec(filename);
+  if (!match) {
+    res.status(400).end();
+    return;
+  }
+
+  const storeId = parseInt(match[1], 10);
+  if (!Number.isFinite(storeId)) {
+    res.status(404).end();
+    return;
+  }
+
+  const store = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM stores WHERE id = $1`,
+    [storeId],
+  );
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (!store || !allowedCompanyIds.includes(store.company_id)) {
+    res.status(403).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const filePath = path.join(uploadsRoot, 'store-logos', filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
 // Health check
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
@@ -232,9 +321,24 @@ async function start() {
     console.log(`HR System backend running on http://localhost:${PORT}`);
   });
 
+
   // Start background cron jobs (skip in test environment)
   if (process.env.NODE_ENV !== 'test') {
     startScheduler();
+
+    // Background auto-escalation task (runs every hour)
+    setInterval(() => {
+      console.log('Running background auto-escalation task...');
+      processEscalationLogic()
+        .then((count) => {
+          if (count > 0) {
+            console.log(`Auto-escalated ${count} leave requests.`);
+          }
+        })
+        .catch((err) => {
+          console.error('Error running auto-escalation:', err);
+        });
+    }, 1000 * 60 * 60);
   }
 }
 

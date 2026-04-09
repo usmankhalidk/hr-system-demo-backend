@@ -684,7 +684,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/shifts/:id — soft cancel
+// DELETE /api/shifts/:id — hard delete
 // ---------------------------------------------------------------------------
 export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
   const { role, storeId: callerStoreId } = req.user!;
@@ -720,14 +720,27 @@ export const deleteShift = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const shift = await queryOne(
-    `UPDATE shifts SET status = 'cancelled', updated_at = NOW()
+  // Ensure legacy FK setups do not block physical deletion.
+  await query(
+    `UPDATE attendance_events
+     SET shift_id = NULL
+     WHERE shift_id = $1`,
+    [shiftId],
+  );
+
+  const deleted = await queryOne<{ id: number }>(
+    `DELETE FROM shifts
      WHERE id = $1 AND company_id = $2
-     RETURNING id, status, updated_at`,
+     RETURNING id`,
     [shiftId, existing.company_id],
   );
 
-  ok(res, shift, 'Turno annullato');
+  if (!deleted) {
+    notFound(res, 'Turno non trovato');
+    return;
+  }
+
+  ok(res, { id: deleted.id }, 'Turno eliminato');
 });
 
 // ---------------------------------------------------------------------------
@@ -962,6 +975,61 @@ export const createTemplate = asyncHandler(async (req: Request, res: Response) =
     [effectiveCompanyId, store_id, name, JSON.stringify(template_data), callerId],
   );
   created(res, template, 'Template salvato');
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/shifts/templates/:id
+// ---------------------------------------------------------------------------
+export const updateTemplate = asyncHandler(async (req: Request, res: Response) => {
+  const { role, storeId: callerStoreId } = req.user!;
+  const templateId = parseInt(req.params.id, 10);
+  if (isNaN(templateId)) { notFound(res, 'Template non trovato'); return; }
+
+  const { store_id, name, template_data } = req.body as Record<string, any>;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  const existing = await queryOne<{ id: number; store_id: number; company_id: number }>(
+    `SELECT id, store_id, company_id
+     FROM shift_templates
+     WHERE id = $1
+       AND company_id = ANY($2)`,
+    [templateId, allowedCompanyIds],
+  );
+  if (!existing) { notFound(res, 'Template non trovato'); return; }
+
+  if (role === 'store_manager' && existing.store_id !== callerStoreId) {
+    forbidden(res, 'Puoi modificare template solo per il tuo negozio');
+    return;
+  }
+
+  const targetStore = await queryOne<{ company_id: number }>(
+    `SELECT company_id
+     FROM stores
+     WHERE id = $1
+       AND company_id = ANY($2)
+       AND is_active = true`,
+    [store_id, allowedCompanyIds],
+  );
+  if (!targetStore) { notFound(res, 'Negozio non trovato'); return; }
+
+  if (role === 'store_manager' && store_id !== callerStoreId) {
+    forbidden(res, 'Puoi modificare template solo per il tuo negozio');
+    return;
+  }
+
+  const updated = await queryOne(
+    `UPDATE shift_templates
+     SET store_id = $1,
+         name = $2,
+         template_data = $3
+     WHERE id = $4
+       AND company_id = ANY($5)
+     RETURNING *`,
+    [store_id, name, JSON.stringify(template_data), templateId, allowedCompanyIds],
+  );
+
+  if (!updated) { notFound(res, 'Template non trovato'); return; }
+  ok(res, updated, 'Template aggiornato');
 });
 
 // ---------------------------------------------------------------------------

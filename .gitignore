@@ -4,5 +4,7 @@ dist/
 *.log
 uploads/avatars/*
 uploads/company-logos/*
+uploads/company-banners/*
+uploads/store-logos/*
 !uploads/.gitkeep
 .claude-flow/
