@@ -384,8 +384,8 @@ export async function completeTask(
 
   if (!row) return null;
 
-  const tmpl = await queryOne<{ name: string; description: string | null }>(
-    `SELECT name, description FROM onboarding_templates WHERE id = $1`,
+  const tmpl = await queryOne<{ name: string; description: string | null; category: string; link_url: string | null; priority: string }>(
+    `SELECT name, description, category, link_url, priority FROM onboarding_templates WHERE id = $1`,
     [row.template_id as number],
   );
 
@@ -393,9 +393,9 @@ export async function completeTask(
     ...row,
     template_name: tmpl?.name ?? '',
     template_description: tmpl?.description ?? null,
-    template_category: 'other',
-    template_link_url: null,
-    template_priority: 'medium',
+    template_category: tmpl?.category ?? 'other',
+    template_link_url: tmpl?.link_url ?? null,
+    template_priority: tmpl?.priority ?? 'medium',
   });
 }
 
