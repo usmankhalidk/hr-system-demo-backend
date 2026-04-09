@@ -11,6 +11,10 @@ export interface OnboardingTemplate {
   description: string | null;
   sortOrder: number;
   isActive: boolean;
+  category: 'hr_docs' | 'it_setup' | 'training' | 'meeting' | 'other';
+  dueDays: number | null;
+  linkUrl: string | null;
+  priority: 'high' | 'medium' | 'low';
   createdAt: string;
   updatedAt: string;
 }
@@ -21,8 +25,14 @@ export interface OnboardingTask {
   templateId: number;
   templateName: string;
   templateDescription: string | null;
+  templateCategory: 'hr_docs' | 'it_setup' | 'training' | 'meeting' | 'other';
+  templateLinkUrl: string | null;
+  templatePriority: 'high' | 'medium' | 'low';
   completed: boolean;
   completedAt: string | null;
+  completionNote: string | null;
+  dueDate: string | null;
+  isOverdue: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -46,20 +56,32 @@ function mapTemplate(row: Record<string, unknown>): OnboardingTemplate {
     description: row.description as string | null,
     sortOrder: row.sort_order as number,
     isActive: row.is_active as boolean,
+    category: (row.category as OnboardingTemplate['category']) ?? 'other',
+    dueDays: row.due_days as number | null,
+    linkUrl: row.link_url as string | null,
+    priority: (row.priority as OnboardingTemplate['priority']) ?? 'medium',
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
 }
 
 function mapTask(row: Record<string, unknown>): OnboardingTask {
+  const dueDate = row.due_date as string | null;
+  const isOverdue = !!(dueDate && !(row.completed as boolean) && new Date(dueDate) < new Date());
   return {
     id: row.id as number,
     employeeId: row.employee_id as number,
     templateId: row.template_id as number,
     templateName: row.template_name as string,
     templateDescription: row.template_description as string | null,
+    templateCategory: (row.template_category as OnboardingTask['templateCategory']) ?? 'other',
+    templateLinkUrl: row.template_link_url as string | null,
+    templatePriority: (row.template_priority as OnboardingTask['templatePriority']) ?? 'medium',
     completed: row.completed as boolean,
     completedAt: row.completed_at as string | null,
+    completionNote: row.completion_note as string | null,
+    dueDate,
+    isOverdue,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -275,41 +297,56 @@ export async function assignTasksToEmployee(
 
 export async function completeTask(
   taskId: number,
-  employeeId: number,
+  employeeId?: number,
+  companyId?: number,
 ): Promise<OnboardingTask | null> {
-  const row = await queryOne<{
-    id: number;
-    employee_id: number;
-    template_id: number;
-    completed: boolean;
-    completed_at: string | null;
-    created_at: string;
-    updated_at: string;
-  }>(
-    `UPDATE employee_onboarding_tasks
-     SET completed = TRUE, completed_at = NOW(), updated_at = NOW()
-     WHERE id = $1 AND employee_id = $2 AND completed = FALSE
-     RETURNING *`,
-    [taskId, employeeId],
-  );
+  let row: Record<string, unknown> | null;
+
+  if (employeeId) {
+    // Employee completing their own task — filter by employee_id
+    row = await queryOne<Record<string, unknown>>(
+      `UPDATE employee_onboarding_tasks
+       SET completed = TRUE, completed_at = NOW(), updated_at = NOW()
+       WHERE id = $1 AND employee_id = $2 AND completed = FALSE
+       RETURNING *`,
+      [taskId, employeeId],
+    );
+  } else if (companyId) {
+    // Admin completing on behalf — verify company ownership via template
+    row = await queryOne<Record<string, unknown>>(
+      `UPDATE employee_onboarding_tasks t
+       SET completed = TRUE, completed_at = NOW(), updated_at = NOW()
+       FROM onboarding_templates tmpl
+       WHERE t.id = $1
+         AND t.template_id = tmpl.id
+         AND tmpl.company_id = $2
+         AND t.completed = FALSE
+       RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
+                 t.created_at, t.updated_at, tmpl.name AS template_name, tmpl.description AS template_description`,
+      [taskId, companyId],
+    );
+    if (row) return mapTask(row);
+  } else {
+    return null;
+  }
 
   if (!row) return null;
 
   const tmpl = await queryOne<{ name: string; description: string | null }>(
     `SELECT name, description FROM onboarding_templates WHERE id = $1`,
-    [row.template_id],
+    [row.template_id as number],
   );
 
   return {
-    id: row.id,
-    employeeId: row.employee_id,
-    templateId: row.template_id,
+    id: row.id as number,
+    employeeId: row.employee_id as number,
+    templateId: row.template_id as number,
     templateName: tmpl?.name ?? '',
     templateDescription: tmpl?.description ?? null,
-    completed: row.completed,
-    completedAt: row.completed_at,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    completed: row.completed as boolean,
+    completedAt: row.completed_at as string | null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
   };
 }
 
