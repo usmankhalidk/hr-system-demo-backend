@@ -14,6 +14,7 @@ import { getHRAlerts } from './ats.alerts.service';
 import { evaluateAllJobRisks } from './ats.risk.service';
 import { generateICSEvent } from './ics.service';
 import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
 // Store managers only see their own store; other roles see everything
 function resolveStoreIds(user: Express.Request['user']): number[] | undefined {
@@ -182,13 +183,16 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     tags:         Array.isArray(tags) ? (tags as string[]) : [],
   });
 
+  const locale = (req.user as any)?.locale || 'it';
+
   sendNotification({
     companyId,
     userId,
     type: 'ats.candidate_received',
-    title: 'Nuovo candidato ricevuto',
-    message: `${candidate.fullName} ha inviato la propria candidatura`,
+    title:   t(locale, 'notifications.ats_candidate_received.title'),
+    message: t(locale, 'notifications.ats_candidate_received.message', { name: candidate.fullName }),
     priority: 'high',
+    locale,
   }).catch(() => undefined);
 
   created(res, { candidate }, 'Candidato aggiunto');
@@ -293,15 +297,27 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   if (!interview) { notFound(res, 'Candidato non trovato'); return; }
 
-  // Notify the assigned interviewer
+  // Notify the assigned interviewer in their own locale (resolved inside sendNotification from DB)
   if (typeof interviewer_id === 'number' && interviewer_id !== userId) {
+    // We intentionally don't forward the *requester's* locale here — sendNotification
+    // will resolve the interviewer's own locale from the users table.
+    const interviewerLocaleRow = await import('../../config/database')
+      .then(({ queryOne }) =>
+        queryOne<{ locale?: string }>(`SELECT locale FROM users WHERE id = $1 LIMIT 1`, [interviewer_id])
+      ).catch(() => null);
+    const interviewerLocale = interviewerLocaleRow?.locale ?? 'it';
+    const dateLocale = interviewerLocale === 'it' ? 'it-IT' : 'en-GB';
+
     sendNotification({
       companyId,
       userId: interviewer_id,
       type: 'ats.interview_invite',
-      title: 'Colloquio programmato',
-      message: `Sei stato assegnato come intervistatore per il ${scheduledDate.toLocaleDateString('it-IT')}`,
+      title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
+      message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+        date: scheduledDate.toLocaleDateString(dateLocale),
+      }),
       priority: 'high',
+      locale: interviewerLocale,
     }).catch(() => undefined);
   }
 

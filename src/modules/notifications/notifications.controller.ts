@@ -74,13 +74,13 @@ export const markNotificationRead = asyncHandler(
     const { userId, companyId } = req.user!;
 
     if (!companyId) {
-      forbidden(res, 'Nessuna azienda associata a questo account');
+      forbidden(res, 'No company associated with this account');
       return;
     }
 
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id) || id < 1) {
-      badRequest(res, 'ID notifica non valido', 'INVALID_NOTIFICATION_ID');
+      badRequest(res, 'Invalid notification ID', 'INVALID_NOTIFICATION_ID');
       return;
     }
 
@@ -91,12 +91,12 @@ export const markNotificationRead = asyncHandler(
     );
 
     if (!existing) {
-      notFound(res, 'Notifica non trovata');
+      notFound(res, 'Notification not found');
       return;
     }
 
     if (existing.user_id !== userId) {
-      forbidden(res, 'Non sei autorizzato a modificare questa notifica', 'FORBIDDEN');
+      forbidden(res, 'You are not authorised to modify this notification', 'FORBIDDEN');
       return;
     }
 
@@ -104,11 +104,11 @@ export const markNotificationRead = asyncHandler(
 
     if (!updated) {
       // Notification exists but was already read — return it as-is (idempotent)
-      ok(res, { id, alreadyRead: true }, 'Notifica già segnata come letta');
+      ok(res, { id, alreadyRead: true }, 'Notification already marked as read');
       return;
     }
 
-    ok(res, { id, isRead: true }, 'Notifica segnata come letta');
+    ok(res, { id, isRead: true }, 'Notification marked as read');
   },
 );
 
@@ -125,13 +125,13 @@ export const markAllNotificationsRead = asyncHandler(
     const { userId, companyId } = req.user!;
 
     if (!companyId) {
-      forbidden(res, 'Nessuna azienda associata a questo account');
+      forbidden(res, 'No company associated with this account');
       return;
     }
 
     const count = await markAllAsRead(userId, companyId);
 
-    ok(res, { count }, `${count} notifiche segnate come lette`);
+    ok(res, { count }, `${count} notifications marked as read`);
   },
 );
 
@@ -164,7 +164,7 @@ export const listSettings = asyncHandler(
     const { companyId, is_super_admin } = req.user!;
 
     if (!companyId && is_super_admin !== true) {
-      forbidden(res, 'Nessuna azienda associata a questo account');
+      forbidden(res, 'No company associated with this account');
       return;
     }
 
@@ -197,18 +197,18 @@ export const updateSetting = asyncHandler(
 
     // Enforce admin-only access (super admin bypasses this check)
     if (is_super_admin !== true && role !== 'admin') {
-      forbidden(res, 'Solo gli amministratori possono modificare le impostazioni di notifica', 'FORBIDDEN');
+      forbidden(res, 'Only administrators can change notification settings', 'FORBIDDEN');
       return;
     }
 
     if (!companyId && is_super_admin !== true) {
-      forbidden(res, 'Nessuna azienda associata a questo account');
+      forbidden(res, 'No company associated with this account');
       return;
     }
 
     const { eventKey } = req.params;
     if (!eventKey || typeof eventKey !== 'string' || eventKey.trim() === '') {
-      badRequest(res, 'Chiave evento non valida', 'INVALID_EVENT_KEY');
+      badRequest(res, 'Invalid event key', 'INVALID_EVENT_KEY');
       return;
     }
 
@@ -220,7 +220,7 @@ export const updateSetting = asyncHandler(
     if (typeof enabled !== 'boolean') {
       badRequest(
         res,
-        'Il campo "enabled" è obbligatorio e deve essere un booleano',
+        'The "enabled" field is required and must be a boolean',
         'VALIDATION_ERROR',
       );
       return;
@@ -233,7 +233,7 @@ export const updateSetting = asyncHandler(
       ) {
         badRequest(
           res,
-          'Il campo "roles" deve essere un array di stringhe',
+          'The "roles" field must be an array of strings',
           'VALIDATION_ERROR',
         );
         return;
@@ -249,7 +249,7 @@ export const updateSetting = asyncHandler(
       Array.isArray(roles) ? (roles as string[]) : undefined,
     );
 
-    ok(res, { setting }, 'Impostazione di notifica aggiornata');
+    ok(res, { setting }, 'Notification setting updated');
   },
 );
 
@@ -269,7 +269,7 @@ const JOB_KEYS = [
 export const listAutomationSettings = asyncHandler(
   async (req: Request, res: Response) => {
     const { companyId } = req.user!;
-    if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+    if (!companyId) { forbidden(res, 'No company'); return; }
 
     const rows = await query<{ job_key: string; enabled: boolean }>(
       `SELECT job_key, enabled FROM automation_settings WHERE company_id = $1`,
@@ -293,17 +293,17 @@ export const listAutomationSettings = asyncHandler(
 export const updateAutomationSetting = asyncHandler(
   async (req: Request, res: Response) => {
     const { companyId } = req.user!;
-    if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+    if (!companyId) { forbidden(res, 'No company'); return; }
 
     const { jobKey } = req.params;
     if (!JOB_KEYS.includes(jobKey as typeof JOB_KEYS[number])) {
-      badRequest(res, 'Job key non valida', 'INVALID_JOB_KEY');
+      badRequest(res, 'Invalid job key', 'INVALID_JOB_KEY');
       return;
     }
 
     const { enabled } = req.body as { enabled: unknown };
     if (typeof enabled !== 'boolean') {
-      badRequest(res, 'Il campo "enabled" è obbligatorio e deve essere booleano', 'VALIDATION_ERROR');
+      badRequest(res, 'The "enabled" field is required and must be a boolean', 'VALIDATION_ERROR');
       return;
     }
 
@@ -315,6 +315,6 @@ export const updateAutomationSetting = asyncHandler(
       [companyId, jobKey, enabled],
     );
 
-    ok(res, { jobKey, enabled }, 'Impostazione automazione aggiornata');
+    ok(res, { jobKey, enabled }, 'Automation setting updated');
   },
 );

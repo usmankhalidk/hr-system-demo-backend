@@ -37,6 +37,8 @@ export interface SendNotificationOptions {
   emailBody?: string;
   /** When true, skips the notification_settings check entirely. Default: false */
   skipSettingsCheck?: boolean;
+  /** Optional locale (e.g. 'it', 'en-US') for this notification's content */
+  locale?: string;
 }
 
 export interface Notification {
@@ -50,6 +52,8 @@ export interface Notification {
   isRead: boolean;
   readAt: string | null;
   createdAt: string;
+  /** Locale in which title/message were generated, if available */
+  locale?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,6 +71,7 @@ interface NotificationRow {
   is_read: boolean;
   read_at: string | null;
   created_at: string;
+  locale?: string | null;
 }
 
 interface NotificationSettingRow {
@@ -91,7 +96,8 @@ function toNotification(row: NotificationRow): Notification {
     priority: row.priority,
     isRead: row.is_read,
     readAt: row.read_at,
-    createdAt: row.created_at,
+  createdAt: row.created_at,
+  locale: row.locale ?? undefined,
   };
 }
 
@@ -120,6 +126,7 @@ export async function sendNotification(
     emailSubject,
     emailBody,
     skipSettingsCheck = false,
+  locale,
   } = options;
 
   try {
@@ -153,14 +160,24 @@ export async function sendNotification(
       }
     }
 
+    // Resolve effective locale for this notification (explicit > user.locale > fallback)
+    let effectiveLocale = locale;
+    if (!effectiveLocale) {
+      const localeRow = await queryOne<{ locale?: string }>(
+        `SELECT locale FROM users WHERE id = $1 LIMIT 1`,
+        [userId],
+      );
+      effectiveLocale = localeRow?.locale || 'it';
+    }
+
     // ------------------------------------------------------------------
     // 2. In-app notification — always inserted (unless filtered above)
     // ------------------------------------------------------------------
     await query(
       `INSERT INTO notifications
-         (company_id, user_id, type, title, message, priority)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [companyId, userId, type, title, message, priority],
+         (company_id, user_id, type, title, message, priority, locale)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [companyId, userId, type, title, message, priority, effectiveLocale],
     );
 
     // ------------------------------------------------------------------
@@ -270,7 +287,7 @@ export async function getNotifications(options: {
 
   const rows = await query<NotificationRow>(
     `SELECT id, company_id, user_id, type, title, message,
-            priority, is_read, read_at, created_at
+            priority, is_read, read_at, created_at, locale
      FROM notifications
      WHERE user_id = $1 AND company_id = $2 ${unreadFilter}
      ORDER BY created_at DESC
