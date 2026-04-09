@@ -19,15 +19,39 @@ function listMigrationFiles(migrationsDir: string): string[] {
 export async function migrate() {
   const client = await pool.connect();
   try {
-    // Railway standalone repo: database/ is at /app/database (2 levels up from /app/dist/scripts)
-    // Monorepo Docker: database/ is at /database (3 levels up, copied to root by root Dockerfile)
+    // 1. Create migration_history table if it doesn't exist
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS migration_history (
+        id SERIAL PRIMARY KEY,
+        filename TEXT UNIQUE NOT NULL,
+        applied_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
+    // 2. Identify migrations directory
     const standaloneDir = path.join(__dirname, '../../database/migrations');
     const monorepoDir = path.join(__dirname, '../../../database/migrations');
     const migrationsDir = fs.existsSync(standaloneDir) ? standaloneDir : monorepoDir;
+
+    // 3. Get applied migrations
+    const { rows: applied } = await client.query('SELECT filename FROM migration_history');
+    const appliedFiles = new Set(applied.map(r => r.filename));
+
+    // 4. Apply new migrations in order
     for (const file of listMigrationFiles(migrationsDir)) {
-      console.log(file);
+      if (appliedFiles.has(file)) {
+        continue;
+      }
+      console.log(`Applying migration: ${file}`);
       const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
-      await client.query(sql);
+      
+      try {
+        await client.query(sql);
+        await client.query('INSERT INTO migration_history (filename) VALUES ($1)', [file]);
+      } catch (err) {
+        console.error(`❌ Migration failed for file ${file}:`, err);
+        throw err;
+      }
     }
     console.log('✓ Migrations applied (schema up to date)');
   } finally {
@@ -328,23 +352,23 @@ export async function seed() {
         (company_id, user_id, store_id, leave_type, start_date, end_date, status, current_approver_role, notes)
       VALUES
         -- Anna (6): approved vacation W12 — shows on shift calendar
-        (1, 6, 1, 'vacation', '2026-03-18', '2026-03-20', 'hr_approved',              NULL,             'Ferie primaverili'),
+        (1, 6, 1, 'vacation', '2026-03-18', '2026-03-20', 'HR approved',              NULL,             'Ferie primaverili'),
         -- Roberto (7): approved sick W11 — shows on shift calendar
-        (1, 7, 1, 'sick',     '2026-03-10', '2026-03-10', 'hr_approved',              NULL,             'Influenza'),
+        (1, 7, 1, 'sick',     '2026-03-10', '2026-03-10', 'HR approved',              NULL,             'Influenza'),
         -- Anna (6): pending vacation W14 — shows as (att.) badge
         (1, 6, 1, 'vacation', '2026-03-30', '2026-04-03', 'pending',                  'store_manager',  NULL),
         -- Chiara (8): supervisor-approved vacation W13 — in approval chain
-        (1, 8, 2, 'vacation', '2026-03-24', '2026-03-26', 'supervisor_approved',      'area_manager',   'Vacanza breve'),
+        (1, 8, 2, 'vacation', '2026-03-24', '2026-03-26', 'store manager approved',    'area_manager',   'Vacanza breve'),
         -- Roberto (7): approved vacation W13 — shows on shift calendar
-        (1, 7, 1, 'vacation', '2026-03-23', '2026-03-24', 'hr_approved',              NULL,             NULL),
+        (1, 7, 1, 'vacation', '2026-03-23', '2026-03-24', 'HR approved',              NULL,             NULL),
         -- Carol (12): approved sick — Beta company
-        (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'hr_approved',              NULL,             'Certificato medico allegato'),
+        (2, 12, 3,'sick',     '2026-03-11', '2026-03-12', 'HR approved',              NULL,             'Certificato medico allegato'),
         -- Marco B. (13): pending vacation — Beta company
         (2, 13, 3,'vacation', '2026-03-25', '2026-03-27', 'pending',                  'store_manager',  NULL),
         -- Anna (6): area_manager_approved vacation W15 — waiting for HR final step
-        (1, 6, 1, 'vacation', '2026-04-07', '2026-04-11', 'area_manager_approved',    'hr',             'Pasqua'),
+        (1, 6, 1, 'vacation', '2026-04-07', '2026-04-11', 'area manager approved',    'hr',             'Pasqua'),
         -- Roberto (7): supervisor_approved sick W14 — waiting for area_manager
-        (1, 7, 1, 'sick',     '2026-04-01', '2026-04-02', 'supervisor_approved',      'area_manager',   NULL),
+        (1, 7, 1, 'sick',     '2026-04-01', '2026-04-02', 'store manager approved',    'area_manager',   NULL),
         -- Chiara (8): rejected vacation — shows rejected state
         (1, 8, 2, 'vacation', '2026-04-14', '2026-04-18', 'rejected',                 NULL,             'Ponte aprile'),
         -- Chiara (8): new pending vacation W16 after rejection
@@ -354,7 +378,7 @@ export async function seed() {
 
     // Insert approval records for approved/in-flow/rejected requests
     for (const lr of lrRows) {
-      if (['supervisor_approved', 'area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
+      if (['store manager approved', 'area manager approved', 'HR approved', 'rejected'].includes(lr.status)) {
         // Step 1: store_manager approval (users: Sofia=4 for Roma, Luca=5 for Milano, Antonio=11 for Beta)
         const smId = (lr.user_id === 12 || lr.user_id === 13) ? 11 : (lr.user_id === 8 ? 5 : 4);
         await client.query(`
@@ -362,14 +386,14 @@ export async function seed() {
           VALUES ($1, $2, 'store_manager', 'approved', NULL)
         `, [lr.id, smId]);
       }
-      if (['area_manager_approved', 'hr_approved', 'rejected'].includes(lr.status)) {
+      if (['area manager approved', 'HR approved', 'rejected'].includes(lr.status)) {
         // Step 2: area_manager approval (Giuseppe=3 for company 1)
         await client.query(`
           INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
           VALUES ($1, 3, 'area_manager', 'approved', NULL)
         `, [lr.id]);
       }
-      if (lr.status === 'hr_approved') {
+      if (lr.status === 'HR approved') {
         // Step 3: hr approval (Laura=2 for company 1, Giulia=10 for company 2)
         const hrId = (lr.user_id === 12 || lr.user_id === 13) ? 10 : 2;
         await client.query(`
@@ -386,8 +410,8 @@ export async function seed() {
       }
     }
 
-    // Update leave_balances used_days for hr_approved requests
-    const approvedReqs = lrRows.filter(r => r.status === 'hr_approved');
+    // Update leave_balances used_days for HR approved requests
+    const approvedReqs = lrRows.filter(r => r.status === 'HR approved');
     for (const lr of approvedReqs) {
       const days = Math.ceil(
         (new Date(lr.end_date).getTime() - new Date(lr.start_date).getTime()) / 86400000
