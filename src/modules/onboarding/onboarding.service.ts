@@ -57,8 +57,8 @@ function mapTemplate(row: Record<string, unknown>): OnboardingTemplate {
     sortOrder: row.sort_order as number,
     isActive: row.is_active as boolean,
     category: (row.category as OnboardingTemplate['category']) ?? 'other',
-    dueDays: row.due_days as number | null,
-    linkUrl: row.link_url as string | null,
+    dueDays: (row.due_days as number | null) ?? null,
+    linkUrl: (row.link_url as string | null) ?? null,
     priority: (row.priority as OnboardingTemplate['priority']) ?? 'medium',
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
@@ -67,7 +67,8 @@ function mapTemplate(row: Record<string, unknown>): OnboardingTemplate {
 
 function mapTask(row: Record<string, unknown>): OnboardingTask {
   const dueDate = row.due_date as string | null;
-  const isOverdue = !!(dueDate && !(row.completed as boolean) && new Date(dueDate) < new Date());
+  const today = new Date().toISOString().slice(0, 10);
+  const isOverdue = !!(dueDate && !(row.completed as boolean) && dueDate < today);
   return {
     id: row.id as number,
     employeeId: row.employee_id as number,
