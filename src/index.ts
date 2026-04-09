@@ -26,6 +26,7 @@ import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
+import terminalsRoutes from './modules/terminals/terminals.routes';
 import { processEscalationLogic } from './modules/leave/leave.controller';
 
 dotenv.config();
@@ -258,6 +259,7 @@ app.use('/api/qr', qrRoutes);
 app.use('/api/leave', leaveRoutes);
 app.use('/api/transfers', transfersRoutes);
 app.use('/api/device', deviceRoutes);
+app.use('/api/terminals', terminalsRoutes);
 
 // Communication board
 app.use('/api/messages', messagesRoutes);

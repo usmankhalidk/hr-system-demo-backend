@@ -25,6 +25,10 @@ const storeSchema = z.object({
   cap: z.string().max(10).optional(),
   max_staff: z.number().int().min(0).optional(),
   company_id: z.number().int().nullable().optional(),
+  terminal: z.object({
+    email: z.string().email(),
+    password: z.string().min(8, 'Password del terminale deve essere di almeno 8 caratteri')
+  }).optional()
 });
 
 const storeHoursEntrySchema = z.object({
