@@ -109,6 +109,42 @@ function shiftHoursExpr(): string {
   `;
 }
 
+const DEFAULT_OFF_DAYS = [5, 6]; // Mon=0 ... Sun=6
+
+function normalizeOffDays(raw: unknown): number[] {
+  if (!Array.isArray(raw)) return [...DEFAULT_OFF_DAYS];
+  const normalized = Array.from(new Set(
+    raw
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6),
+  )).sort((a, b) => a - b);
+  return normalized.length > 0 ? normalized : [...DEFAULT_OFF_DAYS];
+}
+
+function parseDateOnly(value: unknown): string | null {
+  if (value instanceof Date) {
+    const y = value.getFullYear();
+    const m = String(value.getMonth() + 1).padStart(2, '0');
+    const d = String(value.getDate()).padStart(2, '0');
+    return `${y}-${m}-${d}`;
+  }
+  if (typeof value !== 'string') return null;
+  const match = value.match(/^(\d{4}-\d{2}-\d{2})/);
+  return match ? match[1] : null;
+}
+
+function monBasedDayFromIsoDate(dateStr: string): number | null {
+  const parsed = new Date(`${dateStr}T12:00:00`);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return (parsed.getDay() + 6) % 7;
+}
+
+function isDateOnOffDay(dateStr: string, offDays: number[]): boolean {
+  const monBasedDay = monBasedDayFromIsoDate(dateStr);
+  if (monBasedDay == null) return false;
+  return offDays.includes(monBasedDay);
+}
+
 const SHIFT_FIELDS = `
   s.id, s.company_id, s.store_id, s.user_id, s.assignment_id,
   TO_CHAR(s.date::date, 'YYYY-MM-DD') AS date,
@@ -328,13 +364,24 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Resolve target employee (must belong to one of the allowed companies)
-  const targetUser = await queryOne<{ id: number; company_id: number; store_id: number | null }>(
+  const targetUser = await queryOne<{ id: number; company_id: number; store_id: number | null; off_days: number[] | null }>(
     `SELECT id, company_id, store_id
+            , COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
      FROM users
      WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
     [body.user_id, allowedCompanyIds]
   );
   if (!targetUser) { notFound(res, 'Dipendente non trovato'); return; }
+
+  const targetOffDays = normalizeOffDays(targetUser.off_days);
+  if (isDateOnOffDay(body.date, targetOffDays)) {
+    badRequest(
+      res,
+      'Il dipendente non può ricevere turni nel giorno di riposo configurato',
+      'OFF_DAY_SHIFT_BLOCKED',
+    );
+    return;
+  }
 
   const effectiveCompanyId = targetUser.company_id;
 
@@ -490,10 +537,12 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     break_start: string | null; break_end: string | null;
     break_type: string | null; break_minutes: number | null;
     is_split: boolean; split_start2: string | null; split_end2: string | null;
+    status: 'scheduled' | 'confirmed' | 'cancelled';
   }>(
     `SELECT id, company_id, store_id, user_id, assignment_id, date,
             start_time, end_time, break_start, break_end,
-            break_type, break_minutes, is_split, split_start2, split_end2
+            break_type, break_minutes, is_split, split_start2, split_end2,
+            status
      FROM shifts WHERE id = $1 AND company_id = ANY($2)`,
     [shiftId, allowedCompanyIds],
   );
@@ -533,14 +582,39 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 
   const effectiveCompanyId = existing.company_id;
 
-  const targetUser = await queryOne<{ id: number; store_id: number | null }>(
+  const targetUser = await queryOne<{ id: number; store_id: number | null; off_days: number[] | null }>(
     `SELECT id, store_id
+            , COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
      FROM users
      WHERE id = $1 AND company_id = $2`,
     [targetUserId, effectiveCompanyId],
   );
   if (!targetUser) {
     notFound(res, 'Dipendente non trovato');
+    return;
+  }
+
+  const targetOffDays = normalizeOffDays(targetUser.off_days);
+  const targetDateOnOffDay = isDateOnOffDay(targetDate, targetOffDays);
+  const existingDateOnOffDay = isDateOnOffDay(existing.date, targetOffDays);
+  const statusChangeRequested = Object.prototype.hasOwnProperty.call(body, 'status') && body.status !== existing.status;
+  const targetStatus = (body.status ?? existing.status) as 'scheduled' | 'confirmed' | 'cancelled';
+
+  if (targetDateOnOffDay && statusChangeRequested) {
+    badRequest(
+      res,
+      'Nei giorni di riposo è consentita solo l\'eliminazione del turno',
+      'OFF_DAY_STATUS_LOCKED',
+    );
+    return;
+  }
+
+  if (targetDateOnOffDay && !existingDateOnOffDay && targetStatus !== 'cancelled') {
+    badRequest(
+      res,
+      'Il dipendente non può ricevere turni nel giorno di riposo configurato',
+      'OFF_DAY_SHIFT_BLOCKED',
+    );
     return;
   }
 
@@ -824,14 +898,20 @@ export const approveWeekForEmployee = asyncHandler(async (req: Request, res: Res
   }
 
   const result = await query<{ id: number }>(
-    `UPDATE shifts SET status = 'confirmed', updated_at = NOW()
-     WHERE company_id = $1
-       AND user_id = $2
-       AND status = 'scheduled'
-       AND date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
-       AND date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'
+    `UPDATE shifts s
+     SET status = 'confirmed', updated_at = NOW()
+     WHERE s.company_id = $1
+       AND s.user_id = $2
+       AND s.status = 'scheduled'
+       AND s.date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
+       AND s.date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'
+       AND NOT (
+         ((EXTRACT(ISODOW FROM s.date)::int + 6) % 7)::smallint = ANY(
+           COALESCE((SELECT u.off_days FROM users u WHERE u.id = s.user_id), ARRAY[5,6]::SMALLINT[])
+         )
+       )
        ${extraWhere}
-     RETURNING id`,
+     RETURNING s.id`,
     params,
   );
 
@@ -867,17 +947,19 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
 
   // Fetch all non-cancelled shifts from source week
   const sourceShifts = await query<Record<string, any>>(
-    `SELECT * FROM shifts
-     WHERE company_id = ANY($1)
-       AND store_id = $2
-       AND status != 'cancelled'
-       AND date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
-       AND date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'`,
+    `SELECT s.*, COALESCE(u.off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
+     FROM shifts s
+     JOIN users u ON u.id = s.user_id
+     WHERE s.company_id = ANY($1)
+       AND s.store_id = $2
+       AND s.status != 'cancelled'
+       AND s.date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
+       AND s.date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'`,
     [allowedCompanyIds, store_id, parseIsoWeek(source_week)],
   );
 
   if (sourceShifts.length === 0) {
-    ok(res, { copied: 0, shifts: [] }, 'Nessun turno da copiare');
+    ok(res, { copied: 0, skipped_off_day: 0, shifts: [] }, 'Nessun turno da copiare');
     return;
   }
 
@@ -893,6 +975,9 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
 
   const source_monday = sourceMondayRow!.source_monday;
   const target_monday = targetMondayRow!.target_monday;
+  const sourceMondayDate = new Date(`${source_monday}T12:00:00`);
+  const targetMondayDate = new Date(`${target_monday}T12:00:00`);
+  let skippedOffDay = 0;
 
   // M5: single multi-row INSERT instead of one query per shift
   // 15 parameters per row: company_id, store_id, user_id, target_monday, s.date, source_monday,
@@ -900,6 +985,24 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
   const copyParams: any[] = [];
   const copyPH: string[] = [];
   for (const s of sourceShifts) {
+    const sourceDate = parseDateOnly(s.date);
+    if (!sourceDate) {
+      skippedOffDay += 1;
+      continue;
+    }
+
+    const sourceDateObj = new Date(`${sourceDate}T12:00:00`);
+    const dayOffset = Math.round((sourceDateObj.getTime() - sourceMondayDate.getTime()) / 86400000);
+    const targetDateObj = new Date(targetMondayDate);
+    targetDateObj.setDate(targetDateObj.getDate() + dayOffset);
+    const targetDate = parseDateOnly(targetDateObj);
+    const userOffDays = normalizeOffDays(s.off_days);
+
+    if (targetDate && isDateOnOffDay(targetDate, userOffDays)) {
+      skippedOffDay += 1;
+      continue;
+    }
+
     const b = copyParams.length + 1;
     // Date arithmetic: target_monday::DATE + (s.date::DATE - source_monday::DATE)
     copyPH.push(
@@ -916,34 +1019,65 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
     );
   }
 
-  const insertedShifts = await query<Record<string, any>>(
-    `INSERT INTO shifts (
-       company_id, store_id, user_id, date, start_time, end_time,
-       break_start, break_end, is_split, split_start2, split_end2,
-       notes, status, created_by
-     ) VALUES ${copyPH.join(',')} RETURNING *`,
-    copyParams,
-  );
+  const insertedShifts = copyPH.length > 0
+    ? await query<Record<string, any>>(
+      `INSERT INTO shifts (
+         company_id, store_id, user_id, date, start_time, end_time,
+         break_start, break_end, is_split, split_start2, split_end2,
+         notes, status, created_by
+       ) VALUES ${copyPH.join(',')} RETURNING *`,
+      copyParams,
+    )
+    : [];
 
-  ok(res, { copied: insertedShifts.length, shifts: insertedShifts }, 'Settimana copiata');
+  ok(
+    res,
+    { copied: insertedShifts.length, skipped_off_day: skippedOffDay, shifts: insertedShifts },
+    'Settimana copiata',
+  );
 });
 
 // ---------------------------------------------------------------------------
 // GET /api/shifts/templates
 // ---------------------------------------------------------------------------
 export const listTemplates = asyncHandler(async (req: Request, res: Response) => {
+  const { role, storeId: callerStoreId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const { store_id } = req.query as Record<string, string>;
 
   let extraWhere = '';
   const params: any[] = [allowedCompanyIds];
+  let idx = 2;
+
+  if (role === 'store_manager') {
+    extraWhere += ` AND stpl.store_id = $${idx}`;
+    params.push(callerStoreId);
+    idx++;
+  }
+
   if (store_id) {
-    extraWhere = ' AND store_id = $2';
-    params.push(parseInt(store_id, 10));
+    const requestedStoreId = parseInt(store_id, 10);
+    if (Number.isNaN(requestedStoreId)) {
+      badRequest(res, 'store_id non valido', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (role === 'store_manager' && requestedStoreId !== callerStoreId) {
+      forbidden(res, 'Accesso negato');
+      return;
+    }
+
+    extraWhere += ` AND stpl.store_id = $${idx}`;
+    params.push(requestedStoreId);
   }
 
   const templates = await query(
-    `SELECT * FROM shift_templates WHERE company_id = ANY($1)${extraWhere} ORDER BY name`,
+    `SELECT stpl.*, st.name AS store_name, c.name AS company_name
+     FROM shift_templates stpl
+     LEFT JOIN stores st ON st.id = stpl.store_id
+     LEFT JOIN companies c ON c.id = stpl.company_id
+     WHERE stpl.company_id = ANY($1)${extraWhere}
+     ORDER BY stpl.name`,
     params,
   );
   ok(res, { templates });
@@ -1282,14 +1416,22 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
       }
 
       // Multi-tenant + store_manager scope check — look up by unique_id and store code
-      const targetUser = await queryOne<{ id: number }>(
-        `SELECT id FROM users WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
+      const targetUser = await queryOne<{ id: number; off_days: number[] | null }>(
+        `SELECT id, COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
+         FROM users
+         WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
         [uniqueIdVal, companyId],
       );
       if (!targetUser) {
         errors.push(`Riga ${rowNum}: dipendente con ID '${uniqueIdVal}' non trovato`); failed++; continue;
       }
       const userId = targetUser.id;
+
+      const userOffDays = normalizeOffDays(targetUser.off_days);
+      if (isDateOnOffDay(dateVal, userOffDays)) {
+        skipped++;
+        continue;
+      }
 
       const targetStore = await queryOne<{ id: number }>(
         `SELECT id FROM stores WHERE code = $1 AND company_id = $2 AND is_active = true`,

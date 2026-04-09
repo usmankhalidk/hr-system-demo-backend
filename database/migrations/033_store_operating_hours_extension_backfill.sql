@@ -1,10 +1,7 @@
 -- =============================================================================
--- Migration 024: Extend store operating hours with peak windows and shift planning
---
--- NOTE:
--- Some environments apply this file before the migration that creates
--- store_operating_hours. In that case we skip safely and apply the same
--- extension in a later backfill migration.
+-- Migration 033: Backfill store operating hours extension
+-- Ensures extended planning columns/checks exist even when migration 024 ran
+-- before the base table was created in older deployment sequences.
 -- =============================================================================
 
 DO $$
@@ -14,7 +11,7 @@ BEGIN
   store_hours_tbl := to_regclass('public.store_operating_hours');
 
   IF store_hours_tbl IS NULL THEN
-    RAISE NOTICE 'Skipping 024_store_operating_hours_extended.sql because store_operating_hours does not exist yet.';
+    RAISE NOTICE 'Skipping 033_store_operating_hours_extension_backfill.sql because store_operating_hours does not exist.';
     RETURN;
   END IF;
 
@@ -25,7 +22,6 @@ BEGIN
     ADD COLUMN IF NOT EXISTS planned_staff_count INTEGER,
     ADD COLUMN IF NOT EXISTS shift_plan_notes TEXT;
 
-  -- Normalize inconsistent historical rows where only one peak boundary exists.
   UPDATE store_operating_hours
   SET peak_start_time = NULL,
       peak_end_time = NULL
