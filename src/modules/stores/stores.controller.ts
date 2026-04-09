@@ -8,7 +8,9 @@ interface StoreRow {
   id: number;
   company_id: number;
   company_name?: string;
+  group_name?: string | null;
   company_logo_filename?: string | null;
+  logo_filename?: string | null;
   name: string;
   code: string;
   address: string | null;
@@ -17,6 +19,27 @@ interface StoreRow {
   is_active: boolean;
   created_at: string;
   employee_count?: number;
+}
+
+interface StoreOperatingHourRow {
+  id: number;
+  store_id: number;
+  day_of_week: number;
+  open_time: string | null;
+  close_time: string | null;
+  peak_start_time: string | null;
+  peak_end_time: string | null;
+  planned_shift_count: number | null;
+  planned_staff_count: number | null;
+  shift_plan_notes: string | null;
+  is_closed: boolean;
+}
+
+function timeToMinutes(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const [hours, minutes] = value.split(':').map((part) => parseInt(part, 10));
+  if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
+  return (hours * 60) + minutes;
 }
 
 // GET /api/stores — scoped by role
@@ -46,10 +69,12 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     stores = await query<StoreRow>(`
       SELECT s.*,
         c.name AS company_name,
+        cg.name AS group_name,
         c.logo_filename AS company_logo_filename,
         (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id
+      LEFT JOIN company_groups cg ON cg.id = c.group_id
       WHERE s.company_id = ANY($1)
       ORDER BY s.name
     `, [companyFilter]);
@@ -60,10 +85,12 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       stores = await query<StoreRow>(`
         SELECT s.*,
           c.name AS company_name,
+          cg.name AS group_name,
           c.logo_filename AS company_logo_filename,
           (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
+        LEFT JOIN company_groups cg ON cg.id = c.group_id
         WHERE s.company_id = ANY($1)
         ORDER BY s.name
       `, [companyFilter]);
@@ -71,10 +98,12 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       stores = await query<StoreRow>(`
         SELECT DISTINCT s.*,
           c.name AS company_name,
+          cg.name AS group_name,
           c.logo_filename AS company_logo_filename,
           (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
+        LEFT JOIN company_groups cg ON cg.id = c.group_id
         INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = $2
         WHERE s.is_active = true
         ORDER BY s.name
@@ -84,10 +113,12 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
     stores = await query<StoreRow>(`
       SELECT s.*,
         c.name AS company_name,
+        cg.name AS group_name,
         c.logo_filename AS company_logo_filename,
         (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id
+      LEFT JOIN company_groups cg ON cg.id = c.group_id
       WHERE s.id = $1 AND s.company_id = $2 AND s.is_active = true
     `, [storeId, companyId]);
   } else {
@@ -106,7 +137,12 @@ export const getStore = asyncHandler(async (req: Request, res: Response) => {
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   const store = await queryOne<StoreRow>(
-    `SELECT * FROM stores WHERE id = $1 AND company_id = ANY($2)`,
+    `SELECT s.*, c.name AS company_name, cg.name AS group_name, c.logo_filename AS company_logo_filename,
+            (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+     FROM stores s
+     JOIN companies c ON c.id = s.company_id
+     LEFT JOIN company_groups cg ON cg.id = c.group_id
+     WHERE s.id = $1 AND s.company_id = ANY($2)`,
     [storeId, allowedCompanyIds]
   );
   if (!store) { notFound(res, 'Negozio non trovato'); return; }
@@ -117,6 +153,188 @@ export const getStore = asyncHandler(async (req: Request, res: Response) => {
   }
 
   ok(res, store);
+});
+
+// GET /api/stores/:id/operating-hours
+export const listStoreOperatingHours = asyncHandler(async (req: Request, res: Response) => {
+  const { role, storeId: callerStoreId } = req.user!;
+  const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = ANY($2)`,
+    [storeId, allowedCompanyIds],
+  );
+  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+
+  if (role === 'store_manager' && callerStoreId !== storeId) {
+    forbidden(res, 'Accesso negato a questo negozio');
+    return;
+  }
+
+  const hours = await query<StoreOperatingHourRow>(
+    `SELECT id,
+            store_id,
+            day_of_week,
+            CASE WHEN open_time IS NOT NULL THEN TO_CHAR(open_time, 'HH24:MI') ELSE NULL END AS open_time,
+            CASE WHEN close_time IS NOT NULL THEN TO_CHAR(close_time, 'HH24:MI') ELSE NULL END AS close_time,
+            CASE WHEN peak_start_time IS NOT NULL THEN TO_CHAR(peak_start_time, 'HH24:MI') ELSE NULL END AS peak_start_time,
+            CASE WHEN peak_end_time IS NOT NULL THEN TO_CHAR(peak_end_time, 'HH24:MI') ELSE NULL END AS peak_end_time,
+            planned_shift_count,
+            planned_staff_count,
+            shift_plan_notes,
+            is_closed
+     FROM store_operating_hours
+     WHERE store_id = $1
+     ORDER BY day_of_week`,
+    [storeId],
+  );
+
+  ok(res, { hours });
+});
+
+// PUT /api/stores/:id/operating-hours
+export const updateStoreOperatingHours = asyncHandler(async (req: Request, res: Response) => {
+  const { role, storeId: callerStoreId } = req.user!;
+  const storeId = parseInt(req.params.id, 10);
+  if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = ANY($2)`,
+    [storeId, allowedCompanyIds],
+  );
+  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+
+  if (role === 'store_manager' && callerStoreId !== storeId) {
+    forbidden(res, 'Accesso negato a questo negozio');
+    return;
+  }
+
+  type OperatingHoursInput = {
+    day_of_week: number;
+    open_time?: string | null;
+    close_time?: string | null;
+    peak_start_time?: string | null;
+    peak_end_time?: string | null;
+    planned_shift_count?: number | null;
+    planned_staff_count?: number | null;
+    shift_plan_notes?: string | null;
+    is_closed: boolean;
+  };
+
+  const payload = (req.body as { hours?: OperatingHoursInput[] }).hours ?? [];
+  const seen = new Set<number>();
+  for (const item of payload) {
+    if (seen.has(item.day_of_week)) {
+      badRequest(res, 'Giorni duplicati negli orari operativi', 'VALIDATION_ERROR');
+      return;
+    }
+    seen.add(item.day_of_week);
+
+    if (!item.is_closed) {
+      if (!item.open_time || !item.close_time) {
+        badRequest(res, 'Orari apertura/chiusura obbligatori quando il negozio è aperto', 'VALIDATION_ERROR');
+        return;
+      }
+      if (item.close_time <= item.open_time) {
+        badRequest(res, 'L\'orario di chiusura deve essere successivo all\'apertura', 'VALIDATION_ERROR');
+        return;
+      }
+    }
+
+    const peakStart = item.is_closed ? null : (item.peak_start_time ?? null);
+    const peakEnd = item.is_closed ? null : (item.peak_end_time ?? null);
+
+    if ((peakStart && !peakEnd) || (!peakStart && peakEnd)) {
+      badRequest(res, 'Fascia di picco non valida: inizio e fine sono entrambi obbligatori', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (peakStart && peakEnd) {
+      if (peakEnd <= peakStart) {
+        badRequest(res, 'La fine della fascia di picco deve essere successiva all\'inizio', 'VALIDATION_ERROR');
+        return;
+      }
+
+      const openMinutes = timeToMinutes(item.open_time ?? null);
+      const closeMinutes = timeToMinutes(item.close_time ?? null);
+      const peakStartMinutes = timeToMinutes(peakStart);
+      const peakEndMinutes = timeToMinutes(peakEnd);
+
+      if (
+        openMinutes == null ||
+        closeMinutes == null ||
+        peakStartMinutes == null ||
+        peakEndMinutes == null ||
+        peakStartMinutes < openMinutes ||
+        peakEndMinutes > closeMinutes
+      ) {
+        badRequest(res, 'La fascia di picco deve rientrare negli orari di apertura del giorno', 'VALIDATION_ERROR');
+        return;
+      }
+    }
+  }
+
+  await query(
+    `DELETE FROM store_operating_hours WHERE store_id = $1`,
+    [storeId],
+  );
+
+  for (const item of payload) {
+    const shiftPlanNotes = item.is_closed
+      ? null
+      : (item.shift_plan_notes ? item.shift_plan_notes.trim() : null);
+
+    await query(
+      `INSERT INTO store_operating_hours (
+         store_id,
+         day_of_week,
+         open_time,
+         close_time,
+         peak_start_time,
+         peak_end_time,
+         planned_shift_count,
+         planned_staff_count,
+         shift_plan_notes,
+         is_closed
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [
+        storeId,
+        item.day_of_week,
+        item.is_closed ? null : item.open_time,
+        item.is_closed ? null : item.close_time,
+        item.is_closed ? null : (item.peak_start_time ?? null),
+        item.is_closed ? null : (item.peak_end_time ?? null),
+        item.is_closed ? null : (item.planned_shift_count ?? null),
+        item.is_closed ? null : (item.planned_staff_count ?? null),
+        shiftPlanNotes,
+        item.is_closed,
+      ],
+    );
+  }
+
+  const hours = await query<StoreOperatingHourRow>(
+    `SELECT id,
+            store_id,
+            day_of_week,
+            CASE WHEN open_time IS NOT NULL THEN TO_CHAR(open_time, 'HH24:MI') ELSE NULL END AS open_time,
+            CASE WHEN close_time IS NOT NULL THEN TO_CHAR(close_time, 'HH24:MI') ELSE NULL END AS close_time,
+            CASE WHEN peak_start_time IS NOT NULL THEN TO_CHAR(peak_start_time, 'HH24:MI') ELSE NULL END AS peak_start_time,
+            CASE WHEN peak_end_time IS NOT NULL THEN TO_CHAR(peak_end_time, 'HH24:MI') ELSE NULL END AS peak_end_time,
+            planned_shift_count,
+            planned_staff_count,
+            shift_plan_notes,
+            is_closed
+     FROM store_operating_hours
+     WHERE store_id = $1
+     ORDER BY day_of_week`,
+    [storeId],
+  );
+
+  ok(res, { hours }, 'Orari operativi aggiornati');
 });
 
 // POST /api/stores — Admin/HR (within allowed companies)

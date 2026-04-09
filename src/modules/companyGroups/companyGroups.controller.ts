@@ -27,8 +27,8 @@ export const listCompanyGroups = asyncHandler(async (req: Request, res: Response
   // Main Admin can see all groups; other scoped roles only see the group
   // associated with their own company (standalone companies return an empty list).
   if (user.is_super_admin === true) {
-    const groups = await query<{ id: number; name: string }>(
-      `SELECT id, name
+    const groups = await query<{ id: number; name: string; owner_user_id: number | null }>(
+      `SELECT id, name, owner_user_id
        FROM company_groups
        ORDER BY id ASC`
     );
@@ -47,8 +47,8 @@ export const listCompanyGroups = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  const groups = await query<{ id: number; name: string }>(
-    `SELECT id, name
+  const groups = await query<{ id: number; name: string; owner_user_id: number | null }>(
+    `SELECT id, name, owner_user_id
      FROM company_groups
      WHERE id = $1
      ORDER BY id ASC`,
@@ -58,20 +58,37 @@ export const listCompanyGroups = asyncHandler(async (req: Request, res: Response
 });
 
 export const createCompanyGroup = asyncHandler(async (req: Request, res: Response) => {
-  const { name } = req.body as { name: string };
+  const { name, owner_user_id } = req.body as { name: string; owner_user_id?: number };
   const slugSafe = name.trim();
+  const ownerUserId = owner_user_id ?? req.user!.userId;
 
   if (!slugSafe) {
     badRequest(res, 'Nome gruppo non valido', 'INVALID_GROUP_NAME');
     return;
   }
 
-  const group = await queryOne<{ id: number; name: string }>(
-    `INSERT INTO company_groups (name)
-     VALUES ($1)
-     ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
-     RETURNING id, name`,
-    [slugSafe]
+  if (!Number.isInteger(ownerUserId) || ownerUserId <= 0) {
+    badRequest(res, 'Proprietario gruppo non valido', 'INVALID_OWNER');
+    return;
+  }
+
+  const ownerExists = await queryOne<{ id: number }>(
+    `SELECT id FROM users WHERE id = $1`,
+    [ownerUserId],
+  );
+  if (!ownerExists) {
+    badRequest(res, 'Proprietario gruppo non trovato', 'INVALID_OWNER');
+    return;
+  }
+
+  const group = await queryOne<{ id: number; name: string; owner_user_id: number | null }>(
+    `INSERT INTO company_groups (name, owner_user_id)
+     VALUES ($1, $2)
+     ON CONFLICT (name) DO UPDATE
+     SET name = EXCLUDED.name,
+         owner_user_id = COALESCE(company_groups.owner_user_id, EXCLUDED.owner_user_id)
+     RETURNING id, name, owner_user_id`,
+    [slugSafe, ownerUserId]
   );
 
   if (!group) {
