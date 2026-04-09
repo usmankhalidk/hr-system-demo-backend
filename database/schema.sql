@@ -496,3 +496,215 @@ CREATE TABLE IF NOT EXISTS leave_balances (
   updated_at  TIMESTAMPTZ DEFAULT NOW(),
   UNIQUE(company_id, user_id, year, leave_type)
 );
+
+-- ---------------------------------------------------------------------------
+-- 14. document_categories  (Phase 3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS document_categories (
+  id          SERIAL PRIMARY KEY,
+  company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (company_id, name)
+);
+
+-- ---------------------------------------------------------------------------
+-- 15. employee_documents (Phase 3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS employee_documents (
+  id                  SERIAL PRIMARY KEY,
+  company_id          INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  employee_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  category_id         INTEGER REFERENCES document_categories(id) ON DELETE SET NULL,
+  file_name           TEXT NOT NULL,
+  storage_path        TEXT NOT NULL,
+  mime_type           TEXT,
+  uploaded_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  requires_signature  BOOLEAN NOT NULL DEFAULT FALSE,
+  signed_at           TIMESTAMPTZ,
+  signed_by_user_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  signed_ip           INET,
+  signature_meta      JSONB,
+  expires_at          TIMESTAMPTZ,
+  is_visible_to_roles TEXT[] NOT NULL DEFAULT ARRAY['admin','hr','area_manager','store_manager','employee'],
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_employee_documents_employee
+  ON employee_documents (employee_id);
+
+CREATE INDEX IF NOT EXISTS idx_employee_documents_company
+  ON employee_documents (company_id);
+
+CREATE INDEX IF NOT EXISTS idx_employee_documents_expires_at
+  ON employee_documents (expires_at)
+  WHERE expires_at IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- 16. bulk_document_uploads & bulk_document_files (Phase 3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS bulk_document_uploads (
+  id              SERIAL PRIMARY KEY,
+  company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  uploaded_by_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  original_name   TEXT NOT NULL,
+  storage_path    TEXT NOT NULL,
+  status          TEXT NOT NULL DEFAULT 'pending', -- pending | processing | completed | failed
+  total_files     INTEGER,
+  matched_files   INTEGER,
+  unmatched_files INTEGER,
+  error_message   TEXT,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS bulk_document_files (
+  id                    SERIAL PRIMARY KEY,
+  bulk_upload_id        INTEGER NOT NULL REFERENCES bulk_document_uploads(id) ON DELETE CASCADE,
+  original_file_name    TEXT NOT NULL,
+  employee_id           INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  employee_identifier   TEXT,
+  storage_path          TEXT,
+  status                TEXT NOT NULL DEFAULT 'pending', -- pending | matched | unmatched | error
+  error_message         TEXT,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_bulk_document_files_upload
+  ON bulk_document_files (bulk_upload_id);
+
+-- ---------------------------------------------------------------------------
+-- 17. job_postings, candidates, interviews, job_risk_snapshots (Phase 3 ATS)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS job_postings (
+  id              SERIAL PRIMARY KEY,
+  company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  store_id        INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+  title           TEXT NOT NULL,
+  description     TEXT,
+  tags            TEXT[] NOT NULL DEFAULT '{}',
+  status          TEXT NOT NULL DEFAULT 'draft', -- draft | published | closed
+  source          TEXT NOT NULL DEFAULT 'internal', -- internal | indeed
+  indeed_post_id  TEXT,
+  created_by_id   INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  published_at    TIMESTAMPTZ,
+  closed_at       TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_postings_company_status
+  ON job_postings (company_id, status);
+
+CREATE TABLE IF NOT EXISTS candidates (
+  id                 SERIAL PRIMARY KEY,
+  company_id         INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  store_id           INTEGER REFERENCES stores(id) ON DELETE SET NULL,
+  job_posting_id     INTEGER REFERENCES job_postings(id) ON DELETE SET NULL,
+  full_name          TEXT NOT NULL,
+  email              TEXT,
+  phone              TEXT,
+  resume_path        TEXT,
+  tags               TEXT[] NOT NULL DEFAULT '{}',
+  status             TEXT NOT NULL DEFAULT 'received', -- received | review | interview | hired | rejected
+  source             TEXT NOT NULL DEFAULT 'internal', -- internal | indeed
+  source_ref         TEXT,
+  unread             BOOLEAN NOT NULL DEFAULT TRUE,
+  last_stage_change  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_company_status
+  ON candidates (company_id, status);
+
+CREATE INDEX IF NOT EXISTS idx_candidates_store
+  ON candidates (store_id);
+
+CREATE TABLE IF NOT EXISTS interviews (
+  id                 SERIAL PRIMARY KEY,
+  candidate_id       INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  interviewer_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  scheduled_at       TIMESTAMPTZ NOT NULL,
+  location           TEXT,
+  notes              TEXT,
+  ics_uid            TEXT,
+  feedback           TEXT,
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_interviews_candidate
+  ON interviews (candidate_id);
+
+CREATE TABLE IF NOT EXISTS job_risk_snapshots (
+  id              SERIAL PRIMARY KEY,
+  job_posting_id  INTEGER NOT NULL REFERENCES job_postings(id) ON DELETE CASCADE,
+  captured_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  low_candidates  BOOLEAN NOT NULL DEFAULT FALSE,
+  low_compatibility BOOLEAN NOT NULL DEFAULT FALSE,
+  no_interviews   BOOLEAN NOT NULL DEFAULT FALSE,
+  no_hires        BOOLEAN NOT NULL DEFAULT FALSE
+);
+
+CREATE INDEX IF NOT EXISTS idx_job_risk_snapshots_job
+  ON job_risk_snapshots (job_posting_id, captured_at DESC);
+
+-- ---------------------------------------------------------------------------
+-- 18. notifications & onboarding (Phase 3)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS notification_templates (
+  id              SERIAL PRIMARY KEY,
+  event_key       TEXT NOT NULL UNIQUE,
+  channel         TEXT NOT NULL,
+  subject_it      TEXT,
+  body_it         TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notifications (
+  id              SERIAL PRIMARY KEY,
+  company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  type            TEXT NOT NULL,
+  title           TEXT NOT NULL,
+  message         TEXT NOT NULL,
+  priority        TEXT NOT NULL DEFAULT 'medium',
+  is_read         BOOLEAN NOT NULL DEFAULT FALSE,
+  read_at         TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
+  ON notifications (user_id, is_read, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS onboarding_templates (
+  id              SERIAL PRIMARY KEY,
+  company_id      INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+  name            TEXT NOT NULL,
+  description     TEXT,
+  sort_order      INTEGER NOT NULL DEFAULT 0,
+  is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS employee_onboarding_tasks (
+  id                    SERIAL PRIMARY KEY,
+  employee_id           INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  template_id           INTEGER NOT NULL REFERENCES onboarding_templates(id) ON DELETE CASCADE,
+  completed             BOOLEAN NOT NULL DEFAULT FALSE,
+  completed_at          TIMESTAMPTZ,
+  created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  UNIQUE (employee_id, template_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_employee_onboarding_employee
+  ON employee_onboarding_tasks (employee_id);

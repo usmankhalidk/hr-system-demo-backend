@@ -213,3 +213,27 @@ export const changePassword = asyncHandler(async (req: Request, res: Response) =
 
   ok(res, { token }, 'Password aggiornata con successo');
 });
+
+/**
+ * PATCH /api/auth/locale
+ * Persists the user's preferred locale to the database so that background jobs
+ * (welcome emails, reminders, etc.) can generate notifications in the correct language.
+ * Body: { locale: 'it' | 'en' }
+ */
+export const updateLocale = asyncHandler(async (req: Request, res: Response) => {
+  const { locale } = req.body as { locale?: unknown };
+
+  const SUPPORTED = ['it', 'en'];
+  if (!locale || typeof locale !== 'string' || !SUPPORTED.includes(locale)) {
+    badRequest(res, `Unsupported locale. Accepted values: ${SUPPORTED.join(', ')}`, 'INVALID_LOCALE');
+    return;
+  }
+
+  await query(
+    `UPDATE users SET locale = $1, updated_at = NOW() WHERE id = $2`,
+    [locale, req.user!.userId],
+  );
+
+  ok(res, { locale }, 'Locale updated');
+});
+
