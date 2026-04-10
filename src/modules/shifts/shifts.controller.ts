@@ -1407,7 +1407,7 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
       WHERE company_id = $1${extraWhere}
       ORDER BY day_of_week,
                time_slot,
-               ${weekPlaceholder != null ? `CASE WHEN iso_week = $${weekPlaceholder} THEN 0 ELSE 1 END` : '0'},
+               ${weekPlaceholder != null ? `CASE WHEN iso_week = $${weekPlaceholder} THEN 0 ELSE 1 END,` : ''}
                id DESC`,
     params,
   );
