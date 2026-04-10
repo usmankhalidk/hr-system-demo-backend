@@ -248,6 +248,9 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     params = scope.params;
   }
 
+  // Globally exclude store_terminal from the Employee module list
+  where += " AND u.role <> 'store_terminal'";
+
   let extraWhere = '';
   const extraParams: any[] = [];
   let paramIdx = params.length + 1;

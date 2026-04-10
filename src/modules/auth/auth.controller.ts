@@ -66,7 +66,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
   const user = await queryOne<UserRow>(
     `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status, is_super_admin, avatar_filename,
             registered_device_token, device_reset_pending
-     FROM users WHERE email = $1`,
+     FROM users WHERE LOWER(email) = LOWER($1)`,
     [email]
   );
 
