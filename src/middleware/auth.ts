@@ -118,7 +118,7 @@ export function requireModulePermission(moduleName: string, _action: 'read' | 'w
       return;
     }
 
-    const row = await queryOne<{ is_enabled: boolean }>(
+    const targetRow = await queryOne<{ is_enabled: boolean }>(
       `SELECT is_enabled
        FROM role_module_permissions
        WHERE company_id = $1 AND role = $2 AND module_name = $3
@@ -126,18 +126,56 @@ export function requireModulePermission(moduleName: string, _action: 'read' | 'w
       [targetCompanyId, role, moduleName],
     );
 
-    if (!row) {
+    const homeCompanyId = req.user.companyId;
+    const canUseHomeCompanyFallback =
+      (role === 'hr' || role === 'area_manager') &&
+      homeCompanyId != null &&
+      homeCompanyId !== targetCompanyId &&
+      allowedCompanyIds.includes(homeCompanyId);
+
+    let homeRowCache: { is_enabled: boolean } | null | undefined;
+    const readHomeCompanyEnablement = async (): Promise<boolean> => {
+      if (!canUseHomeCompanyFallback || homeCompanyId == null) return false;
+      if (homeRowCache === undefined) {
+        homeRowCache = await queryOne<{ is_enabled: boolean }>(
+          `SELECT is_enabled
+           FROM role_module_permissions
+           WHERE company_id = $1 AND role = $2 AND module_name = $3
+           LIMIT 1`,
+          [homeCompanyId, role, moduleName],
+        );
+      }
+
+      if (!homeRowCache) {
+        return isDefaultEnabledForModule(role as never, mod);
+      }
+
+      return homeRowCache.is_enabled === true;
+    };
+
+    if (!targetRow) {
       // If the DB has no explicit row, apply the same default-on policy
       // used by /api/permissions so runtime access matches UI expectations.
-      if (!isDefaultEnabledForModule(role as never, mod)) {
-        res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
+      if (isDefaultEnabledForModule(role as never, mod)) {
+        next();
         return;
       }
-      next();
+
+      if (await readHomeCompanyEnablement()) {
+        next();
+        return;
+      }
+
+      res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
       return;
     }
 
-    if (row.is_enabled === false) {
+    if (targetRow.is_enabled === false) {
+      if (await readHomeCompanyEnablement()) {
+        next();
+        return;
+      }
+
       res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
       return;
     }

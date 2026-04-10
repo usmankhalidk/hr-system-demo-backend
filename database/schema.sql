@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS users (
   contract_end_date DATE,
   working_type      VARCHAR(20) CHECK (working_type IN ('full_time', 'part_time')),
   weekly_hours      NUMERIC(4,1),
+  off_days          SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[]
+                    CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[] AND cardinality(off_days) >= 1),
   personal_email    VARCHAR(255),
   date_of_birth     DATE,
   nationality       VARCHAR(100),
@@ -87,6 +89,35 @@ CREATE INDEX IF NOT EXISTS idx_users_company_id    ON users(company_id);
 CREATE INDEX IF NOT EXISTS idx_users_email         ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_store_id      ON users(store_id);
 CREATE INDEX IF NOT EXISTS idx_users_supervisor_id ON users(supervisor_id);
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS off_days SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[];
+
+UPDATE users
+SET off_days = ARRAY[5,6]::SMALLINT[]
+WHERE off_days IS NULL OR cardinality(off_days) = 0;
+
+UPDATE users
+SET off_days = (
+  SELECT COALESCE(array_agg(DISTINCT d ORDER BY d), ARRAY[5,6]::SMALLINT[])
+  FROM unnest(off_days) AS d
+  WHERE d BETWEEN 0 AND 6
+)
+WHERE off_days IS NOT NULL;
+
+ALTER TABLE users
+  DROP CONSTRAINT IF EXISTS users_off_days_valid_chk;
+
+ALTER TABLE users
+  ADD CONSTRAINT users_off_days_valid_chk
+  CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]);
+
+ALTER TABLE users
+  DROP CONSTRAINT IF EXISTS users_off_days_not_empty_chk;
+
+ALTER TABLE users
+  ADD CONSTRAINT users_off_days_not_empty_chk
+  CHECK (cardinality(off_days) >= 1);
 
 ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS owner_user_id INTEGER,

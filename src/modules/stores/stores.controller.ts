@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
-import { query, queryOne } from '../../config/database';
+import bcrypt from 'bcryptjs';
+import { pool, query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
@@ -340,13 +341,14 @@ export const updateStoreOperatingHours = asyncHandler(async (req: Request, res: 
 // POST /api/stores — Admin/HR (within allowed companies)
 export const createStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId: callerCompanyId } = req.user!;
-  const { name, code, address, cap, max_staff, company_id } = req.body as {
+  const { name, code, address, cap, max_staff, company_id, terminal } = req.body as {
     name: string;
     code: string;
     address?: string | null;
     cap?: string | null;
     max_staff?: number;
     company_id?: number | null;
+    terminal?: { email: string; password?: string };
   };
 
   // Cross-company callers (grouped admin/hr) may specify a target company.
@@ -371,12 +373,50 @@ export const createStore = asyncHandler(async (req: Request, res: Response) => {
   );
   if (existing) { conflict(res, 'Codice negozio già in uso', 'CODE_CONFLICT'); return; }
 
-  const store = await queryOne<StoreRow>(
-    `INSERT INTO stores (company_id, name, code, address, cap, max_staff)
-     VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-    [targetCompanyId, name, code, address || null, cap || null, max_staff || 0]
-  );
-  created(res, store, 'Negozio creato con successo');
+  if (terminal?.email) {
+    const emailExists = await queryOne<{ id: number }>(
+      `SELECT id FROM users WHERE email = $1`,
+      [terminal.email]
+    );
+    if (emailExists) { conflict(res, 'Email del terminale già in uso', 'EMAIL_CONFLICT'); return; }
+  }
+
+  // Validate terminal password minimum length
+  if (terminal?.password !== undefined && terminal.password.length < 8) {
+    badRequest(res, 'La password del terminale deve essere di almeno 8 caratteri', 'PASSWORD_TOO_SHORT');
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const storeRes = await client.query(
+      `INSERT INTO stores (company_id, name, code, address, cap, max_staff)
+       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
+      [targetCompanyId, name, code, address || null, cap || null, max_staff || 0]
+    );
+    const store = storeRes.rows[0];
+
+    // Create terminal account if requested
+    if (terminal?.email && terminal?.password) {
+      const passwordHash = await bcrypt.hash(terminal.password, 12);
+      await client.query(
+        `INSERT INTO users (
+           company_id, store_id, name, surname, email, password_hash, role, status
+         ) VALUES ($1, $2, $3, $4, $5, $6, 'store_terminal', 'active')`,
+        [targetCompanyId, store.id, store.name, 'Terminale', terminal.email, passwordHash]
+      );
+    }
+
+    await client.query('COMMIT');
+    created(res, store, 'Negozio creato con successo');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // PUT /api/stores/:id — Admin/HR (within allowed companies)
@@ -434,12 +474,17 @@ export const deactivateStore = asyncHandler(async (req: Request, res: Response) 
     `UPDATE stores SET is_active = false WHERE id = $1 AND company_id = $2 RETURNING *`,
     [storeId, targetCompanyId]
   );
-  if (!store) { notFound(res, 'Negozio non trovato'); return; }
+  // Sync terminal status to inactive
+  await query(
+    `UPDATE users SET status = 'inactive' WHERE store_id = $1 AND company_id = $2 AND role = 'store_terminal'`,
+    [storeId, targetCompanyId]
+  );
+
   ok(res, store, 'Negozio disattivato');
 });
 
 // DELETE /api/stores/:id/permanent — Admin only, hard delete
-// Refuses if any user (active or inactive) is assigned to this store
+// Refuses if any human employee (role != 'store_terminal') is still assigned to this store
 export const deleteStorePermanent = asyncHandler(async (req: Request, res: Response) => {
   const storeId = parseInt(req.params.id, 10);
   if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
@@ -456,25 +501,99 @@ export const deleteStorePermanent = asyncHandler(async (req: Request, res: Respo
     return;
   }
 
-  // Verify store exists in company
-  const store = await queryOne<StoreRow>(
-    `SELECT * FROM stores WHERE id = $1 AND company_id = $2`,
+  // Refuse if any human employee (role != 'store_terminal') is still assigned to this store
+  const humanUserCount = await queryOne<{ count: string }>(
+    `SELECT COUNT(*) AS count FROM users
+     WHERE store_id = $1 AND company_id = $2 AND role != 'store_terminal'`,
     [storeId, targetCompanyId]
   );
-  if (!store) { notFound(res, 'Negozio non trovato'); return; }
 
-  // Refuse if any user is assigned to this store
-  const userCount = await queryOne<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM users WHERE store_id = $1 AND company_id = $2`,
-    [storeId, targetCompanyId]
-  );
-  if (parseInt(userCount?.count ?? '0', 10) > 0) {
+  if (parseInt(humanUserCount?.count ?? '0', 10) > 0) {
     conflict(res, 'Impossibile eliminare: il negozio ha dipendenti assegnati. Riassegnarli prima di procedere.', 'STORE_HAS_EMPLOYEES');
     return;
   }
 
-  await query(`DELETE FROM stores WHERE id = $1 AND company_id = $2`, [storeId, targetCompanyId]);
-  ok(res, { id: storeId }, 'Negozio eliminato definitivamente');
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // 1. Identify terminal users linked to this store
+    const terminals = await client.query<{ id: number }>(
+      `SELECT id FROM users WHERE store_id = $1 AND company_id = $2 AND role = 'store_terminal'`,
+      [storeId, targetCompanyId]
+    );
+    const terminalIds = terminals.rows.map(t => t.id);
+
+    // 2. Clear global references to these terminal users (Audit Logs, Permissions, etc.)
+    if (terminalIds.length > 0) {
+      // Clear audit log references
+      await client.query(
+        'UPDATE audit_logs SET user_id = NULL WHERE user_id = ANY($1) AND company_id = $2',
+        [terminalIds, targetCompanyId]
+      );
+      // Clear permission updated_by references
+      await client.query(
+        'UPDATE role_module_permissions SET updated_by = NULL WHERE updated_by = ANY($1) AND company_id = $2',
+        [terminalIds, targetCompanyId]
+      );
+      // Clear any supervisor references (safety)
+      await client.query(
+        'UPDATE users SET supervisor_id = NULL WHERE supervisor_id = ANY($1) AND company_id = $2',
+        [terminalIds, targetCompanyId]
+      );
+    }
+
+    // 3. Delete associated store data with foreign key constraints
+    
+    // 3a. Handle leave management (approvals reference requests)
+    await client.query(
+      `DELETE FROM leave_approvals WHERE leave_request_id IN (
+         SELECT id FROM leave_requests WHERE store_id = $1 AND company_id = $2
+       )`,
+      [storeId, targetCompanyId]
+    );
+    await client.query('DELETE FROM leave_requests WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+
+    // 3b. Handle temporary transfers (origin or target)
+    await client.query(
+      'DELETE FROM temporary_store_assignments WHERE (origin_store_id = $1 OR target_store_id = $1) AND company_id = $2',
+      [storeId, targetCompanyId]
+    );
+
+    // 3c. Handle attendance, shifts, and other operational data
+    await client.query('DELETE FROM attendance_events WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+    await client.query('DELETE FROM qr_tokens WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+    await client.query('DELETE FROM shifts WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+    await client.query('DELETE FROM shift_templates WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+    await client.query('DELETE FROM store_affluence WHERE store_id = $1 AND company_id = $2', [storeId, targetCompanyId]);
+    await client.query('DELETE FROM store_operating_hours WHERE store_id = $1', [storeId]);
+
+    // 4. Delete terminal accounts linked to this store
+    await client.query(
+      `DELETE FROM users WHERE store_id = $1 AND company_id = $2 AND role = 'store_terminal'`,
+      [storeId, targetCompanyId]
+    );
+
+    // 5. Finally delete the store record
+    const result = await client.query(
+      `DELETE FROM stores WHERE id = $1 AND company_id = $2 RETURNING id`,
+      [storeId, targetCompanyId]
+    );
+
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      notFound(res, 'Negozio non trovato');
+      return;
+    }
+
+    await client.query('COMMIT');
+    ok(res, { id: storeId }, 'Negozio e dati associati eliminati definitivamente');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // PATCH /api/stores/:id/activate — Admin/HR (within allowed companies)
@@ -499,5 +618,12 @@ export const activateStore = asyncHandler(async (req: Request, res: Response) =>
     [storeId, targetCompanyId]
   );
   if (!store) { notFound(res, 'Negozio non trovato o già attivo'); return; }
+
+  // Sync terminal status to active
+  await query(
+    `UPDATE users SET status = 'active' WHERE store_id = $1 AND company_id = $2 AND role = 'store_terminal'`,
+    [storeId, targetCompanyId]
+  );
+
   ok(res, store, 'Negozio riattivato');
 });
