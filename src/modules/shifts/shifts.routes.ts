@@ -16,6 +16,9 @@ import {
   importShifts,
   importTemplate,
   getAffluence,
+  createAffluence,
+  updateAffluence,
+  deleteAffluence,
 } from './shifts.controller';
 import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
@@ -173,6 +176,20 @@ const updateTemplateSchema = z.object({
   template_data: z.record(z.string(), z.unknown()),
 });
 
+const createAffluenceSchema = z.object({
+  store_id:       z.number().int().positive(),
+  day_of_week:    z.number().int().min(1).max(7),
+  time_slot:      z.enum(['09:00-12:00', '12:00-15:00', '15:00-18:00', '18:00-21:00']),
+  level:          z.enum(['low', 'medium', 'high']),
+  required_staff: z.number().int().min(0).max(999),
+  iso_week:       z.number().int().min(1).max(53).optional().nullable(),
+});
+
+const updateAffluenceSchema = z.object({
+  level:          z.enum(['low', 'medium', 'high']),
+  required_staff: z.number().int().min(0).max(999),
+});
+
 // GET /api/shifts/export — must be BEFORE /:id to avoid route conflict
 router.get(
   '/export',
@@ -202,6 +219,38 @@ router.post(
   requireModulePermission('turni', 'write'),
   upload.single('file'),
   importShifts,
+);
+
+// POST /api/shifts/affluence — admin/hr only
+router.post(
+  '/affluence',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('turni', 'write'),
+  validate(createAffluenceSchema),
+  createAffluence,
+);
+
+// PUT /api/shifts/affluence/:id — admin/hr only
+router.put(
+  '/affluence/:id',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('turni', 'write'),
+  validate(updateAffluenceSchema),
+  updateAffluence,
+);
+
+// DELETE /api/shifts/affluence/:id — admin/hr only
+router.delete(
+  '/affluence/:id',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('turni', 'write'),
+  deleteAffluence,
 );
 
 // GET /api/shifts/affluence
