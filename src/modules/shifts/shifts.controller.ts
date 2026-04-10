@@ -1429,3 +1429,69 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
 
   ok(res, { affluence: merged });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/shifts/affluence
+// ---------------------------------------------------------------------------
+export const createAffluence = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const { store_id, day_of_week, time_slot, level, required_staff, iso_week } = req.body as {
+    store_id: number;
+    day_of_week: number;
+    time_slot: string;
+    level: string;
+    required_staff: number;
+    iso_week?: number | null;
+  };
+
+  const store = await queryOne(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = $2 AND is_active = true`,
+    [store_id, companyId],
+  );
+  if (!store) return notFound(res, 'Store not found');
+
+  const row = await queryOne(
+    `INSERT INTO store_affluence (company_id, store_id, day_of_week, time_slot, level, required_staff, iso_week)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     RETURNING *`,
+    [companyId, store_id, day_of_week, time_slot, level, required_staff, iso_week ?? null],
+  );
+
+  created(res, { affluence: row });
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/shifts/affluence/:id
+// ---------------------------------------------------------------------------
+export const updateAffluence = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const id = parseInt(req.params.id, 10);
+  const { level, required_staff } = req.body as { level: string; required_staff: number };
+
+  const row = await queryOne(
+    `UPDATE store_affluence
+        SET level = $1, required_staff = $2
+      WHERE id = $3 AND company_id = $4
+      RETURNING *`,
+    [level, required_staff, id, companyId],
+  );
+
+  if (!row) return notFound(res, 'Affluence entry not found');
+  ok(res, { affluence: row });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/shifts/affluence/:id
+// ---------------------------------------------------------------------------
+export const deleteAffluence = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const id = parseInt(req.params.id, 10);
+
+  const row = await queryOne(
+    `DELETE FROM store_affluence WHERE id = $1 AND company_id = $2 RETURNING id`,
+    [id, companyId],
+  );
+
+  if (!row) return notFound(res, 'Affluence entry not found');
+  ok(res, { deleted: id });
+});
