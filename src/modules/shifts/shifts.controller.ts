@@ -1450,6 +1450,15 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
   );
   if (!store) return notFound(res, 'Store not found');
 
+  // Check for existing row with same slot to prevent duplicates
+  const existing = await queryOne(
+    `SELECT id FROM store_affluence
+      WHERE company_id = $1 AND store_id = $2 AND day_of_week = $3
+        AND time_slot = $4 AND (iso_week = $5 OR (iso_week IS NULL AND $5::int IS NULL))`,
+    [companyId, store_id, day_of_week, time_slot, iso_week ?? null],
+  );
+  if (existing) return conflict(res, 'An affluence entry already exists for this slot. Use PUT to update it.');
+
   const row = await queryOne(
     `INSERT INTO store_affluence (company_id, store_id, day_of_week, time_slot, level, required_staff, iso_week)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -1466,6 +1475,7 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
 export const updateAffluence = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) return badRequest(res, 'Invalid ID');
   const { level, required_staff } = req.body as { level: string; required_staff: number };
 
   const row = await queryOne(
@@ -1486,6 +1496,7 @@ export const updateAffluence = asyncHandler(async (req: Request, res: Response) 
 export const deleteAffluence = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
   const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) return badRequest(res, 'Invalid ID');
 
   const row = await queryOne(
     `DELETE FROM store_affluence WHERE id = $1 AND company_id = $2 RETURNING id`,
