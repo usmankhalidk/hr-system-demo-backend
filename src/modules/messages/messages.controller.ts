@@ -121,8 +121,10 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
             m.sender_id, m.recipient_id,
             CONCAT(s.name, ' ', s.surname) AS sender_name,
             s.role AS sender_role,
+                 s.avatar_filename AS sender_avatar_filename,
             CONCAT(r.name, ' ', r.surname) AS recipient_name,
             r.role AS recipient_role,
+                 r.avatar_filename AS recipient_avatar_filename,
             CASE WHEN m.recipient_id = $1 THEN 'received' ELSE 'sent' END AS direction
      FROM messages m
      JOIN users s ON s.id = m.sender_id

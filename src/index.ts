@@ -24,6 +24,12 @@ import shiftsRoutes from './modules/shifts/shifts.routes';
 import attendanceRoutes from './modules/attendance/attendance.routes';
 import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
+// Phase 3 modules
+import documentsRoutes from './modules/documents/documents.routes';
+import notificationsRoutes from './modules/notifications/notifications.routes';
+import atsRoutes from './modules/ats/ats.routes';
+import onboardingRoutes from './modules/onboarding/onboarding.routes';
+import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
 import terminalsRoutes from './modules/terminals/terminals.routes';
@@ -264,6 +270,12 @@ app.use('/api/terminals', terminalsRoutes);
 // Communication board
 app.use('/api/messages', messagesRoutes);
 
+// Phase 3 APIs
+app.use('/api/documents', documentsRoutes);
+app.use('/api/notifications', notificationsRoutes);
+app.use('/api/ats', atsRoutes);
+app.use('/api/onboarding', onboardingRoutes);
+
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   console.error('Unhandled error:', err);
@@ -311,19 +323,25 @@ async function start() {
     console.log(`HR System backend running on http://localhost:${PORT}`);
   });
 
-  // Background auto-escalation task (runs every hour)
-  setInterval(() => {
-    console.log('Running background auto-escalation task...');
-    processEscalationLogic()
-      .then((count) => {
-        if (count > 0) {
-          console.log(`Auto-escalated ${count} leave requests.`);
-        }
-      })
-      .catch((err) => {
-        console.error('Error running auto-escalation:', err);
-      });
-  }, 1000 * 60 * 60);
+
+  // Start background cron jobs (skip in test environment)
+  if (process.env.NODE_ENV !== 'test') {
+    startScheduler();
+
+    // Background auto-escalation task (runs every hour)
+    setInterval(() => {
+      console.log('Running background auto-escalation task...');
+      processEscalationLogic()
+        .then((count) => {
+          if (count > 0) {
+            console.log(`Auto-escalated ${count} leave requests.`);
+          }
+        })
+        .catch((err) => {
+          console.error('Error running auto-escalation:', err);
+        });
+    }, 1000 * 60 * 60);
+  }
 }
 
 start().catch((err) => {

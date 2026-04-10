@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { login, logout, me, changePassword } from './auth.controller';
+import { login, logout, me, changePassword, updateLocale } from './auth.controller';
 import { authenticate } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 
@@ -24,5 +24,6 @@ router.post('/login', validate(loginSchema), login);
 router.post('/logout', authenticate, logout);
 router.get('/me', authenticate, me);
 router.put('/password', authenticate, validate(changePasswordSchema), changePassword);
+router.patch('/locale', authenticate, updateLocale);
 
 export default router;
