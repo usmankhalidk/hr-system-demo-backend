@@ -1,5 +1,5 @@
-import { query } from './src/config/database';
-import { resolveAllowedCompanyIds } from './src/utils/companyScope';
+import { query } from '../config/database';
+import { resolveAllowedCompanyIds } from '../utils/companyScope';
 
 async function test() {
   const user = { id: 1, companyId: 1, role: 'admin' };
