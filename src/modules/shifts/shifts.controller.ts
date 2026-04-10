@@ -1376,7 +1376,7 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
 // ---------------------------------------------------------------------------
 export const getAffluence = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
-  const { store_id, week, day_of_week } = req.query as Record<string, string>;
+  const { store_id, week, day_of_week, raw } = req.query as Record<string, string>;
 
   const params: any[] = [companyId];
   let extraWhere = '';
@@ -1411,6 +1411,12 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
                id DESC`,
     params,
   );
+
+  // NEW: skip dedup when caller wants raw rows (admin panel)
+  if (raw === '1') {
+    ok(res, { affluence });
+    return;
+  }
 
   // Prefer exact week-specific entries over default (iso_week IS NULL) per day/slot.
   const seen = new Set<string>();
