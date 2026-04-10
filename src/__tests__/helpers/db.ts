@@ -94,6 +94,26 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
   `);
 
+  // off_days column (migration 034 — may not exist in older CI DB setups).
+  await testPool.query(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS off_days SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[];
+
+    ALTER TABLE users
+      DROP CONSTRAINT IF EXISTS users_off_days_valid_chk;
+
+    ALTER TABLE users
+      ADD CONSTRAINT users_off_days_valid_chk
+        CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]);
+
+    ALTER TABLE users
+      DROP CONSTRAINT IF EXISTS users_off_days_not_empty_chk;
+
+    ALTER TABLE users
+      ADD CONSTRAINT users_off_days_not_empty_chk
+        CHECK (cardinality(off_days) >= 1);
+  `);
+
   // Device binding columns (may not exist in older CI DB setups).
   await testPool.query(`
     ALTER TABLE users
