@@ -1571,6 +1571,46 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
     return true;
   });
 
+  // When a week is provided, annotate each row with how many staff are actually
+  // scheduled for that slot (shifts that overlap the time slot on the matching day).
+  if (week && store_id) {
+    const parsedWeek = parseIsoWeek(week);
+    const schedParams: any[] = [parseInt(store_id, 10), parsedWeek];
+    const companyFilter = scopeByCompany ? `AND s.company_id = $3` : '';
+    if (scopeByCompany) schedParams.push(companyId);
+
+    const scheduled = await query<{ day_of_week: number; time_slot: string; scheduled_staff: number }>(
+      `SELECT
+         EXTRACT(ISODOW FROM s.date)::int AS day_of_week,
+         ts.time_slot,
+         COUNT(DISTINCT s.user_id)::int AS scheduled_staff
+       FROM shifts s
+       CROSS JOIN (VALUES
+         ('09:00-12:00', '09:00'::time, '12:00'::time),
+         ('12:00-15:00', '12:00'::time, '15:00'::time),
+         ('15:00-18:00', '15:00'::time, '18:00'::time),
+         ('18:00-21:00', '18:00'::time, '21:00'::time)
+       ) AS ts(time_slot, slot_start, slot_end)
+       WHERE s.store_id = $1
+         AND s.status != 'cancelled'
+         ${companyFilter}
+         AND s.date >= DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW'))
+         AND s.date <  DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW')) + INTERVAL '7 days'
+         AND s.start_time < ts.slot_end
+         AND s.end_time   > ts.slot_start
+       GROUP BY 1, 2`,
+      schedParams,
+    );
+
+    const schedMap = new Map<string, number>();
+    for (const s of scheduled) {
+      schedMap.set(`${s.day_of_week}|${s.time_slot}`, s.scheduled_staff);
+    }
+    for (const row of merged as any[]) {
+      row.scheduled_staff = schedMap.get(`${row.day_of_week}|${row.time_slot}`) ?? 0;
+    }
+  }
+
   ok(res, { affluence: merged });
 });
 
@@ -1598,7 +1638,7 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
       : `SELECT id, company_id FROM stores WHERE id = $1 AND is_active IS NOT FALSE`,
     scopeByCompany ? [store_id, companyId] : [store_id],
   );
-  if (!store) return notFound(res, 'Store not found');
+  if (!store) return notFound(res, 'Store not found', 'STORE_NOT_FOUND');
 
   const effectiveCompanyId = store.company_id;
 
@@ -1609,7 +1649,7 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
         AND time_slot = $4 AND (iso_week = $5 OR (iso_week IS NULL AND $5::int IS NULL))`,
     [effectiveCompanyId, store_id, day_of_week, time_slot, iso_week ?? null],
   );
-  if (existing) return conflict(res, 'An affluence entry already exists for this slot. Use PUT to update it.');
+  if (existing) return conflict(res, 'Esiste già una fascia per questa combinazione. Usa PUT per modificarla.');
 
   const row = await queryOne(
     `INSERT INTO store_affluence (company_id, store_id, day_of_week, time_slot, level, required_staff, iso_week)
@@ -1642,7 +1682,7 @@ export const updateAffluence = asyncHandler(async (req: Request, res: Response) 
     params,
   );
 
-  if (!row) return notFound(res, 'Affluence entry not found');
+  if (!row) return notFound(res, 'Fascia affluenza non trovata');
   ok(res, { affluence: row });
 });
 
@@ -1663,6 +1703,6 @@ export const deleteAffluence = asyncHandler(async (req: Request, res: Response) 
     params,
   );
 
-  if (!row) return notFound(res, 'Affluence entry not found');
+  if (!row) return notFound(res, 'Fascia affluenza non trovata');
   ok(res, { deleted: id });
 });

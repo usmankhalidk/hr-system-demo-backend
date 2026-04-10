@@ -480,6 +480,39 @@ describe('POST /api/shifts/affluence', () => {
       });
     expect(res.status).toBe(403);
   });
+
+  it('returns 409 CONFLICT when creating a duplicate slot', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    1,
+        time_slot:      '09:00-12:00',
+        level:          'high',
+        required_staff: 5,
+        iso_week:       null,
+      });
+    expect(res.status).toBe(409);
+    expect(res.body.code).toBe('CONFLICT');
+  });
+
+  it('returns 404 STORE_NOT_FOUND for non-existent store', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       999999,
+        day_of_week:    1,
+        time_slot:      '09:00-12:00',
+        level:          'low',
+        required_staff: 2,
+      });
+    expect(res.status).toBe(404);
+    expect(res.body.code).toBe('STORE_NOT_FOUND');
+  });
 });
 
 describe('PUT /api/shifts/affluence/:id', () => {
@@ -565,5 +598,41 @@ describe('GET /api/shifts/affluence raw mode', () => {
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(Array.isArray(res.body.data.affluence)).toBe(true);
+  });
+});
+
+describe('GET /api/shifts/affluence with week — scheduledStaff annotation', () => {
+  it('returns scheduled_staff count when week + store_id are provided', async () => {
+    const token = await login('admin@acme-test.com');
+    // First ensure at least one affluence slot exists for Monday
+    await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    2,    // Tuesday — seed shift is 2026-03-10 (Tue, 2026-W11)
+        time_slot:      '09:00-12:00',
+        level:          'medium',
+        required_staff: 3,
+        iso_week:       null,
+      });
+
+    const res = await request
+      .get('/api/shifts/affluence')
+      .query({ store_id: seeds.romaStoreId, week: '2026-W11' })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const rows: any[] = res.body.data.affluence;
+    expect(Array.isArray(rows)).toBe(true);
+    // Every row must have a scheduled_staff field (number)
+    for (const row of rows) {
+      expect(typeof row.scheduled_staff).toBe('number');
+    }
+    // The Tuesday 09:00-12:00 slot should show 1 scheduled staff
+    // (seed shift for employee1 is 2026-03-10 09:00-17:00 which overlaps 09:00-12:00)
+    const tueTile = rows.find((r: any) => r.day_of_week === 2 && r.time_slot === '09:00-12:00');
+    expect(tueTile).toBeDefined();
+    expect(tueTile.scheduled_staff).toBe(1);
   });
 });
