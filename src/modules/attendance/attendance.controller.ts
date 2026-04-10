@@ -12,41 +12,39 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 // Returns a signed JWT (the "QR token") + the nonce stored for replay prevention
 // ---------------------------------------------------------------------------
 export const generateQr = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const storeId = parseInt(req.query.store_id as string, 10);
 
   if (!storeId || isNaN(storeId)) {
-    badRequest(res, 'store_id obbligatorio', 'VALIDATION_ERROR');
-    return;
+    return badRequest(res, 'store_id obbligatorio', 'VALIDATION_ERROR');
   }
 
-  // Verify store belongs to this company
-  const store = await queryOne<{ id: number }>(
-    `SELECT id FROM stores WHERE id = $1 AND company_id = $2 AND is_active = true`,
-    [storeId, companyId],
+  // Verify store exists and is in scope
+  const store = await queryOne<{ id: number; company_id: number }>(
+    `SELECT id, company_id FROM stores WHERE id = $1 AND company_id = ANY($2) AND is_active = true`,
+    [storeId, allowedCompanyIds],
   );
   if (!store) {
-    badRequest(res, 'Negozio non trovato', 'NOT_FOUND');
-    return;
+    return badRequest(res, 'Negozio non trovato', 'NOT_FOUND');
   }
 
   // store_manager and store_terminal can only generate QR for their own store
   const roleLimitedToStore = req.user!.role === 'store_manager' || req.user!.role === 'store_terminal';
   if (roleLimitedToStore && storeId !== req.user!.storeId) {
-    forbidden(res, 'Puoi generare QR solo per il tuo negozio');
-    return;
+    return forbidden(res, 'Puoi generare QR solo per il tuo negozio');
   }
 
   const nonce = crypto.randomUUID();
 
-  // Store nonce for replay prevention
+  // Store nonce for replay prevention using the store's company context
   const tokenRow = await queryOne<{ id: number }>(
     `INSERT INTO qr_tokens (company_id, store_id, nonce)
      VALUES ($1, $2, $3) RETURNING id`,
-    [companyId, storeId, nonce],
+    [store.company_id, storeId, nonce],
   );
 
-  const token = signQrToken2(companyId!, storeId, nonce);
+  // Sign token using the store's company context
+  const token = signQrToken2(store.company_id, storeId, nonce);
   const expiresIn = parseInt(process.env.QR_TOKEN_TTL || '60', 10);
 
   ok(res, {
