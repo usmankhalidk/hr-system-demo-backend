@@ -1517,28 +1517,30 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
 // GET /api/shifts/affluence  ?store_id&week&day_of_week
 // ---------------------------------------------------------------------------
 export const getAffluence = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const { companyId, is_super_admin } = req.user!;
   const { store_id, week, day_of_week, raw } = req.query as Record<string, string>;
 
-  const params: any[] = [companyId];
-  let extraWhere = '';
-  let idx = 2;
+  // Super admins can query across companies; regular users are scoped to their own.
+  const scopeByCompany = companyId != null && !is_super_admin;
+  const params: any[] = scopeByCompany ? [companyId] : [];
+  let whereClause = scopeByCompany ? 'WHERE company_id = $1' : 'WHERE 1=1';
+  let idx = scopeByCompany ? 2 : 1;
   let weekPlaceholder: number | null = null;
 
   if (store_id) {
-    extraWhere += ` AND store_id = $${idx}`;
+    whereClause += ` AND store_id = $${idx}`;
     params.push(parseInt(store_id, 10));
     idx++;
   }
   if (week) {
     const isoWeek = parseInt(week.replace(/.*W/, ''), 10);
-    extraWhere += ` AND (iso_week = $${idx} OR iso_week IS NULL)`;
+    whereClause += ` AND (iso_week = $${idx} OR iso_week IS NULL)`;
     params.push(isoWeek);
     weekPlaceholder = idx;
     idx++;
   }
   if (day_of_week) {
-    extraWhere += ` AND day_of_week = $${idx}`;
+    whereClause += ` AND day_of_week = $${idx}`;
     params.push(parseInt(day_of_week, 10));
     idx++;
   }
@@ -1546,7 +1548,7 @@ export const getAffluence = asyncHandler(async (req: Request, res: Response) => 
   const affluence = await query(
     `SELECT *
        FROM store_affluence
-      WHERE company_id = $1${extraWhere}
+      ${whereClause}
       ORDER BY day_of_week,
                time_slot,
                ${weekPlaceholder != null ? `CASE WHEN iso_week = $${weekPlaceholder} THEN 0 ELSE 1 END,` : ''}
@@ -1586,18 +1588,26 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
     iso_week?: number | null;
   };
 
-  const store = await queryOne(
-    `SELECT id FROM stores WHERE id = $1 AND company_id = $2 AND is_active = true`,
-    [store_id, companyId],
+  // Super admins (is_super_admin=true or null companyId) can manage any store.
+  // Use IS NOT FALSE so stores with is_active = NULL are also matched.
+  const { is_super_admin } = req.user!;
+  const scopeByCompany = companyId != null && !is_super_admin;
+  const store = await queryOne<{ id: number; company_id: number }>(
+    scopeByCompany
+      ? `SELECT id, company_id FROM stores WHERE id = $1 AND company_id = $2 AND is_active IS NOT FALSE`
+      : `SELECT id, company_id FROM stores WHERE id = $1 AND is_active IS NOT FALSE`,
+    scopeByCompany ? [store_id, companyId] : [store_id],
   );
   if (!store) return notFound(res, 'Store not found');
+
+  const effectiveCompanyId = store.company_id;
 
   // Check for existing row with same slot to prevent duplicates
   const existing = await queryOne(
     `SELECT id FROM store_affluence
       WHERE company_id = $1 AND store_id = $2 AND day_of_week = $3
         AND time_slot = $4 AND (iso_week = $5 OR (iso_week IS NULL AND $5::int IS NULL))`,
-    [companyId, store_id, day_of_week, time_slot, iso_week ?? null],
+    [effectiveCompanyId, store_id, day_of_week, time_slot, iso_week ?? null],
   );
   if (existing) return conflict(res, 'An affluence entry already exists for this slot. Use PUT to update it.');
 
@@ -1605,7 +1615,7 @@ export const createAffluence = asyncHandler(async (req: Request, res: Response) 
     `INSERT INTO store_affluence (company_id, store_id, day_of_week, time_slot, level, required_staff, iso_week)
      VALUES ($1, $2, $3, $4, $5, $6, $7)
      RETURNING *`,
-    [companyId, store_id, day_of_week, time_slot, level, required_staff, iso_week ?? null],
+    [effectiveCompanyId, store_id, day_of_week, time_slot, level, required_staff, iso_week ?? null],
   );
 
   created(res, { affluence: row });
@@ -1620,12 +1630,16 @@ export const updateAffluence = asyncHandler(async (req: Request, res: Response) 
   if (Number.isNaN(id)) return badRequest(res, 'Invalid ID');
   const { level, required_staff } = req.body as { level: string; required_staff: number };
 
+  const { is_super_admin } = req.user!;
+  const scopeByCompany = companyId != null && !is_super_admin;
+  const companyFilter = scopeByCompany ? 'AND company_id = $4' : '';
+  const params = scopeByCompany ? [level, required_staff, id, companyId] : [level, required_staff, id];
   const row = await queryOne(
     `UPDATE store_affluence
         SET level = $1, required_staff = $2
-      WHERE id = $3 AND company_id = $4
+      WHERE id = $3 ${companyFilter}
       RETURNING *`,
-    [level, required_staff, id, companyId],
+    params,
   );
 
   if (!row) return notFound(res, 'Affluence entry not found');
@@ -1640,9 +1654,13 @@ export const deleteAffluence = asyncHandler(async (req: Request, res: Response) 
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) return badRequest(res, 'Invalid ID');
 
+  const { is_super_admin } = req.user!;
+  const scopeByCompany = companyId != null && !is_super_admin;
+  const companyFilter = scopeByCompany ? 'AND company_id = $2' : '';
+  const params = scopeByCompany ? [id, companyId] : [id];
   const row = await queryOne(
-    `DELETE FROM store_affluence WHERE id = $1 AND company_id = $2 RETURNING id`,
-    [id, companyId],
+    `DELETE FROM store_affluence WHERE id = $1 ${companyFilter} RETURNING id`,
+    params,
   );
 
   if (!row) return notFound(res, 'Affluence entry not found');
