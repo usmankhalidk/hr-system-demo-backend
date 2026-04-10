@@ -422,3 +422,148 @@ describe('GET /api/shifts/affluence', () => {
     expect(res.status).toBe(403);
   });
 });
+
+// ---------------------------------------------------------------------------
+// POST / PUT / DELETE /api/shifts/affluence
+// ---------------------------------------------------------------------------
+
+describe('POST /api/shifts/affluence', () => {
+  it('admin can create an affluence entry', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    1,
+        time_slot:      '09:00-12:00',
+        level:          'low',
+        required_staff: 3,
+        iso_week:       null,
+      });
+    expect(res.status).toBe(201);
+    expect(res.body.data.affluence).toMatchObject({
+      store_id:       seeds.romaStoreId,
+      day_of_week:    1,
+      time_slot:      '09:00-12:00',
+      level:          'low',
+      required_staff: 3,
+    });
+  });
+
+  it('returns 400 for invalid level', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    1,
+        time_slot:      '09:00-12:00',
+        level:          'extreme',
+        required_staff: 3,
+      });
+    expect(res.status).toBe(400);
+  });
+
+  it('store_manager gets 403', async () => {
+    const token = await login('manager.roma@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    2,
+        time_slot:      '12:00-15:00',
+        level:          'medium',
+        required_staff: 4,
+      });
+    expect(res.status).toBe(403);
+  });
+});
+
+describe('PUT /api/shifts/affluence/:id', () => {
+  let createdId: number;
+
+  beforeAll(async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    3,
+        time_slot:      '15:00-18:00',
+        level:          'low',
+        required_staff: 2,
+      });
+    createdId = res.body.data.affluence.id;
+  });
+
+  it('admin can update level and required_staff', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put(`/api/shifts/affluence/${createdId}`)
+      .set('Authorization', `Bearer ${token}`)
+      .send({ level: 'high', required_staff: 8 });
+    expect(res.status).toBe(200);
+    expect(res.body.data.affluence).toMatchObject({ level: 'high', required_staff: 8 });
+  });
+
+  it('returns 404 for non-existent id', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .put('/api/shifts/affluence/999999')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ level: 'medium', required_staff: 5 });
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('DELETE /api/shifts/affluence/:id', () => {
+  let deletableId: number;
+
+  beforeAll(async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .post('/api/shifts/affluence')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        store_id:       seeds.romaStoreId,
+        day_of_week:    4,
+        time_slot:      '18:00-21:00',
+        level:          'medium',
+        required_staff: 5,
+      });
+    deletableId = res.body.data.affluence.id;
+  });
+
+  it('admin can delete an affluence entry', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .delete(`/api/shifts/affluence/${deletableId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.deleted).toBe(deletableId);
+  });
+
+  it('returns 404 after deletion', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .delete(`/api/shifts/affluence/${deletableId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/shifts/affluence raw mode', () => {
+  it('raw=1 returns 200 with array', async () => {
+    const token = await login('admin@acme-test.com');
+    const res = await request
+      .get('/api/shifts/affluence')
+      .query({ store_id: seeds.romaStoreId, raw: '1' })
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data.affluence)).toBe(true);
+  });
+});
