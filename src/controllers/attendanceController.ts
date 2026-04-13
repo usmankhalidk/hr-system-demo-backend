@@ -30,7 +30,7 @@ export async function checkin(req: Request, res: Response) {
   }
 
   // 1. Validate QR token signature + expiry
-  let qrPayload: { companyId: number; storeId: number; shiftId?: number };
+  let qrPayload: any;
   try {
     qrPayload = verifyQrToken(qrToken);
   } catch (err) {
