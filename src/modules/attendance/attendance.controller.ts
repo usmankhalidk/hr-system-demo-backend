@@ -574,6 +574,8 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       event_time: string;
       client_uuid?: string;
       device_fingerprint?: string;
+      qr_token?: string;
+      notes?: string;
     }>;
   };
 

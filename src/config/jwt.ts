@@ -23,6 +23,8 @@ export interface JwtPayload {
 export interface QrPayload {
   companyId: number;
   shiftId: number;
+  storeId?: number;
+  nonce?: string;
   iat: number;
   exp: number;
 }
