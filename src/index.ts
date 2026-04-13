@@ -38,7 +38,8 @@ import { processEscalationLogic } from './modules/leave/leave.controller';
 dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+// const PORT = process.env.PORT || 3001;
+const PORT = Number(process.env.PORT || 3001);
 
 const rawCorsOrigins = (process.env.CORS_ORIGIN || '')
   .split(',')
@@ -55,13 +56,18 @@ if (rawCorsOrigins.length > 0) {
   allowedOrigins = ['http://localhost:5173'];
 }
 
+// app.use(cors({
+//   origin: (origin, cb) => {
+//     // Allow requests with no origin (curl, mobile apps, server-to-server)
+//     if (!origin) return cb(null, true);
+//     if (allowedOrigins.includes(origin)) return cb(null, true);
+//     cb(new Error(`CORS: origin ${origin} not allowed`));
+//   },
+// }));
+
 app.use(cors({
-  origin: (origin, cb) => {
-    // Allow requests with no origin (curl, mobile apps, server-to-server)
-    if (!origin) return cb(null, true);
-    if (allowedOrigins.includes(origin)) return cb(null, true);
-    cb(new Error(`CORS: origin ${origin} not allowed`));
-  },
+  origin: true,
+  credentials: true,
 }));
 app.use(express.json());
 
@@ -319,10 +325,13 @@ async function start() {
   const httpServer = createServer(app);
   initSocket(httpServer, allowedOrigins);
 
-  httpServer.listen(PORT, () => {
-    console.log(`HR System backend running on http://localhost:${PORT}`);
-  });
+  // httpServer.listen(PORT, () => {
+  //   console.log(`HR System backend running on http://localhost:${PORT}`);
+  // });
 
+  httpServer.listen(PORT, '0.0.0.0', () => {
+    console.log(`HR System backend running on http://192.168.1.12:${PORT}`);
+  });
 
   // Start background cron jobs (skip in test environment)
   if (process.env.NODE_ENV !== 'test') {

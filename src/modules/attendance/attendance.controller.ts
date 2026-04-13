@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { pool, query, queryOne } from '../../config/database';
-import { ok, created, badRequest, conflict, forbidden, notFound } from '../../utils/response';
+import { ok, created, badRequest, conflict, forbidden, notFound, serverError } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
@@ -75,7 +75,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   } else if (req.body.unique_id) {
     // Resolve unique_id → numeric user_id within this company
     const found = await queryOne<{ id: number }>(
-      `SELECT id FROM users WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
+      `SELECT id FROM users WHERE LOWER(unique_id) = LOWER($1) AND company_id = $2 AND status = 'active'`,
       [req.body.unique_id as string, companyId],
     );
     if (!found) {
@@ -274,8 +274,8 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     );
     const result = await client.query(
       `INSERT INTO attendance_events
-         (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes)
-       VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7)
+         (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes, device_fingerprint, source_ip)
+       VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7, $8, $9)
        RETURNING *`,
       [
         companyId,
@@ -285,6 +285,8 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
         qrToken.id,
         currentShift.id,
         notes ?? null,
+        device_fingerprint ?? null,
+        req.ip
       ],
     );
     await client.query('COMMIT');
@@ -558,16 +560,11 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/attendance/sync  — offline batch sync (store_terminal only)
-// body: { events: Array<{ event_type, user_id, event_time, notes? }> }
+// POST /api/attendance/sync  — offline batch sync
+// body: { events: Array<{ event_type, user_id, event_time, qr_token?, notes?, client_uuid? }> }
 // ---------------------------------------------------------------------------
 export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, storeId } = req.user!;
-
-  if (!storeId) {
-    badRequest(res, 'store_id obbligatorio per la sincronizzazione', 'VALIDATION_ERROR');
-    return;
-  }
+  const { companyId, role, userId: callerId, storeId: callerStoreId } = req.user!;
 
   const { events } = req.body as {
     events: Array<{
@@ -575,65 +572,87 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       user_id?: number;
       unique_id?: string;
       event_time: string;
-      notes?: string;
+      client_uuid?: string;
+      device_fingerprint?: string;
     }>;
   };
 
-  if (!Array.isArray(events) || events.length === 0) {
-    badRequest(res, 'Nessun evento da sincronizzare', 'VALIDATION_ERROR');
-    return;
+  const fs = require('fs');
+
+  if (companyId == null) {
+    return badRequest(res, 'Company ID non trovato nel token sessione', 'SESSION_ERROR');
   }
+
+  try {
+    console.log(`[AttendanceSync] Received sync request with ${events.length} events from user ${callerId} (Company: ${companyId})`);
+    if (events.length > 0) {
+      console.log('[AttendanceSync] PAYLOAD PREVIEW:');
+      console.table(events.slice(0, 5).map(e => ({ type: e.event_type, time: e.event_time, uuid: e.client_uuid?.slice(0,8) })));
+    }
 
   const VALID_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
+  const syncedUuids: string[] = [];
 
-  // Resolve unique_ids → numeric user IDs (for events that use unique_id)
+  // 1. Resolve users
   const uniqueIdStrings = [...new Set(events.filter((e) => e.unique_id).map((e) => e.unique_id as string))];
   const uniqueIdMap = new Map<string, number>();
   if (uniqueIdStrings.length > 0) {
     const uniqueIdRows = await query<{ id: number; unique_id: string }>(
       `SELECT id, unique_id FROM users
-       WHERE unique_id = ANY($1::text[]) AND company_id = $2 AND status = 'active'`,
+       WHERE LOWER(unique_id) = ANY(ARRAY(SELECT LOWER(x) FROM unnest($1::text[]) x)) 
+         AND company_id = $2::int AND status = 'active'`,
       [uniqueIdStrings, companyId],
     );
-    for (const row of uniqueIdRows) uniqueIdMap.set(row.unique_id, row.id);
+    for (const row of uniqueIdRows) {
+      uniqueIdMap.set(row.unique_id.toLowerCase(), row.id);
+    }
   }
-
-  // Pre-fetch all numeric user IDs in one query (avoids N+1)
+  console.log(`[AttendanceSync] Processing batch of ${events.length}. UserMap Size: ${uniqueIdMap.size}`);
   const numericUserIds = [...new Set(events.filter((e) => !e.unique_id && e.user_id != null).map((e) => e.user_id as number))];
   const validUserRows = await query<{ id: number }>(
     numericUserIds.length > 0
-      ? `SELECT id FROM users WHERE id = ANY($1::int[]) AND company_id = $2 AND status = 'active'`
-      : `SELECT id FROM users WHERE FALSE AND company_id = $2`,
+      ? `SELECT id FROM users WHERE id = ANY($1::int[]) AND company_id = $2::int AND status = 'active'`
+      : `SELECT id FROM users WHERE FALSE AND company_id = $1::int`,
     numericUserIds.length > 0 ? [numericUserIds, companyId] : [companyId],
   );
   const validUserSet = new Set(validUserRows.map((r) => r.id));
 
-  // Pre-fetch all shifts for this store across the event date range (avoids N+1 per event)
-  const eventTimestamps = events.map((e) => new Date(e.event_time)).filter((t) => !isNaN(t.getTime()));
-  const shiftMap = new Map<string, number>(); // "userId:date" → first shift id
-  if (eventTimestamps.length > 0) {
-    const dateStrings = eventTimestamps.map((t) => t.toISOString().split('T')[0]).sort();
-    const minDate = dateStrings[0];
-    const maxDate = dateStrings[dateStrings.length - 1];
-    const shiftRows = await query<{ id: number; user_id: number; date: string }>(
-      `SELECT id, user_id, TO_CHAR(date, 'YYYY-MM-DD') AS date FROM shifts
-       WHERE company_id = $1 AND store_id = $2 AND status != 'cancelled'
-         AND date BETWEEN $3 AND $4
-       ORDER BY start_time`,
-      [companyId, storeId, minDate, maxDate],
+  // If the caller doesn't have a storeId in their JWT (e.g. Admin/HR), 
+  // we try to resolve it from the user's registry if needed as a last resort.
+  let resolvedCallerStoreId = callerStoreId;
+  if (!resolvedCallerStoreId) {
+    const userRow = await queryOne<{ store_id: number | null }>(
+      `SELECT store_id FROM users WHERE id = $1::int`,
+      [callerId]
     );
-    for (const row of shiftRows) {
-      const key = `${row.user_id}:${row.date}`;
-      if (!shiftMap.has(key)) shiftMap.set(key, row.id); // keep earliest start_time
-    }
+    resolvedCallerStoreId = userRow?.store_id || null;
   }
 
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     const rowNum = i + 1;
+
+    // Security: employees can only sync their own data
+    let resolvedUserId: number | undefined;
+    if (ev.unique_id) {
+      resolvedUserId = uniqueIdMap.get(ev.unique_id.toLowerCase());
+    }
+    
+    // Fallback to user_id if unique_id didn't resolve or wasn't provided
+    if (resolvedUserId == null && ev.user_id != null) {
+      resolvedUserId = ev.user_id;
+    }
+
+    if (role === 'employee' && resolvedUserId !== callerId) {
+      console.warn(`[Sync] Row ${rowNum} REJECTED: User mismatch (Target ${resolvedUserId} vs Caller ${callerId})`);
+      errors.push(`Evento ${rowNum}: Non puoi sincronizzare dati per altri utenti`);
+      failed++;
+      continue;
+    }
+    console.log(`[Sync] Row ${rowNum} START: type=${ev.event_type}, user=${resolvedUserId}, time=${ev.event_time}`);
 
     if (!VALID_TYPES.has(ev.event_type)) {
       errors.push(`Evento ${rowNum}: tipo non valido '${ev.event_type}'`);
@@ -648,56 +667,123 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    // Reject timestamps more than 5 minutes in the future
-    const FIVE_MIN_MS = 5 * 60 * 1000;
-    if (ts.getTime() > Date.now() + FIVE_MIN_MS) {
-      errors.push(`Evento ${rowNum}: data/ora non può essere nel futuro`);
+    // Resolve user ID within company
+    if (ev.unique_id && resolvedUserId == null) {
+      errors.push(`Evento ${rowNum}: dipendente '${ev.unique_id}' non trovato o inattivo`);
       failed++;
       continue;
     }
 
-    // Resolve user_id: prefer unique_id lookup, fall back to numeric user_id
-    let resolvedUserId: number | undefined;
-    if (ev.unique_id) {
-      resolvedUserId = uniqueIdMap.get(ev.unique_id);
-      if (resolvedUserId == null) {
-        errors.push(`Evento ${rowNum}: dipendente con codice '${ev.unique_id}' non trovato`);
-        failed++;
-        continue;
-      }
-    } else if (ev.user_id != null) {
-      if (!validUserSet.has(ev.user_id)) {
-        errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
-        failed++;
-        continue;
-      }
-      resolvedUserId = ev.user_id;
-    } else {
-      errors.push(`Evento ${rowNum}: user_id o unique_id obbligatorio`);
+    if (resolvedUserId == null) {
+      errors.push(`Evento ${rowNum}: utente non risolto`);
       failed++;
       continue;
     }
 
+    // QR Token verification (lenient on expiry for sync)
+    let storeId = resolvedCallerStoreId || 0;
+    let qrTokenId: number | null = null;
+    if (ev.qr_token) {
+      try {
+        const payload = verifyQrToken2(ev.qr_token, { ignoreExpiration: true });
+        if (payload.companyId === companyId) {
+          storeId = payload.storeId;
+          // [FIX] Table name is qr_tokens, not attendance_qr_tokens
+          const tokenRow = await queryOne<{ id: number }>(
+            `SELECT id FROM qr_tokens WHERE nonce = $1 AND store_id = $2::int`,
+            [payload.nonce, storeId]
+          );
+          if (tokenRow) qrTokenId = tokenRow.id;
+        }
+      } catch (err) {
+        // We log it but proceed with the user's home store if possible
+        console.warn(`[Sync] QR token in event ${rowNum} expired or invalid, using fallback store_id`);
+      }
+    }
+
+    if (!storeId) {
+      // Final attempt to find the target user's store
+      const targetUser = await queryOne<{ store_id: number | null }>(
+        `SELECT store_id FROM users WHERE id = $1::int`,
+        [resolvedUserId]
+      );
+      storeId = targetUser?.store_id || 0;
+    }
+
+    if (!storeId) {
+      errors.push(`Evento ${rowNum}: store_id non determinabile (nessun store assegnato all'utente)`);
+      failed++;
+      continue;
+    }
+
+    // Shift linking (optional helper for reporting)
     const dateStr = ts.toISOString().split('T')[0];
-    const linkedShiftId = shiftMap.get(`${resolvedUserId}:${dateStr}`) ?? null;
+    const linkedShift = await queryOne<{ id: number }>(
+      `SELECT id FROM shifts
+       WHERE company_id = $1::int AND user_id = $2::int AND date = $3
+         AND store_id = $4::int AND status != 'cancelled'
+       ORDER BY start_time LIMIT 1`,
+      [companyId, resolvedUserId, dateStr, storeId],
+    );
 
     try {
+      // Use client_uuid for deduplication (ON CONFLICT DO NOTHING)
       await queryOne(
         `INSERT INTO attendance_events
-           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
-         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)
-         ON CONFLICT (company_id, user_id, event_type, event_time) DO NOTHING`,
-        [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(),
-         linkedShiftId, ev.notes ?? null],
+           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id, client_uuid, device_fingerprint, source_ip)
+         VALUES ($1::int, $2::int, $3::int, $4, $5, 'sync', $6::int, $7, $8::int, $9, $10, $11)
+         ON CONFLICT (client_uuid) DO NOTHING`,
+        [
+          companyId, 
+          storeId, 
+          resolvedUserId, 
+          ev.event_type, 
+          ts.toISOString(),
+          linkedShift?.id ?? null, 
+          ev.notes ?? null, 
+          qrTokenId, 
+          ev.client_uuid && /^[0-9a-fA-F-]{36}$/.test(ev.client_uuid) ? ev.client_uuid : null,
+          ev.device_fingerprint ?? null,
+          req.ip
+        ],
       );
       synced++;
-    } catch {
-      errors.push(`Evento ${rowNum}: errore inserimento`);
-      failed++;
+      if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
+      
+      try {
+        const logMsg = `[${new Date().toISOString()}] Sync Row ${i+1} SUCCESS: user=${resolvedUserId}, store=${storeId}\n`;
+        require('fs').appendFileSync('sync_debug.log', logMsg);
+      } catch {}
+    } catch (err: any) {
+      try {
+        const logErr = `[${new Date().toISOString()}] Sync Row ${i+1} DATABASE ERROR: ${err.message}\n`;
+        require('fs').appendFileSync('sync_debug.log', logErr);
+      } catch {}
+
+      // FALLBACK: Try without client_uuid if the DB still has issues with it
+      try {
+        await queryOne(
+          `INSERT INTO attendance_events
+             (company_id, store_id, user_id, event_type, event_time, source, notes)
+           VALUES ($1::int, $2::int, $3::int, $4, $5, 'sync', $6)`,
+          [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(), `[RESTORED SYNC] ${ev.notes || ''}`]
+        );
+        synced++;
+        if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
+      } catch (fallbackErr: any) {
+        errors.push(`Evento ${i+1}: errore (${err.message})`);
+        failed++;
+      }
     }
   }
 
-  ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length });
+    const summary = `[${new Date().toISOString()}] Finished batch: ${synced} synced, ${failed} failed.\n`;
+    try { fs.appendFileSync('sync_debug.log', summary); } catch (e) {}
+    return ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length, syncedUuids });
+  } catch (err: any) {
+    console.error('[AttendanceSync] CRITICAL 500 ERROR:', err);
+    return serverError(res, `Sync failed: ${err.message}`, 'SYNC_CRASH');
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1100,7 +1186,7 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
     [companyId, userId, from, to],
   );
 
-  ok(res, { events, total: events.length });
+  ok(res, { events: events || [], total: (events || []).length });
 });
 
 // ---------------------------------------------------------------------------
