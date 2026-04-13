@@ -40,7 +40,7 @@ const LIST_FIELDS_WITH_COMPANY = `
 const DETAIL_FIELDS = `
   ${LIST_FIELDS},
   u.personal_email, u.date_of_birth, u.nationality, u.gender,
-  u.iban, u.address, u.cap,
+  u.iban, u.address, u.cap, u.phone, u.city, u.state, u.country,
   u.contract_type, u.probation_months,
   u.device_reset_pending,
   (u.registered_device_token IS NOT NULL) AS device_registered,
@@ -870,13 +870,15 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       company_id, store_id, supervisor_id, name, surname, email, password_hash,
       role, unique_id, department, hire_date, contract_end_date,
       working_type, weekly_hours, off_days, personal_email, date_of_birth, nationality,
-      gender, iban, address, cap, first_aid_flag, marital_status, status,
+      gender, iban, address, cap, city, state, country, phone,
+      first_aid_flag, marital_status, status,
       contract_type, probation_months, termination_type
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
+        nationality, gender, iban, address, cap, city, state, country, phone,
+        first_aid_flag, marital_status, status,
         contract_type, probation_months, termination_type`,
     [
       companyId,
@@ -901,6 +903,10 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.iban ?? null,
       body.address ?? null,
       body.cap ?? null,
+      body.city ?? null,
+      body.state ?? null,
+      body.country ?? null,
+      body.phone ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       'active',
@@ -1008,15 +1014,17 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       off_days = $13,
       personal_email = $14, date_of_birth = $15, nationality = $16,
       gender = $17, iban = $18, address = $19, cap = $20,
-      first_aid_flag = $21, marital_status = $22,
-      contract_type = $23, probation_months = $24,
-      termination_date = $25, termination_type = $26,
-      password_hash = COALESCE($27, password_hash),
+      city = $21, state = $22, country = $23, phone = $24,
+      first_aid_flag = $25, marital_status = $26,
+      contract_type = $27, probation_months = $28,
+      termination_date = $29, termination_type = $30,
+      password_hash = COALESCE($31, password_hash),
       updated_at = NOW()
-    WHERE id = $28 AND company_id = $29
+    WHERE id = $32 AND company_id = $33
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
+        nationality, gender, iban, address, cap, city, state, country, phone,
+        first_aid_flag, marital_status, status,
         contract_type, probation_months, termination_date, termination_type`,
     [
       body.store_id ?? null,
@@ -1039,6 +1047,10 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.iban ?? null,
       body.address ?? null,
       body.cap ?? null,
+      body.city ?? null,
+      body.state ?? null,
+      body.country ?? null,
+      body.phone ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       body.contract_type ?? null,
