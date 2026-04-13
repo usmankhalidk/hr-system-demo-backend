@@ -4,154 +4,192 @@ import { verifyQrToken } from '../config/jwt';
 
 interface CheckinBody {
   qrToken: string;
+  eventType: 'checkin' | 'checkout' | 'break_start' | 'break_end';
+  deviceFingerprint?: string;
+  notes?: string;
+}
+
+interface SyncEvent {
+  event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
+  event_time: string;
+  qr_token: string;
+  client_uuid: string;
+  device_fingerprint?: string;
+  notes?: string;
 }
 
 // POST /api/attendance/checkin
-// Employee submits the QR token. Server validates it and records check-in or check-out.
 export async function checkin(req: Request, res: Response) {
-  const { qrToken } = req.body as CheckinBody;
-  const employeeId = req.user!.userId;
-  const userCompanyId = req.user!.companyId;
+  const { qrToken, eventType, deviceFingerprint, notes } = req.body as CheckinBody;
+  const userId = req.user!.userId;
+  const companyId = req.user!.companyId;
 
-  if (!qrToken) {
-    res.status(400).json({ error: 'qrToken is required' });
+  if (!qrToken || !eventType) {
+    res.status(400).json({ error: 'qrToken and eventType are required' });
     return;
   }
 
   // 1. Validate QR token signature + expiry
-  let qrPayload: { companyId: number; shiftId: number };
+  let qrPayload: { companyId: number; storeId: number; shiftId?: number };
   try {
     qrPayload = verifyQrToken(qrToken);
-  } catch {
+  } catch (err) {
     res.status(400).json({
       error: 'QR code is invalid or expired. Please scan the current code.',
+      code: 'INVALID_QR'
     });
     return;
   }
 
-  // 2. Company must match the employee's company
-  if (qrPayload.companyId !== userCompanyId) {
+  // 2. Company must match
+  if (qrPayload.companyId !== companyId) {
     res.status(403).json({ error: 'QR code does not belong to your company' });
     return;
   }
 
-  const shiftId = qrPayload.shiftId;
-
-  // 3. Employee must be assigned to this shift
-  const shift = await queryOne(
-    `SELECT id, date, start_time, end_time FROM shifts
-     WHERE id = $1 AND employee_id = $2 AND company_id = $3`,
-    [shiftId, employeeId, userCompanyId]
-  );
-  if (!shift) {
-    res.status(403).json({
-      error: 'You are not assigned to the shift this QR code represents',
-    });
-    return;
-  }
-
-  // 4. Check for open record today (check-in without check-out)
-  const openRecord = await queryOne(
-    `SELECT id, check_in_time FROM attendance
-     WHERE employee_id = $1 AND shift_id = $2 AND check_out_time IS NULL`,
-    [employeeId, shiftId]
-  );
-
-  if (openRecord) {
-    // Already checked in — this scan is a check-OUT
-    const [updated] = await query(
-      `UPDATE attendance
-       SET check_out_time = NOW(), qr_token_used = $1
-       WHERE id = $2
+  // 3. Record the event
+  try {
+    const [event] = await query(
+      `INSERT INTO attendance_events 
+       (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id, device_fingerprint, source_ip)
+       VALUES ($1, $2, $3, $4, NOW(), 'qr', $5, $6, NULL, $7, $8)
        RETURNING *`,
-      [qrToken, openRecord.id]
+      [
+        companyId, 
+        qrPayload.storeId, 
+        userId, 
+        eventType, 
+        qrPayload.shiftId || null, 
+        notes || null,
+        deviceFingerprint || null,
+        req.ip
+      ]
     );
-    res.json({ action: 'check_out', record: updated });
-  } else {
-    // New check-IN
-    const [created] = await query(
-      `INSERT INTO attendance (company_id, employee_id, shift_id, check_in_time, qr_token_used)
-       VALUES ($1, $2, $3, NOW(), $4)
-       RETURNING *`,
-      [userCompanyId, employeeId, shiftId, qrToken]
-    );
-    res.status(201).json({ action: 'check_in', record: created });
+
+    res.status(201).json({ success: true, data: event });
+  } catch (err: any) {
+    console.error('[Attendance] Checkin error:', err);
+    res.status(500).json({ error: 'Failed to record attendance' });
   }
 }
 
-// POST /api/attendance/sync  — offline records stored in localStorage
+// POST /api/attendance/sync
 export async function syncOfflineAttendance(req: Request, res: Response) {
-  const records: CheckinBody[] = req.body.records;
-  const employeeId = req.user!.userId;
-  const userCompanyId = req.user!.companyId;
+  const { events } = req.body as { events: SyncEvent[] };
+  const userId = req.user!.userId;
+  const companyId = req.user!.companyId;
 
-  if (!Array.isArray(records) || !records.length) {
-    res.status(400).json({ error: 'records array is required' });
+  if (!Array.isArray(events)) {
+    res.status(400).json({ error: 'events array is required' });
     return;
   }
 
-  const results: any[] = [];
+  const syncedUuids: string[] = [];
+  const errors: string[] = [];
+  let failed = 0;
 
-  for (const record of records) {
+  for (const event of events) {
     try {
-      const qrPayload = verifyQrToken(record.qrToken);
-      if (qrPayload.companyId !== userCompanyId) {
-        results.push({ status: 'failed', reason: 'company mismatch', record });
+      // 1. Check idempotency (already synced?)
+      const existing = await queryOne(
+        `SELECT id FROM attendance_events WHERE client_uuid = $1`,
+        [event.client_uuid]
+      );
+      if (existing) {
+        syncedUuids.push(event.client_uuid);
         continue;
       }
-      const [created] = await query(
-        `INSERT INTO attendance (company_id, employee_id, shift_id, check_in_time, qr_token_used, synced_at)
-         VALUES ($1, $2, $3, NOW(), $4, NOW())
-         RETURNING *`,
-        [userCompanyId, employeeId, qrPayload.shiftId, record.qrToken]
+
+      // 2. Validate QR token (even for offline records)
+      let qrPayload;
+      try {
+        qrPayload = verifyQrToken(event.qr_token);
+      } catch (e) {
+        // If token expired but was captured offline, we might still want to accept it 
+        // if we trust the client time. For now, let's be strict or log it.
+        failed++;
+        errors.push(`Invalid QR token for event ${event.client_uuid}`);
+        continue;
+      }
+
+      if (qrPayload.companyId !== companyId) {
+        failed++;
+        errors.push(`Company mismatch for event ${event.client_uuid}`);
+        continue;
+      }
+
+      // 3. Insert record
+      await query(
+        `INSERT INTO attendance_events 
+         (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, client_uuid, device_fingerprint, source_ip)
+         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7, $8, $9, $10)`,
+        [
+          companyId,
+          qrPayload.storeId,
+          userId,
+          event.event_type,
+          event.event_time, // captured on device
+          qrPayload.shiftId || null,
+          event.notes || null,
+          event.client_uuid,
+          event.device_fingerprint || null,
+          req.ip
+        ]
       );
-      results.push({ status: 'synced', record: created });
-    } catch {
-      results.push({ status: 'failed', reason: 'invalid or expired token', record });
+
+      syncedUuids.push(event.client_uuid);
+    } catch (err: any) {
+      console.error(`[AttendanceSync] Error syncing event ${event.client_uuid}:`, err);
+      failed++;
+      errors.push(err.message || 'Database error');
     }
   }
 
-  res.json({ synced: results.filter((r) => r.status === 'synced').length, results });
+  res.json({
+    success: true,
+    data: {
+      syncedUuids,
+      failed,
+      errors: errors.length > 0 ? errors : undefined
+    }
+  });
 }
 
-// GET /api/attendance
+// GET /api/attendance/my
 export async function listAttendance(req: Request, res: Response) {
+  const userId = req.user!.userId;
   const companyId = req.user!.companyId;
-  const { employee_id, date_from, date_to } = req.query;
+  const { dateFrom, dateTo } = req.query;
 
   let sql = `
-    SELECT a.id, a.employee_id, u.name AS employee_name,
-           a.shift_id, a.check_in_time, a.check_out_time,
-           a.status, a.company_id, a.created_at,
-           TO_CHAR(s.date, 'YYYY-MM-DD')      AS shift_date,
-           TO_CHAR(s.start_time, 'HH24:MI')   AS shift_start,
-           TO_CHAR(s.end_time,   'HH24:MI')   AS shift_end
-    FROM attendance a
-    JOIN users u ON u.id = a.employee_id
-    LEFT JOIN shifts s ON s.id = a.shift_id
-    WHERE a.company_id = $1
+    SELECT 
+      ae.id,
+      ae.event_type as "eventType",
+      ae.event_time as "eventTime",
+      ae.notes,
+      s.name as "storeName"
+    FROM attendance_events ae
+    LEFT JOIN stores s ON s.id = ae.store_id
+    WHERE ae.user_id = $1 AND ae.company_id = $2
   `;
-  const params: any[] = [companyId];
+  const params: any[] = [userId, companyId];
 
-  if (req.user!.role === 'employee') {
-    params.push(req.user!.userId);
-    sql += ` AND a.employee_id = $${params.length}`;
-  } else if (employee_id) {
-    params.push(employee_id);
-    sql += ` AND a.employee_id = $${params.length}`;
+  if (dateFrom) {
+    params.push(dateFrom);
+    sql += ` AND ae.event_time >= $${params.length}`;
+  }
+  if (dateTo) {
+    params.push(dateTo);
+    sql += ` AND ae.event_time <= $${params.length}`;
   }
 
-  if (date_from) {
-    params.push(date_from);
-    sql += ` AND DATE(a.check_in_time) >= $${params.length}`;
-  }
-  if (date_to) {
-    params.push(date_to);
-    sql += ` AND DATE(a.check_in_time) <= $${params.length}`;
-  }
+  sql += ` ORDER BY ae.event_time DESC LIMIT 100`;
 
-  sql += ' ORDER BY a.check_in_time DESC';
-
-  const records = await query(sql, params);
-  res.json(records);
+  try {
+    const events = await query(sql, params);
+    res.json({ success: true, data: { events, total: events.length } });
+  } catch (err) {
+    console.error('[Attendance] List error:', err);
+    res.status(500).json({ error: 'Failed to fetch attendance' });
+  }
 }
