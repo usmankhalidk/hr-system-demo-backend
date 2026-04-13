@@ -19,12 +19,13 @@ const allRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 's
 const managementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
 // POST /api/attendance/checkin — validate QR token and record event
+// No module permission check: clock-in must always work regardless of whether
+// the presenze module is enabled or disabled for the role in Access Management.
 router.post(
   '/checkin',
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
-  requireModulePermission('presenze', 'write'),
   validate(checkinSchema),
   checkin,
 );
@@ -75,12 +76,13 @@ const syncSchema = z.object({
 });
 
 // POST /api/attendance/sync — allow all roles to sync offline events
+// No module permission check: offline sync must always work regardless of whether
+// the presenze module is enabled or disabled for the role in Access Management.
 router.post(
   '/sync',
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
-  requireModulePermission('presenze', 'write'),
   validate(syncSchema),
   syncEvents,
 );
