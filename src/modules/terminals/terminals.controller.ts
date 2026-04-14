@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
-import { query, queryOne } from '../../config/database';
-import { ok } from '../../utils/response';
+import { pool, query, queryOne } from '../../config/database';
+import { ok, created, badRequest, conflict, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import bcrypt from 'bcryptjs';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 export const listTerminals = asyncHandler(async (req: Request, res: Response) => {
@@ -71,6 +72,7 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
       u.status, 
       u.company_id, 
       u.store_id,
+      u.plain_password,
       c.name as company_name,
       s.name as store_name
     FROM users u
@@ -93,4 +95,155 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
       totalPages: Math.ceil(total / limitNum)
     }
   });
+});
+
+export const listStoresWithTerminalStatus = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  const stores = await query(`
+    SELECT 
+      s.id, 
+      s.name, 
+      s.code, 
+      s.address, 
+      s.cap, 
+      s.max_staff, 
+      s.company_id,
+      c.name as company_name,
+      EXISTS (
+        SELECT 1 FROM users u 
+        WHERE u.store_id = s.id 
+        AND u.role = 'store_terminal' 
+        AND u.status = 'active'
+      ) as "hasTerminal"
+    FROM stores s
+    LEFT JOIN companies c ON c.id = s.company_id
+    WHERE s.company_id = ANY($1)
+    ORDER BY c.name, s.name
+  `, [allowedCompanyIds]);
+
+  ok(res, stores);
+});
+
+export const createTerminal = asyncHandler(async (req: Request, res: Response) => {
+  const { store_id, email, password } = req.body;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  if (!store_id || !email || !password) {
+    return badRequest(res, 'Store ID, email and password are required');
+  }
+
+  // Verify store exists and is in scope
+  const store = await queryOne<{ id: number; company_id: number; name: string }>(
+    'SELECT id, company_id, name FROM stores WHERE id = $1 AND company_id = ANY($2)',
+    [store_id, allowedCompanyIds]
+  );
+
+  if (!store) {
+    return badRequest(res, 'Store not found or access denied');
+  }
+
+  // Check if terminal already exists
+  const existingTerminal = await queryOne(
+    "SELECT id FROM users WHERE store_id = $1 AND role = 'store_terminal' AND status = 'active'",
+    [store_id]
+  );
+
+  if (existingTerminal) {
+    return conflict(res, 'A terminal already exists for this store');
+  }
+
+  // Check if email is available
+  const emailExists = await queryOne('SELECT id FROM users WHERE email = $1', [email]);
+  if (emailExists) {
+    return conflict(res, 'Email already in use');
+  }
+
+  const passwordHash = await bcrypt.hash(password, 12);
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const terminalRes = await client.query(
+      `INSERT INTO users (
+         company_id, store_id, name, surname, email, password_hash, plain_password, role, status
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, 'store_terminal', 'active') RETURNING id, name, email`,
+      [store.company_id, store.id, store.name, 'Terminale', email, passwordHash, password]
+    );
+
+    await client.query('COMMIT');
+    created(res, terminalRes.rows[0], 'Terminal created successfully');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});
+
+export const updateTerminal = asyncHandler(async (req: Request, res: Response) => {
+  const terminalId = parseInt(req.params.id, 10);
+  const { password } = req.body;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  if (isNaN(terminalId)) return badRequest(res, 'Invalid terminal ID');
+  if (!password || password.length < 8) {
+    return badRequest(res, 'Password must be at least 8 characters');
+  }
+
+  // Verify terminal exists, is a terminal, and is in scope
+  const terminal = await queryOne(
+    `SELECT u.id, u.company_id 
+     FROM users u 
+     WHERE u.id = $1 AND u.role = 'store_terminal' AND u.company_id = ANY($2)`,
+    [terminalId, allowedCompanyIds]
+  );
+
+  if (!terminal) return notFound(res, 'Terminal not found or access denied');
+
+  const passwordHash = await bcrypt.hash(password, 12);
+  await query(
+    'UPDATE users SET password_hash = $1, plain_password = $2, updated_at = NOW() WHERE id = $3',
+    [passwordHash, password, terminalId]
+  );
+
+  ok(res, null, 'Terminal password updated successfully');
+});
+
+export const deleteTerminal = asyncHandler(async (req: Request, res: Response) => {
+  const terminalId = parseInt(req.params.id, 10);
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  if (isNaN(terminalId)) return badRequest(res, 'Invalid terminal ID');
+
+  // Verify terminal exists, is a terminal, and is in scope
+  const terminal = await queryOne(
+    `SELECT u.id, u.company_id 
+     FROM users u 
+     WHERE u.id = $1 AND u.role = 'store_terminal' AND u.company_id = ANY($2)`,
+    [terminalId, allowedCompanyIds]
+  );
+
+  if (!terminal) return notFound(res, 'Terminal not found or access denied');
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Clean up dependencies
+    await client.query('DELETE FROM attendance_events WHERE user_id = $1', [terminalId]);
+    await client.query('DELETE FROM audit_logs WHERE user_id = $1', [terminalId]);
+    
+    // Delete the terminal user
+    await client.query('DELETE FROM users WHERE id = $1', [terminalId]);
+
+    await client.query('COMMIT');
+    ok(res, null, 'Terminal deleted successfully');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });

@@ -209,7 +209,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
 
   const forShiftPlanning = for_shift_planning === 'true' || for_shift_planning === '1';
 
-  if (forShiftPlanning && role === 'area_manager') {
+  if (role === 'area_manager') {
     const managedStores = await query<{ store_id: number }>(
       `SELECT DISTINCT store_id FROM users
        WHERE role = 'store_manager'
@@ -225,15 +225,21 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     }
     if (crossCompany) {
       const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
-      where = `u.company_id = ANY($1) AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      where = forShiftPlanning
+        ? `u.company_id = ANY($1) AND u.store_id IN (${ph}) AND u.status = 'active'`
+        : `u.company_id = ANY($1) AND u.store_id IN (${ph})`;
       params = [allowedCompanyIds, ...storeIds];
     } else if (hasCrossCompanyAccess && targetCompanyId) {
       const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
-      where = `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      where = forShiftPlanning
+        ? `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`
+        : `u.company_id = $1 AND u.store_id IN (${ph})`;
       params = [targetCompanyId, ...storeIds];
     } else {
       const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
-      where = `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`;
+      where = forShiftPlanning
+        ? `u.company_id = $1 AND u.store_id IN (${ph}) AND u.status = 'active'`
+        : `u.company_id = $1 AND u.store_id IN (${ph})`;
       params = [companyId!, ...storeIds];
     }
   } else if (crossCompany) {
