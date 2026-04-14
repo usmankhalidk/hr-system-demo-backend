@@ -67,6 +67,10 @@ function handleJobPersistenceError(res: Response, err: unknown): boolean {
       badRequest(res, 'Salary min deve essere <= salary max', 'VALIDATION_ERROR');
       return true;
     }
+    if (pgErr.constraint === 'job_postings_salary_period_chk') {
+      badRequest(res, "Salary period non valido. Usa: per anno, al mese, all'ora, a settimana", 'VALIDATION_ERROR');
+      return true;
+    }
     if (pgErr.constraint === 'job_postings_language_chk') {
       badRequest(res, 'La lingua annuncio deve essere it, en oppure both', 'VALIDATION_ERROR');
       return true;
@@ -77,6 +81,10 @@ function handleJobPersistenceError(res: Response, err: unknown): boolean {
     }
     if (pgErr.constraint === 'job_postings_remote_type_chk') {
       badRequest(res, 'Remote type non valido (onsite, hybrid, remote)', 'VALIDATION_ERROR');
+      return true;
+    }
+    if ((pgErr.constraint ?? '').includes('job_postings') && (pgErr.constraint ?? '').includes('status')) {
+      badRequest(res, 'Lo stato deve essere draft, published o closed', 'VALIDATION_ERROR');
       return true;
     }
   }
@@ -283,17 +291,33 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
 });
 
 export const updateJobHandler = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = await resolveAtsCompanyId(req);
-  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const owner = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM job_postings WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  if (!owner) {
+    notFound(res, 'Annuncio non trovato');
+    return;
+  }
+
+  if (!allowedCompanyIds.includes(owner.company_id)) {
+    forbidden(res, 'Nessuna azienda valida selezionata');
+    return;
+  }
+
+  const effectiveCompanyId = owner.company_id;
 
   const {
     title,
     description,
     tags,
     status,
+    company_id,
+    target_company_id,
     store_id,
     language,
     job_type,
@@ -310,6 +334,21 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     salary_min,
     salary_max,
   } = req.body as Record<string, unknown>;
+
+  let targetCompanyId = effectiveCompanyId;
+  const requestedCompanyRaw = company_id ?? target_company_id;
+  if (requestedCompanyRaw !== undefined && requestedCompanyRaw !== null && String(requestedCompanyRaw).trim() !== '') {
+    const parsedTargetCompany = Number.parseInt(String(requestedCompanyRaw), 10);
+    if (Number.isNaN(parsedTargetCompany)) {
+      badRequest(res, 'ID azienda non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    if (!allowedCompanyIds.includes(parsedTargetCompany)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+    targetCompanyId = parsedTargetCompany;
+  }
 
   let parsedLanguage: JobLanguage | undefined;
   if (language !== undefined) {
@@ -414,22 +453,33 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     parsedRemoteType = normalized as RemoteType;
   }
 
-  if (typeof store_id === 'number') {
-    const storeError = await validateAtsStore(store_id, companyId);
+  const requestedStoreId = typeof store_id === 'number'
+    ? store_id
+    : store_id === null
+      ? null
+      : undefined;
+
+  if (typeof requestedStoreId === 'number') {
+    const storeError = await validateAtsStore(requestedStoreId, targetCompanyId);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
     }
   }
 
+  const normalizedStoreId = targetCompanyId !== effectiveCompanyId && requestedStoreId === undefined
+    ? null
+    : requestedStoreId;
+
   let updated;
   try {
-    updated = await updateJob(id, companyId, {
+    updated = await updateJob(id, effectiveCompanyId, {
+      companyId: targetCompanyId,
       title:       typeof title === 'string' ? title.trim() : undefined,
       description: typeof description === 'string' ? description : undefined,
       tags:        Array.isArray(tags) ? (tags as string[]) : undefined,
       status: parsedStatus,
-      storeId:     typeof store_id === 'number' ? store_id : store_id === null ? null : undefined,
+      storeId: normalizedStoreId,
       language: parsedLanguage,
       jobType: parsedJobType,
       isRemote: is_remote === undefined ? undefined : (is_remote === true || is_remote === 'true'),
@@ -530,7 +580,24 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
   const { companyId, userId } = req.user!;
   if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
 
-  const { full_name, email, phone, job_posting_id, store_id, tags } = req.body as Record<string, unknown>;
+  const {
+    full_name,
+    email,
+    phone,
+    job_posting_id,
+    store_id,
+    tags,
+    cv_path,
+    resume_path,
+    linkedin_url,
+    cover_letter,
+    source,
+    source_ref,
+    gdpr_consent,
+    applicant_locale,
+    consent_accepted_at,
+    applied_at,
+  } = req.body as Record<string, unknown>;
 
   if (!full_name || typeof full_name !== 'string' || full_name.trim() === '') {
     badRequest(res, 'Il nome è obbligatorio', 'VALIDATION_ERROR');
@@ -544,6 +611,16 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     jobPostingId: typeof job_posting_id === 'number' ? job_posting_id : undefined,
     storeId:      typeof store_id === 'number' ? store_id : undefined,
     tags:         Array.isArray(tags) ? (tags as string[]) : [],
+    cvPath:       typeof cv_path === 'string' ? cv_path : undefined,
+    resumePath:   typeof resume_path === 'string' ? resume_path : undefined,
+    linkedinUrl:  typeof linkedin_url === 'string' ? linkedin_url : undefined,
+    coverLetter:  typeof cover_letter === 'string' ? cover_letter : undefined,
+    source:       typeof source === 'string' ? source : undefined,
+    sourceRef:    typeof source_ref === 'string' ? source_ref : undefined,
+    gdprConsent:  typeof gdpr_consent === 'boolean' ? gdpr_consent : undefined,
+    applicantLocale: typeof applicant_locale === 'string' ? applicant_locale : undefined,
+    consentAcceptedAt: typeof consent_accepted_at === 'string' ? consent_accepted_at : undefined,
+    appliedAt:    typeof applied_at === 'string' ? applied_at : undefined,
   });
 
   const locale = (req.user as any)?.locale || 'it';
@@ -773,15 +850,6 @@ export const getRisksHandler = asyncHandler(async (req: Request, res: Response) 
 // Public job feed (no auth) — Indeed XML + generic RSS feed
 // ---------------------------------------------------------------------------
 
-function xmlEscape(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&apos;');
-}
-
 function wrapCdata(value: string): string {
   return `<![CDATA[${value.replace(/\]\]>/g, ']]]]><![CDATA[>')}]]>`;
 }
@@ -812,16 +880,53 @@ function sanitizeFeedDescription(input: string): string {
 function normalizeJobType(value: string): 'fulltime' | 'parttime' | 'contract' | 'internship' {
   const normalized = value.toLowerCase();
   if (normalized === 'parttime' || normalized === 'part_time') return 'parttime';
+  if (normalized === 'fulltime' || normalized === 'full_time') return 'fulltime';
   if (normalized === 'contract') return 'contract';
   if (normalized === 'internship' || normalized === 'intern') return 'internship';
   return 'fulltime';
 }
 
-function normalizeLanguage(value: string): 'it' | 'en' | 'both' {
+function normalizeLanguage(value: string): 'it' | 'en' | 'it,en' {
   const normalized = value.toLowerCase();
   if (normalized === 'en') return 'en';
-  if (normalized === 'both') return 'both';
+  if (normalized === 'both' || normalized === 'it,en') return 'it,en';
   return 'it';
+}
+
+function normalizeSalaryPeriod(value: string | null): 'per anno' | 'al mese' | "all'ora" | 'a settimana' | null {
+  if (!value) return null;
+  const normalized = value.trim().toLowerCase().replace(/’/g, "'");
+  if (normalized === 'per anno') return 'per anno';
+  if (normalized === 'al mese') return 'al mese';
+  if (normalized === "all'ora") return "all'ora";
+  if (normalized === 'a settimana') return 'a settimana';
+  return null;
+}
+
+function formatItalianAmount(value: number): string {
+  return new Intl.NumberFormat('it-IT', {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
+  }).format(Math.round(value));
+}
+
+function buildSalaryText(min: number | null, max: number | null, periodRaw: string | null): string | null {
+  if (min === null && max === null) return null;
+
+  const period = normalizeSalaryPeriod(periodRaw) ?? 'per anno';
+  const minText = min !== null ? `€${formatItalianAmount(min)}` : null;
+  const maxText = max !== null ? `€${formatItalianAmount(max)}` : null;
+
+  if (minText && maxText) {
+    return `${minText} - ${maxText} ${period}`;
+  }
+  if (minText) {
+    return `${minText} ${period}`;
+  }
+  if (maxText) {
+    return `${maxText} ${period}`;
+  }
+  return null;
 }
 
 function normalizeCountryCode(value: string): string {
@@ -835,7 +940,13 @@ function resolveFrontendBase(req: Request): string {
   if (raw && raw.trim() !== '') {
     return raw.replace(/\/+$/, '');
   }
-  return `${req.protocol}://${req.get('host')}`.replace(/\/+$/, '');
+
+  const host = req.get('host');
+  if (host) {
+    return `${req.protocol}://${host}`.replace(/\/+$/, '');
+  }
+
+  return 'http://localhost:5173';
 }
 
 export const translatePreviewHandler = asyncHandler(async (req: Request, res: Response) => {
@@ -907,51 +1018,95 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
     }
 
     const frontendBase = resolveFrontendBase(req);
-    const careersBase = `${frontendBase}/careers`;
-    const publisherUrl = careersBase;
+    const encodedCompanySlug = encodeURIComponent(company.slug);
+    const publisherUrl = company.slug === 'all'
+      ? `${frontendBase}/careers`
+      : `${frontendBase}/careers/${encodedCompanySlug}`;
 
-    const jobItems = jobs.map((job) => {
-      const pubDate = new Date(job.publishedAt ?? job.createdAt).toUTCString();
-      const title = job.title.trim();
-      const descriptionRaw = job.description ?? job.title;
-      const description = sanitizeFeedDescription(descriptionRaw);
+    const jobItems = jobs
+      .map((job) => {
+        const isFullRemote = job.remoteType === 'remote';
+        const city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
+        const country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
 
-      const remoteType = job.remoteType;
-      const isRemote = remoteType === 'remote';
-      const city = (job.city ?? '').trim() || (isRemote ? 'Remote' : 'N/A');
-      const state = isRemote ? '' : ((job.state ?? '').trim() || 'N/A');
-      const country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
-      const postalCode = isRemote ? '' : ((job.postalCode ?? '').trim() || '00000');
-      const address = (job.address ?? '').trim() || (isRemote ? 'Remote' : city);
-      const language = normalizeLanguage(job.language);
-      const jobType = normalizeJobType(job.jobType);
-      const referenceNumber = `JOB-${job.id}`;
-      const jobUrl = `${careersBase}/jobs/${job.id}`;
-      const feedRemoteType = remoteType === 'remote' ? 'fullremote' : remoteType;
+        if (!city || !country) {
+          console.warn(`[ATS feed] Skipping job ${job.id}: missing city or country`);
+          return null;
+        }
 
-      return `  <job>
-    <title>${wrapCdata(title)}</title>
-    <date>${wrapCdata(pubDate)}</date>
-    <referencenumber>${wrapCdata(referenceNumber)}</referencenumber>
-    <url>${wrapCdata(jobUrl)}</url>
-    <company>${wrapCdata(company.name)}</company>
-    <city>${wrapCdata(city)}</city>
-    <state>${wrapCdata(state)}</state>
-    <country>${wrapCdata(country)}</country>
-    <postalcode>${wrapCdata(postalCode)}</postalcode>
-    <address>${wrapCdata(address)}</address>
-    <description>${wrapCdata(description)}</description>
-    <jobtype>${wrapCdata(jobType)}</jobtype>
-    <language>${wrapCdata(language)}</language>
-    <remotetype>${wrapCdata(feedRemoteType)}</remotetype>
-  </job>`;
-    }).join('\n');
+        const pubDate = new Date(job.publishedAt ?? job.createdAt).toUTCString();
+        const title = job.title.trim();
+        const descriptionRaw = job.description ?? job.title;
+        const description = sanitizeFeedDescription(descriptionRaw) || `<p>${title}</p>`;
+
+        const state = isFullRemote ? '' : (job.state ?? '').trim();
+        const postalCode = isFullRemote ? '' : (job.postalCode ?? '').trim();
+
+        const language = normalizeLanguage(job.language);
+        const jobType = normalizeJobType(job.jobType);
+        const referenceNumber = `JOB-${job.id}`;
+        const jobCompanySlug = encodeURIComponent(job.companySlug);
+        const jobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
+        const salaryText = buildSalaryText(job.salaryMin, job.salaryMax, job.salaryPeriod ?? null);
+        const category = (job.category ?? '').trim() || (job.tags.length > 0 ? job.tags.join(', ') : '');
+        const experience = (job.experience ?? '').trim();
+        const education = (job.education ?? '').trim();
+
+        const expirationDate = job.expirationDate
+          ? new Date(job.expirationDate).toUTCString()
+          : null;
+
+        const xmlFields: string[] = [
+          '  <job>',
+          `    <title>${wrapCdata(title)}</title>`,
+          `    <date>${wrapCdata(pubDate)}</date>`,
+          `    <referencenumber>${wrapCdata(referenceNumber)}</referencenumber>`,
+          `    <url>${wrapCdata(jobUrl)}</url>`,
+          `    <company>${wrapCdata(job.companyName || company.name)}</company>`,
+          `    <city>${wrapCdata(city)}</city>`,
+          `    <state>${wrapCdata(state)}</state>`,
+          `    <country>${wrapCdata(country)}</country>`,
+          `    <postalcode>${wrapCdata(postalCode)}</postalcode>`,
+          `    <description>${wrapCdata(description)}</description>`,
+          `    <jobtype>${wrapCdata(jobType)}</jobtype>`,
+          `    <language>${wrapCdata(language)}</language>`,
+        ];
+
+        if (salaryText) {
+          xmlFields.push(`    <salary>${wrapCdata(salaryText)}</salary>`);
+        }
+
+        if (category) {
+          xmlFields.push(`    <category>${wrapCdata(category)}</category>`);
+        }
+
+        if (experience) {
+          xmlFields.push(`    <experience>${wrapCdata(experience)}</experience>`);
+        }
+
+        if (education) {
+          xmlFields.push(`    <education>${wrapCdata(education)}</education>`);
+        }
+
+        if (expirationDate && expirationDate !== 'Invalid Date') {
+          xmlFields.push(`    <expirationdate>${wrapCdata(expirationDate)}</expirationdate>`);
+        }
+
+        if (isFullRemote) {
+          xmlFields.push(`    <remotetype>${wrapCdata('fullremote')}</remotetype>`);
+        }
+
+        xmlFields.push('  </job>');
+        return xmlFields.join('\n');
+      })
+      .filter((item): item is string => item !== null)
+      .join('\n');
 
     const xml = `<?xml version="1.0" encoding="UTF-8"?>
 <source>
-  <publisher>${xmlEscape(company.name)}</publisher>
-  <publisherurl>${xmlEscape(publisherUrl)}</publisherurl>
-  <lastBuildDate>${new Date().toUTCString()}</lastBuildDate>
+  <publisher>${wrapCdata(company.name)}</publisher>
+  <publisherurl>${wrapCdata(publisherUrl)}</publisherurl>
+  <lastBuildDate>${wrapCdata(new Date().toUTCString())}</lastBuildDate>
 ${jobItems}
 </source>`;
 

@@ -166,6 +166,12 @@ export const applyPublicJobHandler = asyncHandler(async (req: Request, res: Resp
     return;
   }
 
+  if (publicJob.job.status !== 'published') {
+    cleanupUpload(req.file.path);
+    badRequest(res, 'Le candidature sono disponibili solo per annunci pubblicati', 'JOB_NOT_OPEN');
+    return;
+  }
+
   const companySlugParam = String(req.params.companySlug || '').trim();
   const companySlugQuery = typeof req.query.company_slug === 'string' ? req.query.company_slug.trim() : '';
   const companySlug = companySlugParam || companySlugQuery;
