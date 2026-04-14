@@ -1,4 +1,5 @@
 import { query, queryOne } from '../../config/database';
+import { UserRole } from '../../config/jwt';
 
 // ---------------------------------------------------------------------------
 // Document Categories
@@ -32,7 +33,7 @@ function mapCategory(row: {
 }
 
 export async function getCategories(
-  companyId: number,
+  companyIds: number[],
   includeInactive = false,
 ): Promise<DocumentCategory[]> {
   const rows = await query<{
@@ -45,10 +46,10 @@ export async function getCategories(
   }>(
     `SELECT id, company_id, name, is_active, created_at, updated_at
        FROM document_categories
-      WHERE company_id = $1
+      WHERE company_id = ANY($1)
         ${includeInactive ? '' : 'AND is_active = true'}
       ORDER BY name ASC`,
-    [companyId],
+    [companyIds],
   );
   return rows.map(mapCategory);
 }
@@ -72,8 +73,8 @@ export async function createCategory(companyId: number, name: string): Promise<D
 
 export async function updateCategory(
   id: number,
-  companyId: number,
-  updates: { name?: string; isActive?: boolean },
+  currentCompanyId: number,
+  updates: { name?: string; isActive?: boolean; companyId?: number },
 ): Promise<DocumentCategory | null> {
   const setParts: string[] = [];
   const params: unknown[] = [];
@@ -87,11 +88,18 @@ export async function updateCategory(
     setParts.push(`is_active = $${idx++}`);
     params.push(updates.isActive);
   }
+  if (updates.companyId !== undefined) {
+    setParts.push(`company_id = $${idx++}`);
+    params.push(updates.companyId);
+  }
 
   if (setParts.length === 0) return null;
 
   setParts.push(`updated_at = NOW()`);
-  params.push(id, companyId);
+
+  const whereIdIdx = idx++;
+  const whereCompanyIdx = idx++;
+  params.push(id, currentCompanyId);
 
   const row = await queryOne<{
     id: number;
@@ -103,7 +111,7 @@ export async function updateCategory(
   }>(
     `UPDATE document_categories
         SET ${setParts.join(', ')}
-      WHERE id = $${idx++} AND company_id = $${idx++}
+      WHERE id = $${whereIdIdx} AND company_id = $${whereCompanyIdx}
       RETURNING id, company_id, name, is_active, created_at, updated_at`,
     params,
   );
@@ -239,7 +247,20 @@ export async function getDocumentById(id: number, companyId: number): Promise<Do
   return row ? mapDocumentRecord(row) : null;
 }
 
-export async function getEmployeeDocuments(companyId: number, employeeId: number): Promise<DocumentRecord[]> {
+export async function getEmployeeDocuments(
+  companyId: number,
+  employeeId: number,
+  filterRole?: string,
+): Promise<DocumentRecord[]> {
+  let where = 'd.company_id = $1 AND d.employee_id = $2 AND d.deleted_at IS NULL';
+  const params: any[] = [companyId, employeeId];
+
+  // If the user role is not admin/hr, we strictly filter by visibility
+  if (filterRole && !['admin', 'hr'].includes(filterRole)) {
+    where += ' AND ($3 = ANY(d.is_visible_to_roles) OR d.is_visible_to_roles IS NULL)';
+    params.push(filterRole);
+  }
+
   const rows = await query<{
     id: number;
     company_id: number;
@@ -263,14 +284,13 @@ export async function getEmployeeDocuments(companyId: number, employeeId: number
     updated_at: string;
   }>(
     `${DOC_SELECT}
-      WHERE d.company_id = $1
-        AND d.employee_id = $2
-        AND d.deleted_at IS NULL
+      WHERE ${where}
       ORDER BY d.uploaded_at DESC, d.id DESC`,
-    [companyId, employeeId],
+    params,
   );
   return rows.map(mapDocumentRecord);
 }
+
 
 export async function softDeleteDocument(id: number, companyId: number): Promise<boolean> {
   const row = await queryOne<{ id: number }>(
@@ -370,4 +390,205 @@ export async function signDocument(
     params,
   );
   return row ? mapDocumentRecord(row) : null;
+}
+
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Generic Documents (Step 1)
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+
+export interface GenericDocument {
+  id: number;
+  title: string;
+  fileUrl: string;
+  category: string | null;
+  employeeId: number | null;
+  uploadedBy: number;
+  requiresSignature: boolean;
+  expiresAt: string | null;
+  isVisibleToRoles: string[];
+  createdAt: string;
+}
+
+export async function createGenericDocument(data: {
+  title: string;
+  fileUrl: string;
+  category?: string;
+  employeeId?: number;
+  uploadedBy: number;
+  requiresSignature?: boolean;
+  expiresAt?: string | null;
+  isVisibleToRoles?: string[];
+}): Promise<GenericDocument> {
+  const row = await queryOne<{
+    id: number;
+    title: string;
+    file_url: string;
+    category: string | null;
+    employee_id: number | null;
+    uploaded_by: number;
+    requires_signature: boolean;
+    expires_at: string | null;
+    created_at: string;
+  }>(
+    `INSERT INTO documents (title, file_url, category, employee_id, uploaded_by, requires_signature, expires_at, is_visible_to_roles)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING id, title, file_url, category, employee_id, uploaded_by, requires_signature, expires_at, is_visible_to_roles, created_at`,
+    [
+      data.title, 
+      data.fileUrl, 
+      data.category || null, 
+      data.employeeId || null, 
+      data.uploadedBy,
+      data.requiresSignature || false,
+      data.expiresAt || null,
+      data.isVisibleToRoles || ['admin','hr','area_manager','store_manager','employee']
+    ],
+  );
+
+  return {
+    id: row!.id,
+    title: row!.title,
+    fileUrl: row!.file_url,
+    category: row!.category,
+    employeeId: row!.employee_id,
+    uploadedBy: row!.uploaded_by,
+    requiresSignature: row!.requires_signature,
+    expiresAt: row!.expires_at,
+    isVisibleToRoles: row!.is_visible_to_roles,
+    createdAt: row!.created_at,
+  };
+}
+
+export async function getGenericDocuments(options: {
+  companyId: number;
+  employeeId?: number;
+  role: UserRole;
+  storeId?: number | null;
+  allowedCompanyIds?: number[];
+}): Promise<(GenericDocument & { employeeName?: string })[]> {
+  let where = '1=1';
+  const params: any[] = [];
+
+  // Scoping logic based on role
+  if (options.role === 'admin') {
+    // Admin: see all documents in allowed companies
+    const ids = options.allowedCompanyIds || [options.companyId];
+    where = '(u_up.company_id = ANY($1) OR e.company_id = ANY($1))';
+    params.push(ids);
+  } else if (options.role === 'hr') {
+    // HR: see all documents in their company
+    where = '(u_up.company_id = $1 OR e.company_id = $1)';
+    params.push(options.companyId);
+  } else if (options.role === 'area_manager' && options.employeeId) {
+    // Area Manager: see documents of employees they supervise + their own + role-shared
+    where = `(
+      (e.supervisor_id = $1 OR d.employee_id = $1 OR $2 = ANY(COALESCE(d.is_visible_to_roles, ARRAY[]::text[])))
+      AND (e.company_id = $3 OR u_up.company_id = $3)
+    )`;
+    params.push(options.employeeId, options.role, options.companyId);
+  } else if (options.role === 'store_manager' && options.storeId) {
+    // Store Manager: see documents of employees in their store + their own + role-shared
+    where = `(
+      (e.store_id = $1 OR d.employee_id = $2 OR $3 = ANY(COALESCE(d.is_visible_to_roles, ARRAY[]::text[])))
+      AND (e.company_id = $4 OR u_up.company_id = $4)
+    )`;
+    params.push(options.storeId, options.employeeId, options.role, options.companyId);
+  } else if (options.role === 'employee' && options.employeeId) {
+    // Employee: see ONLY their own documents
+    where = 'd.employee_id = $1';
+    params.push(options.employeeId);
+  } else {
+    // Default safe state: no documents
+    where = '1=0';
+  }
+
+  const rows = await query<{
+    id: number;
+    title: string;
+    file_url: string;
+    category: string | null;
+    employee_id: number | null;
+    uploaded_by: number;
+    requires_signature: boolean;
+    expires_at: string | null;
+    is_visible_to_roles: string[];
+    created_at: string;
+    employee_name: string | null;
+  }>(
+    `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name
+       FROM documents d
+       LEFT JOIN users e ON e.id = d.employee_id
+       LEFT JOIN users u_up ON u_up.id = d.uploaded_by
+      WHERE ${where}
+      ORDER BY d.created_at DESC`,
+    params,
+  );
+
+  return rows.map((r) => ({
+    id: r.id,
+    title: r.title,
+    fileUrl: r.file_url,
+    category: r.category,
+    employeeId: r.employee_id,
+    uploadedBy: r.uploaded_by,
+    requiresSignature: r.requires_signature,
+    expiresAt: r.expires_at,
+    isVisibleToRoles: r.is_visible_to_roles,
+    createdAt: r.created_at,
+    employeeName: r.employee_name || undefined,
+  }));
+}
+
+export async function updateGenericDocumentEmployee(id: number, employeeId: number | null): Promise<void> {
+  await query('UPDATE documents SET employee_id = $1 WHERE id = $2', [employeeId, id]);
+}
+
+export async function deleteDocumentUnified(id: number, companyId: number): Promise<boolean> {
+  // 1. Try finding in documents table (generic/unassigned)
+  const genericDoc = await queryOne<{ id: number; file_url: string }>(
+    `SELECT id, file_url FROM documents 
+      WHERE id = $1 AND uploaded_by IN (SELECT id FROM users WHERE company_id = $2)`,
+    [id, companyId]
+  );
+
+  if (genericDoc) {
+    const path = genericDoc.file_url;
+    // Delete from generic
+    await query(`DELETE FROM documents WHERE id = $1`, [id]);
+    // Also clean up assigned version if any (matching by path)
+    await query(
+      `UPDATE employee_documents SET deleted_at = NOW(), updated_at = NOW() 
+        WHERE storage_path = $1 AND company_id = $2 AND deleted_at IS NULL`,
+      [path, companyId]
+    );
+    return true;
+  }
+
+  // 2. Try finding in employee_documents table
+  const employeeDoc = await queryOne<{ id: number; storage_path: string }>(
+    `SELECT id, storage_path FROM employee_documents 
+      WHERE id = $1 AND company_id = $2 AND deleted_at IS NULL`,
+    [id, companyId]
+  );
+
+  if (employeeDoc) {
+    const path = employeeDoc.storage_path;
+    // Soft delete
+    await query(
+      `UPDATE employee_documents SET deleted_at = NOW(), updated_at = NOW() 
+        WHERE id = $1 AND company_id = $2`,
+      [id, companyId]
+    );
+    // Also clean up generic version if any
+    await query(
+      `DELETE FROM documents 
+        WHERE file_url = $1 AND uploaded_by IN (SELECT id FROM users WHERE company_id = $2)`,
+      [path, companyId]
+    );
+    return true;
+  }
+
+  return false;
 }

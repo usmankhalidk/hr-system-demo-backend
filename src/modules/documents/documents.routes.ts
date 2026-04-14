@@ -1,5 +1,5 @@
 import { Router, Request, Response, NextFunction } from 'express';
-import { authenticate, requireModulePermission, requireRole } from '../../middleware/auth';
+import { authenticate, requireModulePermission, requireRole, enforceCompany } from '../../middleware/auth';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound, conflict } from '../../utils/response';
 import {
@@ -11,6 +11,10 @@ import {
   softDeleteDocument,
   updateDocumentVisibility,
   signDocument,
+  createGenericDocument,
+  getGenericDocuments,
+  updateGenericDocumentEmployee,
+  deleteDocumentUnified,
 } from './documents.service';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { query, queryOne, pool } from '../../config/database';
@@ -25,6 +29,9 @@ import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 const router = Router();
 
+// Enforce module-level permission for all document routes
+router.use(authenticate, requireModulePermission('documenti'));
+
 // ---------------------------------------------------------------------------
 // Upload directories
 // ---------------------------------------------------------------------------
@@ -34,6 +41,12 @@ const DOCUMENTS_UPLOAD_DIR = process.env.UPLOADS_DIR
   : path.join(process.cwd(), 'uploads', 'documents');
 
 fs.mkdirSync(DOCUMENTS_UPLOAD_DIR, { recursive: true });
+
+const DOCUMENTS_SINGLE_DIR = path.join(DOCUMENTS_UPLOAD_DIR, 'single');
+const DOCUMENTS_BULK_DIR = path.join(DOCUMENTS_UPLOAD_DIR, 'bulk');
+
+fs.mkdirSync(DOCUMENTS_SINGLE_DIR, { recursive: true });
+fs.mkdirSync(DOCUMENTS_BULK_DIR, { recursive: true });
 
 // ---------------------------------------------------------------------------
 // Multer — single document (10 MB, PDF/JPG/PNG/WebP)
@@ -112,16 +125,421 @@ const uploadZipMiddleware = (req: Request, res: Response, next: NextFunction): v
   uploadZipMulter(req, res, (err: any) => {
     if (!err) { next(); return; }
     if (err.code === 'LIMIT_FILE_SIZE') {
-      badRequest(res, 'Il file ZIP supera il limite di 50MB', 'FILE_TOO_LARGE');
+      badRequest(res, 'ZIP file too large (max 50MB)', 'FILE_TOO_LARGE');
       return;
     }
     if (err.message === 'INVALID_ZIP_TYPE') {
-      badRequest(res, 'Formato non supportato. Carica un file ZIP', 'INVALID_FILE_TYPE');
+      badRequest(res, 'Invalid ZIP file type', 'INVALID_FILE_TYPE');
       return;
     }
     next(err);
   });
 };
+
+// --- Multer Generic (Step 1) ---
+
+const genericStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, DOCUMENTS_SINGLE_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname) || '.bin';
+    const safeName = file.originalname.replace(/[^a-zA-Z0-9._-]/g, '_');
+    cb(null, `${Date.now()}_${safeName}`);
+  },
+});
+
+const uploadUnifiedMulter = multer({
+  storage: genericStorage,
+  limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
+  fileFilter: (_req, file, cb) => {
+    const allowed = [...allowedDocMime, 'application/zip', 'application/x-zip-compressed', 'application/octet-stream'];
+    if (allowed.includes(file.mimetype) || file.originalname.toLowerCase().endsWith('.zip')) {
+      cb(null, true);
+    } else {
+      cb(new Error('INVALID_FILE_TYPE'));
+    }
+  },
+}).single('file');
+
+const uploadUnifiedMiddleware = (req: Request, res: Response, next: NextFunction): void => {
+  uploadUnifiedMulter(req, res, (err: any) => {
+    if (!err) { next(); return; }
+    if (err.code === 'LIMIT_FILE_SIZE') {
+      badRequest(res, 'File too large (max 100MB)', 'FILE_TOO_LARGE');
+      return;
+    }
+    if (err.message === 'INVALID_FILE_TYPE') {
+      badRequest(res, 'Unsupported file type. Use PDF, JPG, PNG or ZIP', 'INVALID_FILE_TYPE');
+      return;
+    }
+    next(err);
+  });
+};
+
+// --- Step 2 Auto-assignment Logic ---
+
+async function performAutoAssign(
+  documentId: number,
+  filename: string,
+  companyId: number,
+  options?: {
+    requiresSignature?: boolean;
+    expiresAt?: string | null;
+    visibleToRoles?: string[];
+    uploadedBy?: number;
+  },
+): Promise<void> {
+  // Fetch active employees for this company, including unique_id
+  const employees = await query<{
+    id: number;
+    name: string;
+    surname: string;
+    unique_id: string | null;
+  }>(
+    `SELECT id, name, surname, unique_id FROM users WHERE company_id = $1 AND status = 'active'`,
+    [companyId],
+  );
+
+  // Normalize filename for matching: remove extension and trim
+  const cleanBaseName = filename.replace(/\.(pdf|zip|jpg|jpeg|png|webp|bin|docx|xlsx)$/i, '').trim();
+  // Normalize: treat spaces and underscores as the same
+  const lowerBaseName = cleanBaseName.toLowerCase().replace(/\s+/g, '_');
+
+  let matchedEmpId: number | null = null;
+
+  // 1. Internal ID Match (e.g. EMP001_file.pdf or EMP001 File.pdf)
+  // Extract segment before first underscore
+  const firstUnderscore = lowerBaseName.indexOf('_');
+  const prefix = firstUnderscore > 0 ? lowerBaseName.substring(0, firstUnderscore) : lowerBaseName;
+
+  for (const emp of employees) {
+    if (emp.unique_id && emp.unique_id.toLowerCase() === prefix) {
+      matchedEmpId = emp.id;
+      break;
+    }
+  }
+
+  // 2. Exact Surname_Name or Name_Surname (e.g. rossi_mario.pdf or mario rossi.pdf)
+  if (!matchedEmpId) {
+    for (const emp of employees) {
+      const s = emp.surname.toLowerCase();
+      const n = emp.name.toLowerCase();
+      // Match full name in either order
+      if (lowerBaseName === `${s}_${n}` || lowerBaseName.startsWith(`${s}_${n}_`) ||
+          lowerBaseName === `${n}_${s}` || lowerBaseName.startsWith(`${n}_${s}_`)) {
+        matchedEmpId = emp.id;
+        break;
+      }
+    }
+  }
+
+  // 3. Single Name Match (e.g. anna.pdf)
+  if (!matchedEmpId) {
+    for (const emp of employees) {
+      if (lowerBaseName === emp.name.toLowerCase()) {
+        matchedEmpId = emp.id;
+        break;
+      }
+    }
+  }
+
+  // 4. Single Surname Match (e.g. conti.pdf)
+  if (!matchedEmpId) {
+    for (const emp of employees) {
+      if (lowerBaseName === emp.surname.toLowerCase()) {
+        matchedEmpId = emp.id;
+        break;
+      }
+    }
+  }
+
+  if (matchedEmpId) {
+    const empId = matchedEmpId;
+    // 1. Update the generic document as assigned
+    await updateGenericDocumentEmployee(documentId, empId);
+
+    // 2. Fetch origin doc info to migrate to employee_documents
+    const doc = await queryOne<{ file_url: string; mime_type?: string }>(
+      `SELECT file_url FROM documents WHERE id = $1`,
+      [documentId]
+    );
+
+    if (doc) {
+      // 3. Fetch first active category for the company automatically
+      const categoryRow = await queryOne<{ id: number; name: string }>(
+        `SELECT id, name FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
+        [companyId]
+      );
+      const autoCategoryId = categoryRow?.id || null;
+      const autoCategoryName = categoryRow?.name || null;
+
+      // Update the generic document with category name if found
+      if (autoCategoryName) {
+        await query('UPDATE documents SET category = $1 WHERE id = $2', [autoCategoryName, documentId]);
+      }
+
+      // Map extension to mime type
+      const ext = path.extname(filename).toLowerCase();
+      const mimeMap: Record<string, string> = {
+        '.pdf': 'application/pdf',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.png': 'image/png',
+        '.webp': 'image/webp',
+        '.bin': 'application/octet-stream',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      };
+      const mimeType = mimeMap[ext] ?? 'application/octet-stream';
+
+      // Insert into employee_documents (the "rich" table)
+      await queryOne<{ id: number }>(
+        `INSERT INTO employee_documents (
+            company_id, employee_id, category_id, file_name, storage_path, mime_type,
+            uploaded_by_user_id, requires_signature, expires_at, is_visible_to_roles
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          RETURNING id`,
+        [
+          companyId,
+          empId,
+          autoCategoryId,
+          filename,
+          doc.file_url,
+          mimeType,
+          options?.uploadedBy || null,
+          options?.requiresSignature || false,
+          options?.expiresAt || null,
+          options?.visibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee']
+        ]
+      );
+    }
+  }
+}
+
+
+// --- Secure Download Feature ---
+
+router.get(
+  '/:id/download',
+  authenticate,
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!;
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      badRequest(res, 'ID documento non valido', 'BAD_REQUEST');
+      return;
+    }
+
+    const doc = await queryOne<{
+      id: number;
+      file_url: string;
+      title: string;
+      employee_id: number | null;
+    }>(
+      `SELECT id, file_url, title, employee_id FROM documents WHERE id = $1`,
+      [id],
+    );
+
+    if (!doc) {
+      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+      return;
+    }
+
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+
+    // Permission check: Admin/HR, Owner, or scoped Supervisor/Store Manager
+    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
+    const isOwner = doc.employee_id === user.userId;
+
+    let isAuthorized = isAdminOrHr || isOwner;
+
+    if (!isAuthorized && doc.employee_id) {
+       // Check if manager is authorized for this employee's scope
+       if (user.role === 'area_manager') {
+         const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2 AND company_id = ANY($3)`, [doc.employee_id, user.userId, allowedCompanyIds]);
+         if (supervised) isAuthorized = true;
+       } else if (user.role === 'store_manager' && user.storeId) {
+         const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2 AND company_id = ANY($3)`, [doc.employee_id, user.storeId, allowedCompanyIds]);
+         if (inStore) isAuthorized = true;
+       }
+    }
+
+    if (!isAuthorized) {
+      forbidden(res, 'Non sei autorizzato a scaricare questo documento');
+      return;
+    }
+
+    const resolvedPath = path.resolve(doc.file_url);
+    if (!fs.existsSync(resolvedPath)) {
+      notFound(res, 'File non trovato sul server', 'FILE_NOT_FOUND');
+      return;
+    }
+
+    // Send file securely using res.download
+    res.download(resolvedPath, doc.title);
+  }),
+);
+
+// --- Manual Assignment & Rename ---
+
+router.put(
+  '/:id',
+  authenticate,
+  requireRole('admin', 'hr'),
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = parseInt(req.params.id, 10);
+    const { title, employee_id } = req.body;
+
+    if (!title) {
+      badRequest(res, 'Il titolo è obbligatorio', 'MISSING_TITLE');
+      return;
+    }
+
+    // 1. Get existing document
+    const doc = await queryOne<{
+      id: number;
+      file_url: string;
+      title: string;
+    }>(
+      `SELECT id, file_url, title FROM documents WHERE id = $1`,
+      [id],
+    );
+
+    if (!doc) {
+      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+      return;
+    }
+
+    // 2. Prepare paths and renaming
+    const oldPath = path.resolve(doc.file_url);
+    const ext = path.extname(doc.file_url);
+    const newTitle = title.toLowerCase().endsWith(ext.toLowerCase()) ? title : `${title}${ext}`;
+    const dir = path.dirname(oldPath);
+    const newPath = path.join(dir, `${Date.now()}_${title.replace(/[^a-zA-Z0-9._-]/g, '_')}${ext}`);
+
+    try {
+      if (fs.existsSync(oldPath)) {
+        fs.renameSync(oldPath, newPath);
+      } else {
+        // If file doesn't exist, we just update the DB with the expected path
+        // but log a warning (or maybe fail? user says "rename file on disk")
+        console.warn(`File not found at ${oldPath}, skipping disk rename`);
+      }
+
+      // 3. Update DB
+      let autoCategoryName: string | null = null;
+      let autoCategoryId: number | null = null;
+
+      if (employee_id) {
+        // Resolve company and category for the employee
+        const emp = await queryOne<{ company_id: number }>(
+          `SELECT company_id FROM users WHERE id = $1`,
+          [employee_id]
+        );
+        if (emp) {
+          const categoryRow = await queryOne<{ id: number; name: string }>(
+            `SELECT id, name FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
+            [emp.company_id]
+          );
+          autoCategoryId = categoryRow?.id || null;
+          autoCategoryName = categoryRow?.name || null;
+        }
+      }
+
+      await query(
+        `UPDATE documents
+            SET title = $1,
+                file_url = $2,
+                employee_id = $3,
+                category = $4
+          WHERE id = $5`,
+        [newTitle, newPath, employee_id || null, autoCategoryName, id]
+      );
+
+      // 4. Migration/Sync to employee_documents
+      // We look for existing record using the OLD path (doc.file_url) 
+      const existing = await queryOne<{ id: number }>(`SELECT id FROM employee_documents WHERE storage_path = $1 AND deleted_at IS NULL`, [doc.file_url]);
+
+      if (employee_id) {
+        // Fetch companyId of the employee to ensure multi-tenant safety
+        const emp = await queryOne<{ company_id: number }>(
+          `SELECT company_id FROM users WHERE id = $1`,
+          [employee_id]
+        );
+
+        if (emp) {
+          const ext = path.extname(doc.file_url).toLowerCase();
+          const mimeMap: Record<string, string> = {
+            '.pdf': 'application/pdf',
+            '.jpg': 'image/jpeg',
+            '.jpeg': 'image/jpeg',
+            '.png': 'image/png',
+            '.webp': 'image/webp',
+            '.bin': 'application/octet-stream',
+            '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+            '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+          };
+          const mimeType = mimeMap[ext] ?? 'application/octet-stream';
+
+          if (!existing) {
+            // New assignment
+            await query(
+              `INSERT INTO employee_documents (
+                company_id, employee_id, category_id, file_name, storage_path, mime_type,
+                uploaded_by_user_id
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, mimeType, req.user!.userId]
+            );
+          } else {
+            // Re-assignment: Update existing record with NEW company and NEW employee
+            await query(
+              `UPDATE employee_documents 
+                  SET company_id = $1, 
+                      employee_id = $2, 
+                      category_id = $3, 
+                      file_name = $4, 
+                      storage_path = $5,
+                      updated_at = NOW()
+                WHERE id = $6`,
+              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, existing.id]
+            );
+          }
+        }
+      } else if (existing) {
+        // Employee removed: soft delete from employee_documents
+        await query(`UPDATE employee_documents SET deleted_at = NOW() WHERE id = $1`, [existing.id]);
+      }
+
+      ok(res, { success: true, message: 'Documento aggiornato con successo' });
+    } catch (err: any) {
+      console.error('Update document error:', err);
+      badRequest(res, `Errore durante l'aggiornamento: ${err.message}`);
+    }
+  }),
+);
+
+
+
+// ---------------------------------------------------------------------------
+// Routes
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/',
+  authenticate,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { companyId, userId, role, storeId } = req.user!;
+    const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+    const docs = await getGenericDocuments({
+      companyId: companyId!,
+      employeeId: userId,
+      role,
+      storeId,
+      allowedCompanyIds,
+    });
+    ok(res, docs);
+  }),
+);
 
 // ---------------------------------------------------------------------------
 // Valid roles for visibility
@@ -143,8 +561,104 @@ router.get(
       res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
       return;
     }
-    const docs = await getEmployeeDocuments(user.companyId, user.userId);
+    const docs = await getEmployeeDocuments(user.companyId, user.userId, user.role);
     ok(res, docs);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// Unified Upload Endpoint
+// ---------------------------------------------------------------------------
+
+router.post(
+  '/upload',
+  authenticate,
+  requireRole('admin', 'hr'),
+  uploadUnifiedMiddleware,
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!req.file) {
+      badRequest(res, 'Upload failed: No file received', 'NO_FILE');
+      return;
+    }
+
+    const { originalname, mimetype, path: tempPath } = req.file;
+
+    // Detect ZIP by extension or mimetype
+    const isZip = originalname.toLowerCase().endsWith('.zip') ||
+                  ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
+
+    const { requires_signature, expires_at, visible_to_roles } = req.body;
+    const requiresSignature = requires_signature === 'true' || requires_signature === true;
+    let visibleToRolesArr: string[] | undefined;
+    if (visible_to_roles) {
+      try {
+        const parsed = JSON.parse(visible_to_roles);
+        if (Array.isArray(parsed)) visibleToRolesArr = parsed;
+      } catch {
+        visibleToRolesArr = String(visible_to_roles).split(',').map(r => r.trim()).filter(Boolean);
+      }
+    }
+
+    const options = {
+      requiresSignature,
+      expiresAt: expires_at || null,
+      visibleToRoles: visibleToRolesArr,
+      uploadedBy: req.user!.userId,
+    };
+
+    if (isZip) {
+      // Handle ZIP
+      const timestamp = Date.now();
+      const extractDir = path.join(DOCUMENTS_BULK_DIR, String(timestamp));
+      fs.mkdirSync(extractDir, { recursive: true });
+
+      try {
+        const zip = new AdmZip(tempPath);
+        zip.extractAllTo(extractDir, true);
+
+        const entries = zip.getEntries();
+        for (const entry of entries) {
+          if (entry.isDirectory) continue;
+
+          const filePath = path.join(extractDir, entry.entryName);
+          const doc = await createGenericDocument({
+            title: entry.name,
+            fileUrl: filePath,
+            uploadedBy: req.user!.userId,
+            requiresSignature: options.requiresSignature,
+            expiresAt: options.expiresAt,
+          });
+
+          // Rule based auto-assignment
+          await performAutoAssign(doc.id, entry.name, req.user!.companyId!, options);
+        }
+
+        ok(res, { success: true, message: 'ZIP extracted and files saved successfully' });
+      } catch (err: any) {
+        badRequest(res, 'ZIP processing failed', 'ZIP_ERROR');
+      } finally {
+        // Clean up temp zip file
+        if (fs.existsSync(tempPath)) fs.unlinkSync(tempPath);
+      }
+    } else {
+      // Handle Single File
+      const destPath = path.join(DOCUMENTS_SINGLE_DIR, req.file.filename);
+      fs.renameSync(tempPath, destPath);
+
+      const doc = await createGenericDocument({
+        title: originalname,
+        fileUrl: destPath,
+        uploadedBy: req.user!.userId,
+        requiresSignature: options.requiresSignature,
+        expiresAt: options.expiresAt,
+      });
+
+      // Rule based auto-assignment
+      await performAutoAssign(doc.id, originalname, req.user!.companyId!, options);
+
+      ok(res, { success: true, message: 'Files uploaded successfully', document: doc });
+    }
+
   }),
 );
 
@@ -158,8 +672,10 @@ router.get(
   requireModulePermission('documenti', 'read'),
   asyncHandler(async (req: Request, res: Response) => {
     const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+
+    if (allowedCompanyIds.length === 0) {
+      ok(res, []);
       return;
     }
 
@@ -167,7 +683,7 @@ router.get(
     const canSeeInactive = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
     const includeInactive = canSeeInactive && req.query.include_inactive === 'true';
 
-    const categories = await getCategories(user.companyId, includeInactive);
+    const categories = await getCategories(allowedCompanyIds, includeInactive);
     ok(res, categories);
   }),
 );
@@ -180,14 +696,18 @@ router.post(
   '/categories',
   authenticate,
   requireRole('admin', 'hr'),
+  enforceCompany,
   asyncHandler(async (req: Request, res: Response) => {
-    const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+    const { name, company_id } = req.body as { name?: string; company_id?: number };
+    
+    // enforceCompany already ensures req.body.company_id is valid and accessible,
+    // or falls back to req.user.companyId if not provided.
+    const targetCompanyId = company_id || req.user!.companyId;
+    if (!targetCompanyId) {
+      badRequest(res, 'ID azienda mancante', 'MISSING_COMPANY_ID');
       return;
     }
 
-    const { name } = req.body as { name?: string };
     if (!name || typeof name !== 'string' || name.trim().length === 0) {
       badRequest(res, 'Il nome della categoria è obbligatorio', 'VALIDATION_ERROR');
       return;
@@ -198,14 +718,30 @@ router.post(
     }
 
     try {
-      const category = await createCategory(user.companyId, name.trim());
+      const category = await createCategory(targetCompanyId, name.trim());
+      
+      // Retroactive assignment:
+      // 1. Update employee_documents
+      await query(
+        `UPDATE employee_documents 
+            SET category_id = $1 
+          WHERE company_id = $2 AND category_id IS NULL AND deleted_at IS NULL`,
+        [category.id, targetCompanyId]
+      );
+
+      // 2. Update generic documents table for consistency
+      await query(
+        `UPDATE documents d
+            SET category = $1
+           FROM users u
+          WHERE d.employee_id = u.id
+            AND u.company_id = $2
+            AND d.category IS NULL`,
+        [category.name, targetCompanyId]
+      );
+
       created(res, category, 'Categoria creata con successo');
     } catch (err: any) {
-      // PostgreSQL unique violation: code 23505
-      if (err?.code === '23505') {
-        conflict(res, 'Esiste già una categoria con questo nome', 'DUPLICATE_CATEGORY');
-        return;
-      }
       throw err;
     }
   }),
@@ -219,51 +755,58 @@ router.patch(
   '/categories/:id',
   authenticate,
   requireRole('admin', 'hr'),
+  enforceCompany,
   asyncHandler(async (req: Request, res: Response) => {
-    const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
-      return;
-    }
-
     const id = parseInt(req.params.id, 10);
     if (Number.isNaN(id)) {
       badRequest(res, 'ID categoria non valido', 'BAD_REQUEST');
       return;
     }
 
-    const { name, is_active } = req.body as { name?: string; is_active?: boolean };
+    const { name, is_active, company_id, current_company_id } = req.body as {
+      name?: string;
+      is_active?: boolean;
+      company_id?: number;
+      current_company_id?: number;
+    };
+
+    const sourceCompanyId = current_company_id || req.user!.companyId;
+    const destinationCompanyId = company_id;
+
+    if (!sourceCompanyId) {
+      badRequest(res, 'ID azienda sorgente mancante', 'MISSING_SOURCE_COMPANY_ID');
+      return;
+    }
+
+    // enforceCompany already validated company_id (destination) if present.
+    // We also need to ensure the user has access to sourceCompanyId if it's different.
+    if (sourceCompanyId !== (company_id || req.user!.companyId)) {
+      const allowed = await resolveAllowedCompanyIds(req.user!);
+      if (!allowed.includes(sourceCompanyId)) {
+        forbidden(res, 'Accesso negato all\'azienda sorgente');
+        return;
+      }
+    }
+
     if (name !== undefined && (typeof name !== 'string' || name.trim().length === 0)) {
       badRequest(res, 'Il nome della categoria non può essere vuoto', 'VALIDATION_ERROR');
       return;
     }
-    if (name !== undefined && name.trim().length > 100) {
-      badRequest(res, 'Il nome della categoria non può superare i 100 caratteri', 'VALIDATION_ERROR');
-      return;
-    }
-
-    if (name === undefined && is_active === undefined) {
-      badRequest(res, 'Nessun campo da aggiornare', 'VALIDATION_ERROR');
-      return;
-    }
 
     try {
-      const updated = await updateCategory(id, user.companyId, {
+      const updated = await updateCategory(id, sourceCompanyId, {
         name: name !== undefined ? name.trim() : undefined,
         isActive: is_active,
+        companyId: destinationCompanyId,
       });
 
       if (!updated) {
-        notFound(res, 'Categoria non trovata', 'NOT_FOUND');
+        notFound(res, 'Categoria non trovata per l\'azienda specificata', 'NOT_FOUND');
         return;
       }
 
       ok(res, updated, 'Categoria aggiornata con successo');
     } catch (err: any) {
-      if (err?.code === '23505') {
-        conflict(res, 'Esiste già una categoria con questo nome', 'DUPLICATE_CATEGORY');
-        return;
-      }
       throw err;
     }
   }),
@@ -585,7 +1128,11 @@ router.get(
       return;
     }
 
-    if (!['admin', 'hr', 'area_manager', 'store_manager'].includes(user.role)) {
+    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
+    const isAreaManager = user.role === 'area_manager';
+    const isStoreManager = user.role === 'store_manager';
+
+    if (!isAdminOrHr && !isAreaManager && !isStoreManager) {
       res.status(403).json({ success: false, error: 'Accesso negato', code: 'FORBIDDEN' });
       return;
     }
@@ -612,7 +1159,24 @@ router.get(
       return;
     }
 
-    const docs = await getEmployeeDocuments(employee.company_id, employeeId);
+    // Scoped check for managers
+    if (!isAdminOrHr) {
+      if (isAreaManager) {
+        const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2`, [employeeId, user.userId]);
+        if (!supervised) {
+          res.status(403).json({ success: false, error: 'Non autorizzato: dipendente fuori ambito', code: 'FORBIDDEN' });
+          return;
+        }
+      } else if (isStoreManager && user.storeId) {
+        const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2`, [employeeId, user.storeId]);
+        if (!inStore) {
+          res.status(403).json({ success: false, error: 'Non autorizzato: dipendente fuori ambito', code: 'FORBIDDEN' });
+          return;
+        }
+      }
+    }
+
+    const docs = await getEmployeeDocuments(employee.company_id, employeeId, user.role);
     ok(res, docs);
   }),
 );
@@ -671,21 +1235,25 @@ router.post(
 
     const { originalname, mimetype, path: storagePath } = req.file;
 
-    // Parse optional extra fields from body
-    const categoryId = req.body.category_id ? parseInt(String(req.body.category_id), 10) : null;
-    const requiresSignature = req.body.requires_signature === 'true' || req.body.requires_signature === true;
-    const expiresAt: string | null = req.body.expires_at
-      ? String(req.body.expires_at)
-      : null;
+    const { requires_signature, expires_at, visible_to_roles } = req.body;
+    const requiresSignature = requires_signature === 'true' || requires_signature === true;
+    const expiresAt: string | null = expires_at ? String(expires_at) : null;
+
+    // Fetch first active category for the company automatically
+    const categoryRow = await queryOne<{ id: number }>(
+      `SELECT id FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
+      [employee.company_id]
+    );
+    const autoCategoryId = categoryRow?.id || null;
 
     // Parse visible_to_roles: accept comma-separated string or JSON array string
     let visibleToRoles: string[] | null = null;
-    if (req.body.visible_to_roles) {
+    if (visible_to_roles) {
       try {
-        const parsed = JSON.parse(req.body.visible_to_roles);
+        const parsed = JSON.parse(visible_to_roles);
         if (Array.isArray(parsed)) visibleToRoles = parsed;
       } catch {
-        visibleToRoles = String(req.body.visible_to_roles).split(',').map((r) => r.trim()).filter(Boolean);
+        visibleToRoles = String(visible_to_roles).split(',').map((r) => r.trim()).filter(Boolean);
       }
     }
 
@@ -698,17 +1266,16 @@ router.post(
       [
         employee.company_id,
         employeeId,
-        categoryId || null,
+        autoCategoryId,
         originalname,
         storagePath,
         mimetype,
         user.userId,
         requiresSignature,
-        expiresAt || null,
+        expiresAt,
         visibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
       ],
     );
-
     ok(res, { id: insertResult?.id ?? null, fileName: originalname }, 'Documento caricato');
   }),
 );
@@ -757,8 +1324,27 @@ router.get(
       return;
     }
 
-    // Role visibility check
-    if (!doc.is_visible_to_roles.includes(user.role) && user.is_super_admin !== true) {
+    // Role and scope check
+    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
+    const isOwner = doc.employee_id === user.userId;
+
+    let isAuthorized = isAdminOrHr || isOwner;
+
+    if (!isAuthorized) {
+      // Check if the current user's role is allowed to see this document in general
+      if (doc.is_visible_to_roles && doc.is_visible_to_roles.includes(user.role)) {
+        // For managers, we also verify the employee scope
+        if (user.role === 'area_manager') {
+          const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2`, [doc.employee_id, user.userId]);
+          if (supervised) isAuthorized = true;
+        } else if (user.role === 'store_manager' && user.storeId) {
+          const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2`, [doc.employee_id, user.storeId]);
+          if (inStore) isAuthorized = true;
+        }
+      }
+    }
+
+    if (!isAuthorized) {
       forbidden(res, 'Non sei autorizzato a scaricare questo documento');
       return;
     }
@@ -806,29 +1392,13 @@ router.delete(
 
     const allowedCompanyIds = await resolveAllowedCompanyIds(user);
 
-    // Look up the document to validate company scope
-    const doc = await queryOne<{ id: number; company_id: number; deleted_at: string | null }>(
-      `SELECT id, company_id, deleted_at FROM employee_documents WHERE id = $1`,
-      [id],
-    );
-
-    if (!doc || !allowedCompanyIds.includes(doc.company_id)) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+    const deleted = await deleteDocumentUnified(id, user.companyId);
+    if (deleted) {
+      ok(res, { id }, 'Documento eliminato con successo');
       return;
     }
 
-    if (doc.deleted_at !== null) {
-      notFound(res, 'Documento già eliminato', 'NOT_FOUND');
-      return;
-    }
-
-    const deleted = await softDeleteDocument(id, doc.company_id);
-    if (!deleted) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
-      return;
-    }
-
-    ok(res, { id }, 'Documento eliminato con successo');
+    notFound(res, 'Documento non trovato o già eliminato');
   }),
 );
 
@@ -992,41 +1562,83 @@ router.post(
         const pdfBytes = fs.readFileSync(doc.storage_path);
         const pdfDoc = await PDFDocument.load(pdfBytes);
         const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+        const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
         const page = pdfDoc.addPage();
         const { width, height } = page.getSize();
         const fontSize = 12;
-        const lineHeight = fontSize * 1.6;
+        const lineHeight = fontSize * 1.8;
         const margin = 60;
 
-        const dateStr = now.toLocaleString('it-IT', { timeZone: 'Europe/Rome' });
-        const lines = [
-          'Documento firmato digitalmente',
-          '',
-          `Firmato da: ${signerName} ${signerSurname}`,
-          `Ruolo: ${signerRole}`,
-          `Data: ${dateStr}`,
-          `IP: ${signedIp}`,
-        ];
+        // Language detection
+        const lang = (req.headers['accept-language'] || req.headers['x-lang'] || 'it').toString().toLowerCase();
+        const isIt = lang.startsWith('it');
+
+        const labels = isIt ? {
+          title: 'Dettagli Firma Elettronica',
+          signedBy: 'Firmato da',
+          role: 'Ruolo',
+          email: 'Email',
+          date: 'Data e Ora',
+          ip: 'Indirizzo IP',
+          browser: 'Browser',
+          disclaimer: 'Questo documento è stato firmato elettronicamente con consenso legale.'
+        } : {
+          title: 'E-Signature Audit Trail',
+          signedBy: 'Signed by',
+          role: 'Role',
+          email: 'Email',
+          date: 'Date and Time',
+          ip: 'IP Address',
+          browser: 'Browser',
+          disclaimer: 'This document has been electronically signed with legal consent.'
+        };
+
+        const dateStr = now.toLocaleString(isIt ? 'it-IT' : 'en-US', { 
+          timeZone: 'Europe/Rome',
+          dateStyle: 'medium',
+          timeStyle: 'medium'
+        });
+
+        const browser = req.headers['user-agent'] || 'Unknown';
 
         let y = height - margin;
-        for (const line of lines) {
-          if (line === '') { y -= lineHeight / 2; continue; }
-          page.drawText(line, {
-            x: margin,
-            y,
-            size: fontSize,
-            font,
-            color: rgb(0, 0, 0),
-          });
+        
+        // Title
+        page.drawText(labels.title, { x: margin, y, size: 16, font: fontBold });
+        y -= lineHeight * 1.5;
+
+        const drawField = (label: string, value: string) => {
+          page.drawText(`${label}:`, { x: margin, y, size: fontSize, font: fontBold });
+          page.drawText(value, { x: margin + 100, y, size: fontSize, font });
           y -= lineHeight;
-        }
+        };
+
+        drawField(labels.signedBy, `${signerName} ${signerSurname}`);
+        drawField(labels.role, signerRole);
+        drawField(labels.email, signerEmail);
+        drawField(labels.date, dateStr);
+        drawField(labels.ip, signedIp);
+        
+        // Browser handling (may wrap)
+        page.drawText(`${labels.browser}:`, { x: margin, y, size: fontSize, font: fontBold });
+        const browserShort = browser.length > 60 ? browser.substring(0, 57) + '...' : browser;
+        page.drawText(browserShort, { x: margin + 100, y, size: fontSize, font });
+        y -= lineHeight * 2;
+
+        // Disclaimer
+        page.drawText(labels.disclaimer, {
+          x: margin,
+          y,
+          size: 10,
+          font,
+          color: rgb(0.4, 0.4, 0.4),
+        });
 
         const modifiedPdfBytes = await pdfDoc.save();
         fs.writeFileSync(doc.storage_path, modifiedPdfBytes);
-        newStoragePath = doc.storage_path; // same path, overwritten in place
+        newStoragePath = doc.storage_path;
       } catch (pdfErr: any) {
-        // PDF manipulation failure is non-fatal — we still record the signature
         signatureMeta['pdfSignatureError'] = pdfErr?.message ?? 'Errore PDF';
       }
     }
