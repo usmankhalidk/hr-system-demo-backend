@@ -1,5 +1,5 @@
 import { query, queryOne } from '../../config/database';
-import { Candidate, createCandidate, JobLanguage, JobType, RemoteType } from '../ats/ats.service';
+import { Candidate, createCandidate, JobLanguage, JobStatus, JobType, RemoteType } from '../ats/ats.service';
 
 export interface PublicCompanyProfile {
   id: number;
@@ -50,6 +50,7 @@ export interface PublicJobsCatalog {
 
 export interface PublicJob {
   id: number;
+  status: JobStatus;
   companyId: number;
   companyName: string;
   companySlug: string;
@@ -80,6 +81,7 @@ export interface PublicJob {
   storeCode?: string | null;
   storeLogoFilename?: string | null;
   storeEmployeeCount?: number | null;
+  applicantsCount: number;
   postedBy?: PublicHiringContact | null;
   location: {
     address: string | null;
@@ -102,6 +104,7 @@ function parseCompanyIdentifier(identifier: string): { value: number | string; b
 const PUBLIC_JOB_SELECT = `
   SELECT
     j.id,
+    j.status,
     j.company_id,
     j.store_id,
     j.title,
@@ -136,8 +139,13 @@ const PUBLIC_JOB_SELECT = `
       SELECT COUNT(*)::int
       FROM job_postings jp_company
       WHERE jp_company.company_id = c.id
-        AND jp_company.status IN ('published', 'draft')
+        AND jp_company.status = 'published'
     ) AS company_open_roles_count,
+    (
+      SELECT COUNT(*)::int
+      FROM candidates ca
+      WHERE ca.job_posting_id = j.id
+    ) AS applicants_count,
     c.owner_user_id AS company_owner_user_id,
     owner.name AS company_owner_name,
     owner.surname AS company_owner_surname,
@@ -218,6 +226,7 @@ function mapPublicJob(row: Record<string, unknown>): PublicJob {
 
   return {
     id: row.id as number,
+    status: (row.status as JobStatus) ?? 'draft',
     companyId: row.company_id as number,
     companyName: row.company_name as string,
     companySlug: row.company_slug as string,
@@ -248,6 +257,7 @@ function mapPublicJob(row: Record<string, unknown>): PublicJob {
     storeCode: (row.store_code as string | null) ?? null,
     storeLogoFilename: (row.store_logo_filename as string | null) ?? null,
     storeEmployeeCount: typeof row.store_employee_count === 'number' ? (row.store_employee_count as number) : null,
+    applicantsCount: typeof row.applicants_count === 'number' ? (row.applicants_count as number) : 0,
     postedBy,
     location: {
       address,
@@ -260,6 +270,9 @@ function mapPublicJob(row: Record<string, unknown>): PublicJob {
 }
 
 async function getPublicHiringTeam(companyId: number, storeId: number | null, postedByUserId: number | null): Promise<PublicHiringContact[]> {
+  void storeId;
+  void postedByUserId;
+
   const rows = await query<Record<string, unknown>>(
     `SELECT
        u.id,
@@ -273,20 +286,19 @@ async function getPublicHiringTeam(companyId: number, storeId: number | null, po
      LEFT JOIN stores s ON s.id = u.store_id
      WHERE u.company_id = $1
        AND u.status = 'active'
-       AND u.role IN ('hr', 'area_manager', 'store_manager')
-       AND ($2::int IS NULL OR u.store_id = $2 OR u.role IN ('hr', 'area_manager'))
+       AND u.role IN ('admin', 'hr', 'area_manager', 'store_manager')
      ORDER BY
        CASE
-         WHEN $3::int IS NOT NULL AND u.id = $3 THEN 0
-         WHEN $2::int IS NOT NULL AND u.store_id = $2 THEN 1
-         WHEN u.role = 'hr' THEN 2
-         WHEN u.role = 'area_manager' THEN 3
+         WHEN u.role = 'admin' THEN 0
+         WHEN u.role = 'hr' THEN 1
+         WHEN u.role = 'area_manager' THEN 2
+         WHEN u.role = 'store_manager' THEN 3
          ELSE 4
        END,
        u.name ASC,
        u.surname ASC
-     LIMIT 6`,
-    [companyId, storeId, postedByUserId],
+     LIMIT 12`,
+    [companyId],
   );
 
   return rows.map((row) => ({
@@ -304,40 +316,19 @@ export async function listAllPublicJobs(): Promise<PublicJobsCatalog> {
   const rows = await query<Record<string, unknown>>(
     `${PUBLIC_JOB_SELECT}
      WHERE c.is_active = true
-       AND j.status IN ('published', 'draft')
+       AND j.status IN ('published', 'closed')
      ORDER BY COALESCE(j.published_at, j.created_at) DESC`,
   );
 
-  const companies = await query<PublicCompanyProfile>(
-    `SELECT
-       c.id,
-       c.name,
-       c.slug,
-       c.city,
-       c.state,
-       c.country,
-       c.address,
-       cg.name AS "groupName",
-       c.logo_filename AS "logoFilename",
-       c.banner_filename AS "bannerFilename",
-       c.owner_user_id AS "ownerUserId",
-       owner.name AS "ownerName",
-       owner.surname AS "ownerSurname",
-       owner.avatar_filename AS "ownerAvatarFilename",
-       (
-         SELECT COUNT(*)::int
-         FROM job_postings jp
-         WHERE jp.company_id = c.id
-           AND jp.status IN ('published', 'draft')
-       ) AS "openRolesCount"
-     FROM companies c
-     LEFT JOIN company_groups cg ON cg.id = c.group_id
-     LEFT JOIN users owner ON owner.id = c.owner_user_id
-      WHERE c.is_active = true
-     ORDER BY c.name ASC`,
-  );
-
   const jobs = rows.map(mapPublicJob);
+
+  const companiesMap = new Map<number, PublicCompanyProfile>();
+  for (const row of rows) {
+    const companyId = row.company_id as number;
+    if (!companiesMap.has(companyId)) {
+      companiesMap.set(companyId, mapPublicCompanyProfile(row));
+    }
+  }
 
   const storesMap = new Map<number, PublicStoreOption>();
   for (const job of jobs) {
@@ -361,7 +352,7 @@ export async function listAllPublicJobs(): Promise<PublicJobsCatalog> {
 
   return {
     jobs,
-    companies,
+    companies: Array.from(companiesMap.values()).sort((a, b) => a.name.localeCompare(b.name)),
     stores: Array.from(storesMap.values()).sort((a, b) => a.name.localeCompare(b.name)),
     tags: Array.from(tagsSet.values()).sort((a, b) => a.localeCompare(b)),
   };
@@ -392,7 +383,7 @@ export async function getPublicCompanyBySlug(slug: string): Promise<PublicCompan
              SELECT COUNT(*)::int
              FROM job_postings jp
              WHERE jp.company_id = c.id
-               AND jp.status IN ('published', 'draft')
+               AND jp.status = 'published'
            ) AS "openRolesCount"
          FROM companies c
          LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -418,7 +409,7 @@ export async function getPublicCompanyBySlug(slug: string): Promise<PublicCompan
              SELECT COUNT(*)::int
              FROM job_postings jp
              WHERE jp.company_id = c.id
-               AND jp.status IN ('published', 'draft')
+               AND jp.status = 'published'
            ) AS "openRolesCount"
          FROM companies c
          LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -444,7 +435,7 @@ export async function listPublicJobsByCompanySlug(slug: string): Promise<{ compa
     `${PUBLIC_JOB_SELECT}
      WHERE ${parsed.byId ? 'c.id = $1' : 'c.slug = $1'}
        AND c.is_active = true
-       AND j.status IN ('published', 'draft')
+       AND j.status IN ('published', 'closed')
      ORDER BY COALESCE(j.published_at, j.created_at) DESC`,
     [parsed.value],
   );
@@ -463,7 +454,7 @@ export async function getPublicJobByCompanySlugAndId(slug: string, jobId: number
     `${PUBLIC_JOB_SELECT}
      WHERE ${parsed.byId ? 'c.id = $1' : 'c.slug = $1'}
        AND c.is_active = true
-       AND j.status IN ('published', 'draft')
+       AND j.status IN ('published', 'closed')
        AND j.id = $2
      LIMIT 1`,
     [parsed.value, jobId],
@@ -489,7 +480,7 @@ export async function getPublicJobById(jobId: number): Promise<PublicJobDetail |
   const row = await queryOne<Record<string, unknown>>(
     `${PUBLIC_JOB_SELECT}
      WHERE c.is_active = true
-       AND j.status IN ('published', 'draft')
+       AND j.status IN ('published', 'closed')
        AND j.id = $1
      LIMIT 1`,
     [jobId],

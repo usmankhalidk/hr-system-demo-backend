@@ -47,6 +47,11 @@ export interface JobPosting {
   contractType: string | null;
   salaryMin: number | null;
   salaryMax: number | null;
+  salaryPeriod: string | null;
+  experience: string | null;
+  education: string | null;
+  category: string | null;
+  expirationDate: string | null;
   title: string;
   description: string | null;
   tags: string[];
@@ -60,6 +65,16 @@ export interface JobPosting {
   closedAt: string | null;
   createdAt: string;
   updatedAt: string;
+}
+
+function parseNullableNumber(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
 }
 
 export interface Candidate {
@@ -99,6 +114,7 @@ export interface FeedCompany {
 }
 
 export interface FeedJob extends JobPosting {
+  companyName: string;
   storeName: string | null;
   storeAddress: string | null;
   storePostalCode: string | null;
@@ -162,8 +178,13 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     department: row.department as string | null,
     weeklyHours: typeof row.weekly_hours === 'number' ? (row.weekly_hours as number) : null,
     contractType: row.contract_type as string | null,
-    salaryMin: typeof row.salary_min === 'number' ? (row.salary_min as number) : null,
-    salaryMax: typeof row.salary_max === 'number' ? (row.salary_max as number) : null,
+    salaryMin: parseNullableNumber(row.salary_min),
+    salaryMax: parseNullableNumber(row.salary_max),
+    salaryPeriod: row.salary_period as string | null,
+    experience: row.experience as string | null,
+    education: row.education as string | null,
+    category: row.category as string | null,
+    expirationDate: row.expiration_date as string | null,
     title: row.title as string,
     description: row.description as string | null,
     tags: (row.tags as string[]) ?? [],
@@ -212,6 +233,7 @@ function mapFeedJob(row: Record<string, unknown>): FeedJob {
   const base = mapJobPosting(row);
   return {
     ...base,
+    companyName: (row.company_name as string | null) ?? 'Company',
     storeName: row.store_name as string | null,
     storeAddress: row.store_address as string | null,
     storePostalCode: row.store_postal_code as string | null,
@@ -286,6 +308,51 @@ export async function listJobs(
 }
 
 export async function getPublishedJobsForFeed(identifier: string): Promise<{ company: FeedCompany | null; jobs: FeedJob[] }> {
+  const normalizedIdentifier = identifier.trim().toLowerCase();
+
+  if (normalizedIdentifier === '1' || normalizedIdentifier === 'all') {
+    const rows = await query<Record<string, unknown>>(
+      `SELECT j.*,
+              c.name AS company_name,
+              c.slug AS company_slug,
+              s.name AS store_name,
+              s.address AS store_address,
+              s.cap AS store_postal_code,
+              s.city AS store_city,
+              s.state AS store_state,
+              s.country AS store_country,
+              c.city AS company_city,
+              c.state AS company_state,
+              c.country AS company_country,
+              c.address AS company_address,
+              COALESCE(j.job_city, s.city, c.city) AS city,
+              COALESCE(j.job_state, s.state, c.state) AS state,
+              COALESCE(j.job_country, s.country, c.country) AS country,
+              COALESCE(j.job_postal_code, s.cap) AS postal_code,
+              COALESCE(j.job_address, s.address, c.address) AS address,
+              CONCAT_WS(', ', COALESCE(j.job_city, s.city, c.city), COALESCE(j.job_state, s.state, c.state), COALESCE(j.job_country, s.country, c.country)) AS location
+       FROM job_postings j
+       JOIN companies c ON c.id = j.company_id
+       LEFT JOIN stores s ON s.id = j.store_id
+       WHERE c.is_active = true
+         AND j.status = 'published'
+       ORDER BY COALESCE(j.published_at, j.created_at) DESC`,
+    );
+
+    return {
+      company: {
+        id: 1,
+        name: 'All Published Jobs',
+        slug: 'all',
+        city: null,
+        state: null,
+        country: null,
+        address: null,
+      },
+      jobs: rows.map(mapFeedJob),
+    };
+  }
+
   const numericId = /^\d+$/.test(identifier) ? parseInt(identifier, 10) : null;
   const company = await queryOne<FeedCompany>(
     numericId
@@ -303,6 +370,7 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
 
   const rows = await query<Record<string, unknown>>(
       `SELECT j.*,
+        c.name AS company_name,
         c.slug AS company_slug,
             s.name AS store_name,
             s.address AS store_address,
@@ -443,6 +511,7 @@ export async function updateJob(
   id: number,
   companyId: number,
   data: {
+    companyId?: number;
     title?: string;
     description?: string;
     tags?: string[];
@@ -468,6 +537,7 @@ export async function updateJob(
   const params: unknown[] = [];
   let idx = 1;
 
+  if (data.companyId !== undefined)   { setParts.push(`company_id = $${idx++}`);   params.push(data.companyId); }
   if (data.title !== undefined)       { setParts.push(`title = $${idx++}`);       params.push(data.title); }
   if (data.description !== undefined) { setParts.push(`description = $${idx++}`); params.push(data.description); }
   if (data.tags !== undefined)        { setParts.push(`tags = $${idx++}`);         params.push(data.tags); }
@@ -485,7 +555,10 @@ export async function updateJob(
   if (data.storeId !== undefined)     { setParts.push(`store_id = $${idx++}`);     params.push(data.storeId); }
   if (data.language !== undefined)    { setParts.push(`language = $${idx++}`);     params.push(data.language); }
   if (data.jobType !== undefined)     { setParts.push(`job_type = $${idx++}`);     params.push(data.jobType); }
-  if (data.isRemote !== undefined)    { setParts.push(`is_remote = $${idx++}`);    params.push(data.isRemote); }
+  if (data.isRemote !== undefined && data.remoteType === undefined) {
+    setParts.push(`is_remote = $${idx++}`);
+    params.push(data.isRemote);
+  }
   if (data.remoteType !== undefined)  {
     setParts.push(`remote_type = $${idx++}`);
     params.push(data.remoteType);
@@ -517,7 +590,8 @@ export async function updateJob(
   );
   if (!row) return null;
 
-  return getJob(row.id, companyId);
+  const responseCompanyId = data.companyId ?? companyId;
+  return getJob(row.id, responseCompanyId);
 }
 
 export async function deleteJob(id: number, companyId: number): Promise<boolean> {
