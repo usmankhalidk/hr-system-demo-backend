@@ -33,7 +33,6 @@ const createEmployeeSchema = z.object({
   contract_end_date: z.string().optional().nullable(),
   working_type: z.enum(['full_time', 'part_time']).optional().nullable(),
   weekly_hours: z.number().min(0).max(80).optional().nullable(),
-  off_days: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
   personal_email: z.string().email().optional().nullable(),
   date_of_birth: z.string().optional().nullable(),
   nationality: z.string().max(100).optional().nullable(),

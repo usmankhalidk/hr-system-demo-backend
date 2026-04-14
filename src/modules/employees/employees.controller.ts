@@ -18,7 +18,6 @@ const LIST_FIELDS = `
   u.name, u.surname, u.email, u.role, u.unique_id,
   u.department, u.hire_date, u.contract_end_date,
   u.working_type, u.weekly_hours,
-  COALESCE(u.off_days, ARRAY[5,6]::SMALLINT[]) AS off_days,
   u.status,
   u.first_aid_flag, u.marital_status,
   u.termination_date, u.termination_type, u.created_at,
@@ -64,18 +63,6 @@ const BASE_JOINS_WITH_COMPANY = `
 
 // Valid supervisor roles
 const SUPERVISOR_ROLES: UserRole[] = ['admin', 'hr', 'area_manager', 'store_manager'];
-const DEFAULT_OFF_DAYS = [5, 6];
-
-function normalizeOffDays(raw: unknown, fallback: number[] = DEFAULT_OFF_DAYS): number[] {
-  if (!Array.isArray(raw)) return [...fallback];
-  const normalized = Array.from(new Set(
-    raw
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6),
-  )).sort((a, b) => a - b);
-  return normalized.length > 0 ? normalized : [...fallback];
-}
-
 // M9: Validate that supervisor_id refers to an active user with a supervisory role
 // in the same company. Returns an error message string, or null if valid.
 async function validateSupervisor(supervisorId: number, companyId: number): Promise<string | null> {
@@ -783,7 +770,6 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
 export const createEmployee = asyncHandler(async (req: Request, res: Response) => {
   const { companyId: callerCompanyId, role: callerRole } = req.user!;
   const body = req.body as Record<string, any>;
-  const offDays = normalizeOffDays(body.off_days);
 
   // Resolve target company: cross-company callers (grouped admin/hr/area_manager)
   // may specify a company_id in the body to create an employee in a sibling company.
@@ -875,14 +861,14 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     `INSERT INTO users (
       company_id, store_id, supervisor_id, name, surname, email, password_hash,
       role, unique_id, department, hire_date, contract_end_date,
-      working_type, weekly_hours, off_days, personal_email, date_of_birth, nationality,
+      working_type, weekly_hours, personal_email, date_of_birth, nationality,
       gender, iban, address, cap, city, state, country, phone,
       first_aid_flag, marital_status, status,
       contract_type, probation_months, termination_type
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
-        hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
+        hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, city, state, country, phone,
         first_aid_flag, marital_status, status,
         contract_type, probation_months, termination_type`,
@@ -901,7 +887,6 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.contract_end_date ?? null,
       body.working_type ?? null,
       body.weekly_hours ?? null,
-      offDays,
       body.personal_email ?? null,
       body.date_of_birth ?? null,
       body.nationality ?? null,
@@ -935,20 +920,14 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   // Resolve which companies the caller may operate on, then derive the target
   // company from the employee's actual record (scoped to the allowed set).
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const empRow = await queryOne<{ company_id: number; off_days: number[] | null }>(
-    `SELECT company_id, COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
+  const empRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id
      FROM users
      WHERE id = $1 AND company_id = ANY($2)`,
     [empId, allowedCompanyIds],
   );
   if (!empRow) { notFound(res, 'Dipendente non trovato'); return; }
   const companyId = empRow.company_id;
-  const currentOffDays = normalizeOffDays(empRow.off_days);
-  const nextOffDays = normalizeOffDays(body.off_days, currentOffDays);
-  const offDaysChanged = Object.prototype.hasOwnProperty.call(body, 'off_days');
-  const newlyAddedOffDays = offDaysChanged
-    ? nextOffDays.filter((day) => !currentOffDays.includes(day))
-    : [];
 
   // H1: Role escalation prevention — only admin and hr may change the role field
   if ('role' in body) {
@@ -1017,18 +996,17 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       email = COALESCE($5, email),
       role = $6, unique_id = $7, department = $8, hire_date = $9,
       contract_end_date = $10, working_type = $11, weekly_hours = $12,
-      off_days = $13,
-      personal_email = $14, date_of_birth = $15, nationality = $16,
-      gender = $17, iban = $18, address = $19, cap = $20,
-      city = $21, state = $22, country = $23, phone = $24,
-      first_aid_flag = $25, marital_status = $26,
-      contract_type = $27, probation_months = $28,
-      termination_date = $29, termination_type = $30,
-      password_hash = COALESCE($31, password_hash),
+      personal_email = $13, date_of_birth = $14, nationality = $15,
+      gender = $16, iban = $17, address = $18, cap = $19,
+      city = $20, state = $21, country = $22, phone = $23,
+      first_aid_flag = $24, marital_status = $25,
+      contract_type = $26, probation_months = $27,
+      termination_date = $28, termination_type = $29,
+      password_hash = COALESCE($30, password_hash),
       updated_at = NOW()
-    WHERE id = $32 AND company_id = $33
+    WHERE id = $31 AND company_id = $32
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
-        hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
+        hire_date, contract_end_date, working_type, weekly_hours, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, city, state, country, phone,
         first_aid_flag, marital_status, status,
         contract_type, probation_months, termination_date, termination_type`,
@@ -1045,7 +1023,6 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.contract_end_date ?? null,
       body.working_type ?? null,
       body.weekly_hours ?? null,
-      nextOffDays,
       body.personal_email ?? null,
       body.date_of_birth ?? null,
       body.nationality ?? null,
@@ -1072,19 +1049,6 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   if (!employee) {
     notFound(res, 'Dipendente non trovato');
     return;
-  }
-
-  if (newlyAddedOffDays.length > 0) {
-    await query(
-      `UPDATE shifts
-       SET status = 'cancelled', updated_at = NOW()
-       WHERE company_id = $1
-         AND user_id = $2
-         AND status IN ('scheduled', 'confirmed')
-         AND date >= CURRENT_DATE
-         AND ((EXTRACT(ISODOW FROM date)::int + 6) % 7) = ANY($3::int[])`,
-      [companyId, empId, newlyAddedOffDays],
-    );
   }
 
   ok(res, employee, 'Dipendente aggiornato');
