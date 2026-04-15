@@ -409,6 +409,7 @@ export interface GenericDocument {
   expiresAt: string | null;
   isVisibleToRoles: string[];
   createdAt: string;
+  signedAt?: string | null;
 }
 
 export async function createGenericDocument(data: {
@@ -516,8 +517,10 @@ export async function getGenericDocuments(options: {
     is_visible_to_roles: string[];
     created_at: string;
     employee_name: string | null;
+    signed_at: string | null;
   }>(
-    `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name
+    `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name,
+            (SELECT max(ed.signed_at) FROM employee_documents ed WHERE ed.storage_path = d.file_url AND ed.employee_id = d.employee_id AND ed.deleted_at IS NULL) as signed_at
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
        LEFT JOIN users u_up ON u_up.id = d.uploaded_by
@@ -538,6 +541,7 @@ export async function getGenericDocuments(options: {
     isVisibleToRoles: r.is_visible_to_roles,
     createdAt: r.created_at,
     employeeName: r.employee_name || undefined,
+    signedAt: r.signed_at,
   }));
 }
 
