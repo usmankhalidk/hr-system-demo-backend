@@ -23,12 +23,12 @@ const updateSchema = z.object({
   date: z.string().regex(isoDate, 'Date must be YYYY-MM-DD'),
 });
 
-const allRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee'] as const;
+const readRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee'] as const;
 const writeRoles = ['area_manager'] as const;
 
 router.use(authenticate, enforceCompany);
 
-router.get('/', requireRole(...allRoles), getWindowDisplay);
+router.get('/', requireRole(...readRoles), getWindowDisplay);
 router.post('/', requireRole(...writeRoles), validate(createSchema), createWindowDisplay);
 router.put('/:id', requireRole(...writeRoles), validate(updateSchema), updateWindowDisplay);
 router.delete('/:id', requireRole(...writeRoles), deleteWindowDisplay);
