@@ -28,7 +28,11 @@ export interface JobPosting {
   id: number;
   companyId: number;
   companySlug: string;
+  companyName: string | null;
+  companyLogoFilename: string | null;
   storeId: number | null;
+  storeName: string | null;
+  storeLogoFilename: string | null;
   location: string;
   city: string | null;
   state: string | null;
@@ -61,6 +65,11 @@ export interface JobPosting {
   source: string;
   indeedPostId: string | null;
   createdById: number | null;
+  createdByName: string | null;
+  createdBySurname: string | null;
+  createdByRole: string | null;
+  createdByAvatarFilename: string | null;
+  createdByStoreName: string | null;
   publishedAt: string | null;
   closedAt: string | null;
   createdAt: string;
@@ -161,7 +170,11 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     id: row.id as number,
     companyId: row.company_id as number,
     companySlug: row.company_slug as string,
+    companyName: (row.company_name as string | null) ?? null,
+    companyLogoFilename: (row.company_logo_filename as string | null) ?? null,
     storeId: row.store_id as number | null,
+    storeName: (row.store_name as string | null) ?? null,
+    storeLogoFilename: (row.store_logo_filename as string | null) ?? null,
     location: (row.location as string | null) ?? derivedLocation,
     city,
     state,
@@ -194,6 +207,11 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     source: row.source as string,
     indeedPostId: row.indeed_post_id as string | null,
     createdById: row.created_by_id as number | null,
+    createdByName: (row.created_by_name as string | null) ?? null,
+    createdBySurname: (row.created_by_surname as string | null) ?? null,
+    createdByRole: (row.created_by_role as string | null) ?? null,
+    createdByAvatarFilename: (row.created_by_avatar_filename as string | null) ?? null,
+    createdByStoreName: (row.created_by_store_name as string | null) ?? null,
     publishedAt: row.published_at as string | null,
     closedAt: row.closed_at as string | null,
     createdAt: row.created_at as string,
@@ -291,6 +309,15 @@ export async function listJobs(
   const rows = await query<Record<string, unknown>>(
       `SELECT j.*,
         c.slug AS company_slug,
+            c.name AS company_name,
+            c.logo_filename AS company_logo_filename,
+            s.name AS store_name,
+            s.logo_filename AS store_logo_filename,
+            creator.name AS created_by_name,
+            creator.surname AS created_by_surname,
+            creator.role::text AS created_by_role,
+            creator.avatar_filename AS created_by_avatar_filename,
+            creator_store.name AS created_by_store_name,
             COALESCE(j.job_city, s.city, c.city) AS city,
             COALESCE(j.job_state, s.state, c.state) AS state,
             COALESCE(j.job_country, s.country, c.country) AS country,
@@ -300,6 +327,8 @@ export async function listJobs(
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id
+     LEFT JOIN users creator ON creator.id = j.created_by_id
+     LEFT JOIN stores creator_store ON creator_store.id = creator.store_id
      WHERE ${conditions.join(' AND ')}
      ORDER BY j.created_at DESC`,
     params,
@@ -403,6 +432,15 @@ export async function getJob(id: number, companyId: number): Promise<JobPosting 
   const row = await queryOne<Record<string, unknown>>(
       `SELECT j.*,
         c.slug AS company_slug,
+            c.name AS company_name,
+            c.logo_filename AS company_logo_filename,
+            s.name AS store_name,
+            s.logo_filename AS store_logo_filename,
+            creator.name AS created_by_name,
+            creator.surname AS created_by_surname,
+            creator.role::text AS created_by_role,
+            creator.avatar_filename AS created_by_avatar_filename,
+            creator_store.name AS created_by_store_name,
             COALESCE(j.job_city, s.city, c.city) AS city,
             COALESCE(j.job_state, s.state, c.state) AS state,
             COALESCE(j.job_country, s.country, c.country) AS country,
@@ -412,6 +450,8 @@ export async function getJob(id: number, companyId: number): Promise<JobPosting 
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id
+     LEFT JOIN users creator ON creator.id = j.created_by_id
+     LEFT JOIN stores creator_store ON creator_store.id = creator.store_id
      WHERE j.id = $1 AND j.company_id = $2`,
     [id, companyId],
   );
