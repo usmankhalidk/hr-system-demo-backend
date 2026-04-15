@@ -29,6 +29,7 @@ import documentsRoutes from './modules/documents/documents.routes';
 import notificationsRoutes from './modules/notifications/notifications.routes';
 import atsRoutes from './modules/ats/ats.routes';
 import onboardingRoutes from './modules/onboarding/onboarding.routes';
+import windowDisplayRoutes from './modules/window-display/window-display.routes';
 import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
@@ -281,6 +282,7 @@ app.use('/api/documents', documentsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/ats', atsRoutes);
 app.use('/api/onboarding', onboardingRoutes);
+app.use('/api/window-display', windowDisplayRoutes);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
