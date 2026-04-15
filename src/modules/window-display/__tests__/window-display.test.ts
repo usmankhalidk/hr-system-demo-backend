@@ -14,6 +14,9 @@ app.use((err: Error, _req: express.Request, res: express.Response, _next: expres
 
 const request = supertest(app);
 let seeds: Awaited<ReturnType<typeof seedTestData>>;
+let adminToken: string;
+let areaToken: string;
+let createdId: number;
 
 async function login(email: string, password = 'password123'): Promise<string> {
   const res = await request.post('/api/auth/login').send({ email, password });
@@ -22,6 +25,8 @@ async function login(email: string, password = 'password123'): Promise<string> {
 
 beforeAll(async () => {
   seeds = await seedTestData();
+  adminToken = await login('admin@acme-test.com');
+  areaToken = await login('area@acme-test.com');
 });
 
 afterAll(async () => {
@@ -40,29 +45,26 @@ describe('GET /api/window-display', () => {
   });
 
   it('returns 400 when store_id is missing', async () => {
-    const token = await login('admin@acme-test.com');
     const res = await request
       .get('/api/window-display')
       .query({ month: '2026-04' })
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(400);
   });
 
   it('returns 400 when month format is invalid', async () => {
-    const token = await login('admin@acme-test.com');
     const res = await request
       .get('/api/window-display')
       .query({ store_id: seeds.romaStoreId, month: '04-2026' })
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(400);
   });
 
   it('returns null when no activity exists for the month', async () => {
-    const token = await login('admin@acme-test.com');
     const res = await request
       .get('/api/window-display')
       .query({ store_id: seeds.romaStoreId, month: '2026-04' })
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
     expect(res.body.data).toBeNull();
   });
@@ -74,31 +76,30 @@ describe('GET /api/window-display', () => {
 
 describe('POST /api/window-display', () => {
   it('returns 403 for store_manager role', async () => {
-    const token = await login('manager.roma@acme-test.com');
+    const storeManagerToken = await login('manager.roma@acme-test.com');
     const res = await request
       .post('/api/window-display')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${storeManagerToken}`)
       .send({ store_id: seeds.romaStoreId, date: '2026-04-15' });
     expect(res.status).toBe(403);
   });
 
   it('area_manager can create a window display activity', async () => {
-    const token = await login('area@acme-test.com');
     const res = await request
       .post('/api/window-display')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${areaToken}`)
       .send({ store_id: seeds.romaStoreId, date: '2026-04-15' });
     expect(res.status).toBe(201);
     expect(res.body.data.date).toBe('2026-04-15');
     expect(res.body.data.year_month).toBe('2026-04');
     expect(res.body.data.store_id).toBe(seeds.romaStoreId);
+    createdId = res.body.data.id;
   });
 
   it('returns 409 when trying to create a second activity for the same month', async () => {
-    const token = await login('area@acme-test.com');
     const res = await request
       .post('/api/window-display')
-      .set('Authorization', `Bearer ${token}`)
+      .set('Authorization', `Bearer ${areaToken}`)
       .send({ store_id: seeds.romaStoreId, date: '2026-04-20' });
     expect(res.status).toBe(409);
   });
@@ -110,16 +111,9 @@ describe('POST /api/window-display', () => {
 
 describe('PUT /api/window-display/:id', () => {
   it('area_manager can update the date', async () => {
-    const token = await login('area@acme-test.com');
-    const getRes = await request
-      .get('/api/window-display')
-      .query({ store_id: seeds.romaStoreId, month: '2026-04' })
-      .set('Authorization', `Bearer ${token}`);
-    const id = getRes.body.data.id;
-
     const res = await request
-      .put(`/api/window-display/${id}`)
-      .set('Authorization', `Bearer ${token}`)
+      .put(`/api/window-display/${createdId}`)
+      .set('Authorization', `Bearer ${areaToken}`)
       .send({ date: '2026-04-22' });
     expect(res.status).toBe(200);
     expect(res.body.data.date).toBe('2026-04-22');
@@ -133,23 +127,16 @@ describe('PUT /api/window-display/:id', () => {
 
 describe('DELETE /api/window-display/:id', () => {
   it('area_manager can delete the activity', async () => {
-    const token = await login('area@acme-test.com');
-    const getRes = await request
-      .get('/api/window-display')
-      .query({ store_id: seeds.romaStoreId, month: '2026-04' })
-      .set('Authorization', `Bearer ${token}`);
-    const id = getRes.body.data.id;
-
     const delRes = await request
-      .delete(`/api/window-display/${id}`)
-      .set('Authorization', `Bearer ${token}`);
+      .delete(`/api/window-display/${createdId}`)
+      .set('Authorization', `Bearer ${areaToken}`);
     expect(delRes.status).toBe(200);
     expect(delRes.body.data.deleted).toBe(true);
 
     const getAfter = await request
       .get('/api/window-display')
       .query({ store_id: seeds.romaStoreId, month: '2026-04' })
-      .set('Authorization', `Bearer ${token}`);
+      .set('Authorization', `Bearer ${areaToken}`);
     expect(getAfter.body.data).toBeNull();
   });
 });
