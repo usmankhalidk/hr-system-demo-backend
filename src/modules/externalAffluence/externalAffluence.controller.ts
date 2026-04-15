@@ -1,0 +1,1154 @@
+import { Request, Response } from 'express';
+import { pool, query, queryOne } from '../../config/database';
+import { asyncHandler } from '../../utils/asyncHandler';
+import { badRequest, conflict, created, notFound, ok } from '../../utils/response';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import {
+  ExternalAffluenceRecommendationRow,
+  ExternalDbUnavailableError,
+  buildAffluenceRecommendations,
+  buildTrafficSummary,
+  checkExternalConnection,
+  fetchExternalTableDetails,
+  fetchDepositoByCode,
+  fetchDepositiRows,
+  fetchIngressiDaily,
+  getExternalDbConfigStatus,
+  getExternalTableCatalog,
+  getVisitorsPerStaffSetting,
+} from './externalAffluence.service';
+
+interface MappingViewRow {
+  id: number;
+  companyId: number;
+  localStoreId: number;
+  localStoreName: string;
+  localStoreCode: string;
+  externalStoreCode: string;
+  externalStoreName: string | null;
+  notes: string | null;
+  isActive: boolean;
+  sourceTable: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface StoreScopeRow {
+  id: number;
+  companyId: number;
+}
+
+interface StoreMappingRow {
+  externalStoreCode: string;
+  externalStoreName: string | null;
+}
+
+interface CurrentAffluenceRow {
+  dayOfWeek: number;
+  timeSlot: string;
+  level: 'low' | 'medium' | 'high';
+  requiredStaff: number;
+}
+
+interface OverviewCompanyRow {
+  id: number;
+  name: string;
+  slug: string;
+  isActive: boolean;
+  storeCount: number;
+  employeeCount: number;
+}
+
+interface OverviewStoreRow {
+  id: number;
+  companyId: number;
+  companyName: string;
+  name: string;
+  code: string;
+  isActive: boolean;
+  employeeCount: number;
+}
+
+interface OverviewEmployeeRow {
+  id: number;
+  companyId: number;
+  companyName: string;
+  storeId: number | null;
+  storeName: string | null;
+  name: string;
+  surname: string;
+  email: string;
+  role: string;
+  status: string;
+}
+
+interface OverviewInternalDbRow {
+  databaseName: string;
+}
+
+interface OverviewTableDetailRow {
+  tableName: string;
+  rowEstimate: number | string;
+  dataBytes: number | string;
+  indexBytes: number | string;
+  totalBytes: number | string;
+  totalSizePretty: string;
+}
+
+interface OverviewTableColumnRow {
+  tableName: string;
+  columnName: string;
+  dataType: string;
+  isNullable: boolean;
+  maxLength: number | null;
+}
+
+interface ShiftCoverageRow {
+  date: string;
+  userId: number;
+  startTime: string;
+  endTime: string;
+  splitStart2: string | null;
+  splitEnd2: string | null;
+  isSplit: boolean;
+  isOffDay: boolean;
+}
+
+interface CountRow {
+  count: number | string;
+}
+
+const STAFFING_SLOTS: Array<{ timeSlot: string; startMinutes: number; endMinutes: number }> = [
+  { timeSlot: '09:00-12:00', startMinutes: 9 * 60, endMinutes: 12 * 60 },
+  { timeSlot: '12:00-15:00', startMinutes: 12 * 60, endMinutes: 15 * 60 },
+  { timeSlot: '15:00-18:00', startMinutes: 15 * 60, endMinutes: 18 * 60 },
+  { timeSlot: '18:00-21:00', startMinutes: 18 * 60, endMinutes: 21 * 60 },
+];
+
+function formatBytes(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx += 1;
+  }
+  return `${value.toFixed(value >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
+}
+
+function toIsoDayOfWeek(dateValue: string): number {
+  const parsed = new Date(`${dateValue}T00:00:00Z`);
+  if (Number.isNaN(parsed.getTime())) return 1;
+  const jsDay = parsed.getUTCDay();
+  return jsDay === 0 ? 7 : jsDay;
+}
+
+function parseTimeToMinutes(value: string | null | undefined): number | null {
+  if (!value) return null;
+  const normalized = value.slice(0, 5);
+  const [hh, mm] = normalized.split(':').map((part) => parseInt(part, 10));
+  if (!Number.isFinite(hh) || !Number.isFinite(mm)) return null;
+  return (hh * 60) + mm;
+}
+
+function rangesOverlap(startA: number, endA: number, startB: number, endB: number): boolean {
+  return startA < endB && endA > startB;
+}
+
+function buildWeekdayCounts(fromDate: string, toDate: string): Map<number, number> {
+  const output = new Map<number, number>();
+  const start = new Date(`${fromDate}T00:00:00Z`);
+  const end = new Date(`${toDate}T00:00:00Z`);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) {
+    return output;
+  }
+
+  const cursor = new Date(start);
+  while (cursor <= end) {
+    const jsDay = cursor.getUTCDay();
+    const isoDay = jsDay === 0 ? 7 : jsDay;
+    output.set(isoDay, (output.get(isoDay) ?? 0) + 1);
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+
+  return output;
+}
+
+function buildScheduledStaffBaseline(
+  rows: ShiftCoverageRow[],
+  fromDate: string,
+  toDate: string,
+): Map<string, number> {
+  const uniqueCoverage = new Set<string>();
+  const weekdayCounts = buildWeekdayCounts(fromDate, toDate);
+
+  for (const row of rows) {
+    if (row.isOffDay) continue;
+
+    const dayOfWeek = toIsoDayOfWeek(row.date);
+    const firstStart = parseTimeToMinutes(row.startTime);
+    const firstEnd = parseTimeToMinutes(row.endTime);
+    if (firstStart == null || firstEnd == null) continue;
+
+    const secondStart = row.isSplit ? parseTimeToMinutes(row.splitStart2) : null;
+    const secondEnd = row.isSplit ? parseTimeToMinutes(row.splitEnd2) : null;
+
+    for (const slot of STAFFING_SLOTS) {
+      const firstOverlaps = rangesOverlap(firstStart, firstEnd, slot.startMinutes, slot.endMinutes);
+      const secondOverlaps =
+        secondStart != null
+        && secondEnd != null
+        && rangesOverlap(secondStart, secondEnd, slot.startMinutes, slot.endMinutes);
+
+      if (!firstOverlaps && !secondOverlaps) {
+        continue;
+      }
+
+      uniqueCoverage.add(`${row.date}|${dayOfWeek}|${slot.timeSlot}|${row.userId}`);
+    }
+  }
+
+  const totals = new Map<string, number>();
+  for (const key of uniqueCoverage) {
+    const [, day, timeSlot] = key.split('|');
+    const aggregateKey = `${day}|${timeSlot}`;
+    totals.set(aggregateKey, (totals.get(aggregateKey) ?? 0) + 1);
+  }
+
+  const averageBySlot = new Map<string, number>();
+  for (let day = 1; day <= 7; day += 1) {
+    const dayCount = weekdayCounts.get(day) ?? 0;
+    for (const slot of STAFFING_SLOTS) {
+      const aggregateKey = `${day}|${slot.timeSlot}`;
+      const coveredShifts = totals.get(aggregateKey) ?? 0;
+      const avg = dayCount > 0 ? coveredShifts / dayCount : 0;
+      averageBySlot.set(aggregateKey, Number(avg.toFixed(2)));
+    }
+  }
+
+  return averageBySlot;
+}
+
+function isDateOnly(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function formatDateOnly(date: Date): string {
+  const y = date.getUTCFullYear();
+  const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(date.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function normalizeDateRange(fromRaw: unknown, toRaw: unknown): { fromDate: string; toDate: string } | null {
+  const now = new Date();
+  const defaultTo = formatDateOnly(now);
+  const defaultFromDate = new Date(now);
+  defaultFromDate.setUTCDate(defaultFromDate.getUTCDate() - 56);
+  const defaultFrom = formatDateOnly(defaultFromDate);
+
+  const fromDate = typeof fromRaw === 'string' && isDateOnly(fromRaw) ? fromRaw : defaultFrom;
+  const toDate = typeof toRaw === 'string' && isDateOnly(toRaw) ? toRaw : defaultTo;
+
+  if (fromDate > toDate) {
+    return null;
+  }
+
+  return { fromDate, toDate };
+}
+
+async function resolveTargetCompanyId(req: Request): Promise<number | null> {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const explicit = req.query?.target_company_id
+    ?? req.query?.company_id
+    ?? req.body?.target_company_id
+    ?? req.body?.company_id;
+
+  if (explicit != null) {
+    const parsed = parseInt(String(explicit), 10);
+    if (!Number.isFinite(parsed) || !allowedCompanyIds.includes(parsed)) {
+      return null;
+    }
+    return parsed;
+  }
+
+  const fallback = req.user?.companyId ?? allowedCompanyIds[0];
+  if (!Number.isFinite(fallback) || !allowedCompanyIds.includes(fallback as number)) {
+    return null;
+  }
+
+  return fallback as number;
+}
+
+async function resolveScopedStore(storeId: number, req: Request): Promise<StoreScopeRow | null> {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const row = await queryOne<StoreScopeRow>(
+    `SELECT id, company_id AS "companyId"
+     FROM stores
+     WHERE id = $1 AND company_id = ANY($2)`,
+    [storeId, allowedCompanyIds],
+  );
+  return row;
+}
+
+function sendExternalDbError(res: Response, err: unknown): boolean {
+  if (err instanceof ExternalDbUnavailableError) {
+    res.status(err.status).json({
+      success: false,
+      error: err.message,
+      code: err.code,
+    });
+    return true;
+  }
+  return false;
+}
+
+export const getExternalCatalog = asyncHandler(async (_req: Request, res: Response) => {
+  ok(res, { tables: getExternalTableCatalog() });
+});
+
+export const getOverview = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) {
+    res.status(403).json({ success: false, error: 'Access denied: no companies in scope', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const [
+    companyCountRow,
+    storeCountRow,
+    employeeCountRow,
+    localTablesRow,
+    companies,
+    stores,
+    employees,
+    internalDbRow,
+    localTableDetailRows,
+    localTableColumnRows,
+  ] = await Promise.all([
+    queryOne<CountRow>(
+      `SELECT COUNT(*)::int AS count
+       FROM companies
+       WHERE id = ANY($1)`,
+      [allowedCompanyIds],
+    ),
+    queryOne<CountRow>(
+      `SELECT COUNT(*)::int AS count
+       FROM stores
+       WHERE company_id = ANY($1)`,
+      [allowedCompanyIds],
+    ),
+    queryOne<CountRow>(
+      `SELECT COUNT(*)::int AS count
+       FROM users
+       WHERE company_id = ANY($1)
+         AND role = 'employee'`,
+      [allowedCompanyIds],
+    ),
+    queryOne<CountRow>(
+      `SELECT COUNT(*)::int AS count
+       FROM information_schema.tables
+       WHERE table_schema = 'public'
+         AND table_type = 'BASE TABLE'`,
+    ),
+    query<OverviewCompanyRow>(
+      `SELECT
+         c.id,
+         c.name,
+         c.slug,
+         c.is_active AS "isActive",
+         COUNT(DISTINCT s.id)::int AS "storeCount",
+         COUNT(DISTINCT CASE WHEN u.role = 'employee' THEN u.id END)::int AS "employeeCount"
+       FROM companies c
+       LEFT JOIN stores s ON s.company_id = c.id
+       LEFT JOIN users u ON u.company_id = c.id
+       WHERE c.id = ANY($1)
+       GROUP BY c.id, c.name, c.slug, c.is_active
+       ORDER BY c.name`,
+      [allowedCompanyIds],
+    ),
+    query<OverviewStoreRow>(
+      `SELECT
+         s.id,
+         s.company_id AS "companyId",
+         c.name AS "companyName",
+         s.name,
+         s.code,
+         s.is_active AS "isActive",
+         COUNT(CASE WHEN u.role = 'employee' THEN u.id END)::int AS "employeeCount"
+       FROM stores s
+       JOIN companies c ON c.id = s.company_id
+       LEFT JOIN users u ON u.store_id = s.id
+       WHERE s.company_id = ANY($1)
+       GROUP BY s.id, s.company_id, c.name, s.name, s.code, s.is_active
+       ORDER BY c.name, s.name`,
+      [allowedCompanyIds],
+    ),
+    query<OverviewEmployeeRow>(
+      `SELECT
+         u.id,
+         u.company_id AS "companyId",
+         c.name AS "companyName",
+         u.store_id AS "storeId",
+         s.name AS "storeName",
+         u.name,
+         u.surname,
+         u.email,
+         u.role,
+         u.status
+       FROM users u
+       JOIN companies c ON c.id = u.company_id
+       LEFT JOIN stores s ON s.id = u.store_id
+       WHERE u.company_id = ANY($1)
+         AND u.role = 'employee'
+       ORDER BY c.name, s.name NULLS LAST, u.surname, u.name`,
+      [allowedCompanyIds],
+    ),
+    queryOne<OverviewInternalDbRow>(
+      `SELECT current_database() AS "databaseName"`,
+    ),
+    query<OverviewTableDetailRow>(
+      `SELECT
+         c.relname AS "tableName",
+         COALESCE(s.n_live_tup, 0)::bigint AS "rowEstimate",
+         pg_relation_size(c.oid)::bigint AS "dataBytes",
+         pg_indexes_size(c.oid)::bigint AS "indexBytes",
+         pg_total_relation_size(c.oid)::bigint AS "totalBytes",
+         pg_size_pretty(pg_total_relation_size(c.oid)) AS "totalSizePretty"
+       FROM pg_class c
+       JOIN pg_namespace n ON n.oid = c.relnamespace
+       LEFT JOIN pg_stat_user_tables s ON s.relid = c.oid
+       WHERE n.nspname = 'public'
+         AND c.relkind = 'r'
+       ORDER BY c.relname`,
+    ),
+    query<OverviewTableColumnRow>(
+      `SELECT
+         table_name AS "tableName",
+         column_name AS "columnName",
+         data_type AS "dataType",
+         (is_nullable = 'YES') AS "isNullable",
+         character_maximum_length AS "maxLength"
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+       ORDER BY table_name, ordinal_position`,
+    ),
+  ]);
+
+  const internalCheckedAt = new Date().toISOString();
+  let internalStatus = {
+    ok: true,
+    message: 'Connected',
+    checkedAt: internalCheckedAt,
+    database: internalDbRow?.databaseName ?? null,
+  };
+
+  try {
+    await queryOne<{ ok: number }>('SELECT 1 AS ok');
+  } catch (err: any) {
+    internalStatus = {
+      ok: false,
+      message: err?.message || 'Unable to query internal database',
+      checkedAt: new Date().toISOString(),
+      database: internalDbRow?.databaseName ?? null,
+    };
+  }
+
+  const localColumnsByTable = new Map<string, OverviewTableColumnRow[]>();
+  for (const row of localTableColumnRows) {
+    const list = localColumnsByTable.get(row.tableName) ?? [];
+    list.push(row);
+    localColumnsByTable.set(row.tableName, list);
+  }
+
+  const localTableDetails = localTableDetailRows.map((row) => ({
+    tableName: row.tableName,
+    rowEstimate: Number(row.rowEstimate ?? 0),
+    dataBytes: Number(row.dataBytes ?? 0),
+    indexBytes: Number(row.indexBytes ?? 0),
+    totalBytes: Number(row.totalBytes ?? 0),
+    totalSizePretty: row.totalSizePretty || formatBytes(Number(row.totalBytes ?? 0)),
+    columns: (localColumnsByTable.get(row.tableName) ?? []).map((column) => ({
+      columnName: column.columnName,
+      dataType: column.dataType,
+      isNullable: column.isNullable,
+      maxLength: column.maxLength,
+    })),
+  }));
+
+  const externalConfig = getExternalDbConfigStatus();
+  const externalStatus = await checkExternalConnection();
+
+  let externalTableDetails: Array<{
+    tableName: string;
+    engine: string | null;
+    rowEstimate: number;
+    dataBytes: number;
+    indexBytes: number;
+    totalBytes: number;
+    totalSizePretty: string;
+    columns: Array<{
+      columnName: string;
+      dataType: string;
+      isNullable: boolean;
+      maxLength: number | null;
+    }>;
+  }> = [];
+
+  if (externalStatus.ok) {
+    try {
+      const details = await fetchExternalTableDetails(500);
+      externalTableDetails = details.map((table) => ({
+        tableName: table.tableName,
+        engine: table.engine,
+        rowEstimate: Number(table.rowEstimate ?? 0),
+        dataBytes: Number(table.dataBytes ?? 0),
+        indexBytes: Number(table.indexBytes ?? 0),
+        totalBytes: Number(table.totalBytes ?? 0),
+        totalSizePretty: formatBytes(Number(table.totalBytes ?? 0)),
+        columns: table.columns.map((column) => ({
+          columnName: column.columnName,
+          dataType: column.dataType,
+          isNullable: column.isNullable,
+          maxLength: column.maxLength,
+        })),
+      }));
+    } catch {
+      externalTableDetails = [];
+    }
+  }
+
+  const localTables = localTableDetails.map((table) => ({ tableName: table.tableName }));
+  const externalTables = externalTableDetails.map((table) => ({ tableName: table.tableName }));
+
+  ok(res, {
+    connections: {
+      internal: internalStatus,
+      external: externalStatus,
+      externalConfig,
+    },
+    databases: {
+      internal: {
+        engine: 'PostgreSQL',
+        databaseName: internalStatus.database,
+        tableCount: localTableDetails.length,
+        connected: internalStatus.ok,
+        checkedAt: internalStatus.checkedAt,
+      },
+      external: {
+        engine: 'MySQL',
+        databaseName: externalStatus.database ?? externalConfig.database,
+        tableCount: externalTableDetails.length,
+        connected: externalStatus.ok,
+        configured: externalStatus.configured,
+        checkedAt: externalStatus.checkedAt,
+      },
+    },
+    counts: {
+      companies: Number(companyCountRow?.count ?? 0),
+      stores: Number(storeCountRow?.count ?? 0),
+      employees: Number(employeeCountRow?.count ?? 0),
+      localTables: Number(localTablesRow?.count ?? localTableDetails.length),
+      externalTables: externalTableDetails.length,
+    },
+    companies,
+    stores,
+    employees,
+    localTables,
+    externalTables,
+    localTableDetails,
+    externalTableDetails,
+  });
+});
+
+export const listDepositi = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveTargetCompanyId(req);
+  if (companyId == null) {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const search = typeof req.query.search === 'string' ? req.query.search : null;
+  const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 300;
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 1000) : 300;
+
+  try {
+    const [externalStores, mappingRows] = await Promise.all([
+      fetchDepositiRows(search, limit),
+      query<{
+        externalStoreCode: string;
+        localStoreId: number;
+        localStoreName: string;
+        localStoreCode: string;
+      }>(
+        `SELECT
+           m.external_store_code AS "externalStoreCode",
+           m.local_store_id AS "localStoreId",
+           s.name AS "localStoreName",
+           s.code AS "localStoreCode"
+         FROM external_store_mappings m
+         JOIN stores s ON s.id = m.local_store_id
+         WHERE m.company_id = $1 AND m.is_active = true`,
+        [companyId],
+      ),
+    ]);
+
+    const mappingByCode = new Map<string, {
+      localStoreId: number;
+      localStoreName: string;
+      localStoreCode: string;
+    }>();
+
+    for (const row of mappingRows) {
+      mappingByCode.set(String(row.externalStoreCode).trim(), {
+        localStoreId: row.localStoreId,
+        localStoreName: row.localStoreName,
+        localStoreCode: row.localStoreCode,
+      });
+    }
+
+    const rows = externalStores.map((item) => {
+      const mapping = mappingByCode.get(item.externalStoreCode);
+      return {
+        ...item,
+        mappedLocalStoreId: mapping?.localStoreId ?? null,
+        mappedLocalStoreName: mapping?.localStoreName ?? null,
+        mappedLocalStoreCode: mapping?.localStoreCode ?? null,
+      };
+    });
+
+    ok(res, { rows });
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+export const listMappings = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveTargetCompanyId(req);
+  if (companyId == null) {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const rows = await query<MappingViewRow>(
+    `SELECT
+       m.id,
+       m.company_id AS "companyId",
+       m.local_store_id AS "localStoreId",
+       s.name AS "localStoreName",
+       s.code AS "localStoreCode",
+       m.external_store_code AS "externalStoreCode",
+       m.external_store_name AS "externalStoreName",
+       m.notes,
+       m.is_active AS "isActive",
+       m.source_table AS "sourceTable",
+       m.created_at AS "createdAt",
+       m.updated_at AS "updatedAt"
+     FROM external_store_mappings m
+     JOIN stores s ON s.id = m.local_store_id
+     WHERE m.company_id = $1
+     ORDER BY s.name`,
+    [companyId],
+  );
+
+  ok(res, { mappings: rows });
+});
+
+export const upsertMapping = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(req.params.storeId, 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'Invalid store id', 'INVALID_STORE_ID');
+    return;
+  }
+
+  const externalStoreCode = String(req.body?.external_store_code ?? '').trim();
+  const notes = req.body?.notes == null ? null : String(req.body.notes).trim() || null;
+  if (!externalStoreCode) {
+    badRequest(res, 'External store code is required', 'EXTERNAL_STORE_CODE_REQUIRED');
+    return;
+  }
+
+  const store = await resolveScopedStore(storeId, req);
+  if (!store) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  let externalStoreName: string | null = null;
+  try {
+    const found = await fetchDepositoByCode(externalStoreCode);
+    if (!found) {
+      badRequest(res, 'External store code was not found in DEPOSITI', 'EXTERNAL_STORE_NOT_FOUND');
+      return;
+    }
+    externalStoreName = found.storeName ?? null;
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+
+  const actorId = req.user?.userId ?? null;
+
+  try {
+    const row = await queryOne<MappingViewRow>(
+      `WITH upsert AS (
+         INSERT INTO external_store_mappings (
+           company_id,
+           local_store_id,
+           external_store_code,
+           external_store_name,
+           source_table,
+           notes,
+           is_active,
+           created_by,
+           updated_by,
+           updated_at
+         )
+         VALUES ($1, $2, $3, $4, 'depositi', $5, true, $6, $6, NOW())
+         ON CONFLICT (company_id, local_store_id)
+         DO UPDATE SET
+           external_store_code = EXCLUDED.external_store_code,
+           external_store_name = EXCLUDED.external_store_name,
+           notes = EXCLUDED.notes,
+           is_active = true,
+           updated_by = EXCLUDED.updated_by,
+           updated_at = NOW()
+         RETURNING *
+       )
+       SELECT
+         u.id,
+         u.company_id AS "companyId",
+         u.local_store_id AS "localStoreId",
+         s.name AS "localStoreName",
+         s.code AS "localStoreCode",
+         u.external_store_code AS "externalStoreCode",
+         u.external_store_name AS "externalStoreName",
+         u.notes,
+         u.is_active AS "isActive",
+         u.source_table AS "sourceTable",
+         u.created_at AS "createdAt",
+         u.updated_at AS "updatedAt"
+       FROM upsert u
+       JOIN stores s ON s.id = u.local_store_id`,
+      [
+        store.companyId,
+        store.id,
+        externalStoreCode,
+        externalStoreName,
+        notes,
+        actorId,
+      ],
+    );
+
+    if (!row) {
+      badRequest(res, 'Unable to save mapping', 'MAPPING_SAVE_FAILED');
+      return;
+    }
+
+    created(res, { mapping: row }, 'Mapping saved');
+  } catch (err: any) {
+    if (err?.code === '23505') {
+      conflict(res, 'External store code is already mapped to another local store in this company', 'DUPLICATE_EXTERNAL_STORE_CODE');
+      return;
+    }
+    throw err;
+  }
+});
+
+export const deleteMapping = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(req.params.storeId, 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'Invalid store id', 'INVALID_STORE_ID');
+    return;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const deleted = await queryOne<{ id: number }>(
+    `DELETE FROM external_store_mappings m
+     USING stores s
+     WHERE m.local_store_id = s.id
+       AND m.local_store_id = $1
+       AND s.company_id = ANY($2)
+     RETURNING m.id`,
+    [storeId, allowedCompanyIds],
+  );
+
+  if (!deleted) {
+    notFound(res, 'Mapping not found', 'MAPPING_NOT_FOUND');
+    return;
+  }
+
+  ok(res, { deleted: deleted.id });
+});
+
+async function resolveExternalStoreCode(
+  req: Request,
+  companyId: number,
+): Promise<{ externalStoreCode: string; localStoreId: number | null; externalStoreName: string | null } | null> {
+  const explicitCode = typeof req.query.external_store_code === 'string'
+    ? String(req.query.external_store_code).trim()
+    : '';
+
+  if (explicitCode) {
+    return {
+      externalStoreCode: explicitCode,
+      localStoreId: null,
+      externalStoreName: null,
+    };
+  }
+
+  const storeIdRaw = req.query.store_id ?? req.body?.store_id;
+  const storeId = parseInt(String(storeIdRaw ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    return null;
+  }
+
+  const mapping = await queryOne<StoreMappingRow>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName"
+     FROM external_store_mappings
+     WHERE company_id = $1
+       AND local_store_id = $2
+       AND is_active = true
+     LIMIT 1`,
+    [companyId, storeId],
+  );
+
+  if (!mapping) {
+    return null;
+  }
+
+  return {
+    externalStoreCode: String(mapping.externalStoreCode).trim(),
+    localStoreId: storeId,
+    externalStoreName: mapping.externalStoreName,
+  };
+}
+
+export const getIngressiData = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveTargetCompanyId(req);
+  if (companyId == null) {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const resolved = await resolveExternalStoreCode(req, companyId);
+  if (!resolved) {
+    badRequest(res, 'Provide external_store_code or a mapped store_id', 'STORE_MAPPING_REQUIRED');
+    return;
+  }
+
+  const range = normalizeDateRange(req.query.from_date, req.query.to_date);
+  if (!range) {
+    badRequest(res, 'Invalid date range', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 400;
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 5000) : 400;
+
+  try {
+    const rows = await fetchIngressiDaily(
+      resolved.externalStoreCode,
+      range.fromDate,
+      range.toDate,
+      limit,
+    );
+
+    ok(res, {
+      externalStoreCode: resolved.externalStoreCode,
+      externalStoreName: resolved.externalStoreName,
+      localStoreId: resolved.localStoreId,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      rows,
+      summary: buildTrafficSummary(rows),
+    });
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+function mergeWithCurrentAffluence(
+  recommendations: ExternalAffluenceRecommendationRow[],
+  currentRows: CurrentAffluenceRow[],
+  scheduledStaffBaseline: Map<string, number>,
+): Array<ExternalAffluenceRecommendationRow & {
+  currentLevel: 'low' | 'medium' | 'high' | null;
+  currentRequiredStaff: number | null;
+  deltaRequiredStaff: number | null;
+  currentScheduledStaff: number;
+  deltaToScheduledStaff: number;
+  coverageStatus: 'under' | 'balanced' | 'over';
+}> {
+  const currentMap = new Map<string, CurrentAffluenceRow>();
+
+  for (const row of currentRows) {
+    const key = `${row.dayOfWeek}|${row.timeSlot}`;
+    if (!currentMap.has(key)) {
+      currentMap.set(key, row);
+    }
+  }
+
+  return recommendations.map((row) => {
+    const key = `${row.dayOfWeek}|${row.timeSlot}`;
+    const current = currentMap.get(key);
+    const currentScheduledStaff = scheduledStaffBaseline.get(key) ?? 0;
+    const deltaToScheduledStaff = Number((row.requiredStaff - currentScheduledStaff).toFixed(2));
+
+    let coverageStatus: 'under' | 'balanced' | 'over' = 'balanced';
+    if (deltaToScheduledStaff > 0.4) {
+      coverageStatus = 'under';
+    } else if (deltaToScheduledStaff < -0.4) {
+      coverageStatus = 'over';
+    }
+
+    return {
+      ...row,
+      currentLevel: current?.level ?? null,
+      currentRequiredStaff: current?.requiredStaff ?? null,
+      deltaRequiredStaff: current ? row.requiredStaff - current.requiredStaff : null,
+      currentScheduledStaff,
+      deltaToScheduledStaff,
+      coverageStatus,
+    };
+  });
+}
+
+export const getAffluencePreview = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveTargetCompanyId(req);
+  if (companyId == null) {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const storeId = parseInt(String(req.query.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const store = await queryOne<{ id: number }>(
+    `SELECT id FROM stores WHERE id = $1 AND company_id = $2`,
+    [storeId, companyId],
+  );
+  if (!store) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const mapping = await queryOne<StoreMappingRow>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName"
+     FROM external_store_mappings
+     WHERE company_id = $1
+       AND local_store_id = $2
+       AND is_active = true
+     LIMIT 1`,
+    [companyId, storeId],
+  );
+
+  if (!mapping) {
+    badRequest(res, 'Store has no external mapping yet', 'STORE_MAPPING_REQUIRED');
+    return;
+  }
+
+  const range = normalizeDateRange(req.query.from_date, req.query.to_date);
+  if (!range) {
+    badRequest(res, 'Invalid date range', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  try {
+    const rows = await fetchIngressiDaily(
+      String(mapping.externalStoreCode).trim(),
+      range.fromDate,
+      range.toDate,
+      1200,
+    );
+
+    const recommendations = buildAffluenceRecommendations(rows);
+
+    const currentRows = await query<CurrentAffluenceRow>(
+      `SELECT
+         day_of_week AS "dayOfWeek",
+         time_slot AS "timeSlot",
+         level,
+         required_staff AS "requiredStaff"
+       FROM store_affluence
+       WHERE company_id = $1
+         AND store_id = $2
+         AND iso_week IS NULL
+       ORDER BY day_of_week, time_slot, id DESC`,
+      [companyId, storeId],
+    );
+
+    const shiftRows = await query<ShiftCoverageRow>(
+      `SELECT
+         TO_CHAR(date::date, 'YYYY-MM-DD') AS date,
+         user_id AS "userId",
+         TO_CHAR(start_time, 'HH24:MI') AS "startTime",
+         TO_CHAR(end_time, 'HH24:MI') AS "endTime",
+         CASE WHEN split_start2 IS NULL THEN NULL ELSE TO_CHAR(split_start2, 'HH24:MI') END AS "splitStart2",
+         CASE WHEN split_end2 IS NULL THEN NULL ELSE TO_CHAR(split_end2, 'HH24:MI') END AS "splitEnd2",
+         is_split AS "isSplit",
+         is_off_day AS "isOffDay"
+       FROM shifts
+       WHERE company_id = $1
+         AND store_id = $2
+         AND date BETWEEN $3::date AND $4::date
+         AND status IN ('scheduled', 'confirmed')`,
+      [companyId, storeId, range.fromDate, range.toDate],
+    );
+
+    const scheduledStaffBaseline = buildScheduledStaffBaseline(
+      shiftRows,
+      range.fromDate,
+      range.toDate,
+    );
+
+    ok(res, {
+      storeId,
+      externalStoreCode: String(mapping.externalStoreCode).trim(),
+      externalStoreName: mapping.externalStoreName,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      visitorsPerStaff: getVisitorsPerStaffSetting(),
+      sourceSummary: buildTrafficSummary(rows),
+      recommendations: mergeWithCurrentAffluence(recommendations, currentRows, scheduledStaffBaseline),
+    });
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+export const syncAffluenceFromExternal = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.body?.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const store = await resolveScopedStore(storeId, req);
+  if (!store) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const mapping = await queryOne<StoreMappingRow>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName"
+     FROM external_store_mappings
+     WHERE company_id = $1
+       AND local_store_id = $2
+       AND is_active = true
+     LIMIT 1`,
+    [store.companyId, store.id],
+  );
+
+  if (!mapping) {
+    badRequest(res, 'Store has no external mapping yet', 'STORE_MAPPING_REQUIRED');
+    return;
+  }
+
+  const range = normalizeDateRange(req.body?.from_date, req.body?.to_date);
+  if (!range) {
+    badRequest(res, 'Invalid date range', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  const overwriteDefault = req.body?.overwrite_default !== false;
+
+  let recommendations: ExternalAffluenceRecommendationRow[] = [];
+  let sourceSummary = null as ReturnType<typeof buildTrafficSummary> | null;
+
+  try {
+    const sourceRows = await fetchIngressiDaily(
+      String(mapping.externalStoreCode).trim(),
+      range.fromDate,
+      range.toDate,
+      1200,
+    );
+
+    sourceSummary = buildTrafficSummary(sourceRows);
+    recommendations = buildAffluenceRecommendations(sourceRows);
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+
+  if (recommendations.length === 0) {
+    badRequest(res, 'No external traffic data available for the selected range', 'NO_EXTERNAL_TRAFFIC_DATA');
+    return;
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    if (overwriteDefault) {
+      await client.query(
+        `DELETE FROM store_affluence
+         WHERE company_id = $1
+           AND store_id = $2
+           AND iso_week IS NULL`,
+        [store.companyId, store.id],
+      );
+    }
+
+    const colsPerRow = 7;
+    const params: Array<number | string | null> = [];
+    const placeholders = recommendations.map((row, index) => {
+      const offset = index * colsPerRow;
+      params.push(
+        store.companyId,
+        store.id,
+        null,
+        row.dayOfWeek,
+        row.timeSlot,
+        row.level,
+        row.requiredStaff,
+      );
+      return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7})`;
+    });
+
+    await client.query(
+      `INSERT INTO store_affluence (
+         company_id,
+         store_id,
+         iso_week,
+         day_of_week,
+         time_slot,
+         level,
+         required_staff
+       ) VALUES ${placeholders.join(',')}`,
+      params,
+    );
+
+    await client.query('COMMIT');
+
+    ok(res, {
+      storeId: store.id,
+      externalStoreCode: String(mapping.externalStoreCode).trim(),
+      externalStoreName: mapping.externalStoreName,
+      fromDate: range.fromDate,
+      toDate: range.toDate,
+      visitorsPerStaff: getVisitorsPerStaffSetting(),
+      overwriteDefault,
+      syncedRows: recommendations.length,
+      sourceSummary,
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+});

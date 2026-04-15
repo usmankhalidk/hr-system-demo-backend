@@ -21,6 +21,7 @@ import homeRoutes from './modules/home/home.routes';
 // Phase 2 modules
 import messagesRoutes from './modules/messages/messages.routes';
 import shiftsRoutes from './modules/shifts/shifts.routes';
+import externalAffluenceRoutes from './modules/externalAffluence/externalAffluence.routes';
 import attendanceRoutes from './modules/attendance/attendance.routes';
 import qrRoutes from './modules/attendance/qr.routes';
 import leaveRoutes from './modules/leave/leave.routes';
@@ -325,6 +326,7 @@ app.use('/api/home', homeRoutes);
 
 // Phase 2 API Routes
 app.use('/api/shifts', shiftsRoutes);
+app.use('/api/external-affluence', externalAffluenceRoutes);
 app.use('/api/attendance', attendanceRoutes);
 app.use('/api/qr', qrRoutes);
 app.use('/api/leave', leaveRoutes);
