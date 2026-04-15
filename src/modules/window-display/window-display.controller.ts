@@ -17,10 +17,10 @@ interface WindowDisplayActivity {
 
 export const getWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
   const { companyId } = req.user!;
-  const storeId = Number(req.query.store_id);
+  const storeId = parseInt(req.query.store_id as string, 10);
   const month = String(req.query.month ?? '');
 
-  if (!storeId || isNaN(storeId)) return badRequest(res, 'store_id is required');
+  if (isNaN(storeId)) return badRequest(res, 'store_id is required');
   if (!/^\d{4}-\d{2}$/.test(month)) return badRequest(res, 'month must be YYYY-MM');
 
   const row = await queryOne<WindowDisplayActivity>(
@@ -71,8 +71,8 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
 
   const yearMonth = date.slice(0, 7);
 
-  const existing = await queryOne<WindowDisplayActivity>(
-    'SELECT * FROM window_display_activities WHERE id = $1 AND company_id = $2',
+  const existing = await queryOne<{ id: number }>(
+    'SELECT id FROM window_display_activities WHERE id = $1 AND company_id = $2',
     [id, companyId],
   );
   if (!existing) return notFound(res, 'Window display activity not found');
