@@ -2,7 +2,7 @@
 import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
 import { asyncHandler } from '../../utils/asyncHandler';
-import { ok, created, badRequest, notFound, forbidden, conflict } from '../../utils/response';
+import { ok, created, badRequest, notFound, conflict } from '../../utils/response';
 
 interface WindowDisplayActivity {
   id: number;
@@ -58,7 +58,7 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     return created(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'WINDOW_DISPLAY_ALREADY_SET', 'A window display activity is already set for this store and month. Use PUT to update it.');
+      return conflict(res, 'A window display activity is already set for this store and month. Use PUT to update it.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }
@@ -89,7 +89,7 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
     return ok(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'WINDOW_DISPLAY_ALREADY_SET', 'Another window display activity already exists for that month. Remove it first.');
+      return conflict(res, 'Another window display activity already exists for that month. Remove it first.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }
