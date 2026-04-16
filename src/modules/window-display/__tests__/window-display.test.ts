@@ -2,7 +2,7 @@ import express from 'express';
 import supertest from 'supertest';
 import authRoutes from '../../auth/auth.routes';
 import windowDisplayRoutes from '../window-display.routes';
-import { seedTestData, clearTestData, closeTestDb } from '../../../__tests__/helpers/db';
+import { seedTestData, clearTestData, closeTestDb, testPool } from '../../../__tests__/helpers/db';
 
 const app = express();
 app.use(express.json());
@@ -16,6 +16,9 @@ const request = supertest(app);
 let seeds: Awaited<ReturnType<typeof seedTestData>>;
 let adminToken: string;
 let areaToken: string;
+let superAdminToken: string;
+let scopedSuperAdminToken: string;
+let betaStoreId: number;
 let createdId: number;
 
 async function login(email: string, password = 'password123'): Promise<string> {
@@ -25,8 +28,37 @@ async function login(email: string, password = 'password123'): Promise<string> {
 
 beforeAll(async () => {
   seeds = await seedTestData();
+
+  const HASH = '$2a$10$e/ULie.9SQf5MIQSNjkxEO7.xAyc6zv/qysVTE4mVFhZum/BjT5VG'; // password123
+
+  const betaStore = await testPool.query<{ id: number }>(
+    `INSERT INTO stores (company_id, name, code, max_staff)
+     VALUES ($1, 'Milano Beta', 'BET-MI', 8)
+     ON CONFLICT (company_id, code)
+     DO UPDATE SET name = EXCLUDED.name, max_staff = EXCLUDED.max_staff
+     RETURNING id`,
+    [seeds.betaId],
+  );
+  betaStoreId = betaStore.rows[0].id;
+
+  await testPool.query(
+    `INSERT INTO users (company_id, name, surname, email, password_hash, role, status, is_super_admin)
+     VALUES ($1, 'Scoped', 'Super Admin', 'superadmin.scoped@acme-test.com', $2, 'admin', 'active', true)
+     ON CONFLICT (email) DO UPDATE SET
+       company_id = EXCLUDED.company_id,
+       name = EXCLUDED.name,
+       surname = EXCLUDED.surname,
+       password_hash = EXCLUDED.password_hash,
+       role = EXCLUDED.role,
+       status = EXCLUDED.status,
+       is_super_admin = EXCLUDED.is_super_admin`,
+    [seeds.acmeId, HASH],
+  );
+
   adminToken = await login('admin@acme-test.com');
   areaToken = await login('area@acme-test.com');
+  superAdminToken = await login('superadmin@acme-test.com');
+  scopedSuperAdminToken = await login('superadmin.scoped@acme-test.com');
 });
 
 afterAll(async () => {
@@ -44,12 +76,13 @@ describe('GET /api/window-display', () => {
     expect(res.status).toBe(401);
   });
 
-  it('returns 400 when store_id is missing', async () => {
+  it('returns month mapping list when store_id is omitted', async () => {
     const res = await request
       .get('/api/window-display')
       .query({ month: '2026-04' })
       .set('Authorization', `Bearer ${adminToken}`);
-    expect(res.status).toBe(400);
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
   });
 
   it('returns 400 when month format is invalid', async () => {
@@ -84,16 +117,40 @@ describe('POST /api/window-display', () => {
     expect(res.status).toBe(403);
   });
 
-  it('area_manager can create a window display activity', async () => {
+  it('admin can create a window display activity', async () => {
     const res = await request
       .post('/api/window-display')
-      .set('Authorization', `Bearer ${areaToken}`)
-      .send({ store_id: seeds.romaStoreId, date: '2026-04-15' });
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        store_id: seeds.romaStoreId,
+        date: '2026-04-15',
+        activity_type: 'window_display',
+        activity_icon: '*',
+        duration_hours: 3,
+        notes: 'Main facade refresh',
+      });
     expect(res.status).toBe(201);
     expect(res.body.data.date).toBe('2026-04-15');
     expect(res.body.data.year_month).toBe('2026-04');
     expect(res.body.data.store_id).toBe(seeds.romaStoreId);
+    expect(res.body.data.activity_type).toBe('window_display');
+    expect(res.body.data.activity_icon).toBe('*');
+    expect(res.body.data.custom_activity_name).toBeNull();
+    expect(Number(res.body.data.duration_hours)).toBe(3);
+    expect(res.body.data.notes).toBe('Main facade refresh');
     createdId = res.body.data.id;
+  });
+
+  it('returns activity mapping list for the month', async () => {
+    const res = await request
+      .get('/api/window-display')
+      .query({ month: '2026-04' })
+      .set('Authorization', `Bearer ${adminToken}`);
+
+    expect(res.status).toBe(200);
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.length).toBeGreaterThanOrEqual(1);
+    expect(res.body.data[0].store_name).toBeDefined();
   });
 
   it('returns 409 when trying to create a second activity for the same month', async () => {
@@ -103,6 +160,84 @@ describe('POST /api/window-display', () => {
       .send({ store_id: seeds.romaStoreId, date: '2026-04-20' });
     expect(res.status).toBe(409);
   });
+
+  it('returns 400 when custom_activity_name is missing for custom_activity', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        store_id: seeds.romaStoreId,
+        date: '2026-09-03',
+        activity_type: 'custom_activity',
+      });
+
+    expect(res.status).toBe(400);
+  });
+
+  it('super_admin can create activity without explicit company_id', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${superAdminToken}`)
+      .send({
+        store_id: seeds.romaStoreId,
+        date: '2026-05-11',
+        activity_type: 'store_cleaning',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.company_id).toBe(seeds.acmeId);
+    expect(res.body.data.activity_type).toBe('store_cleaning');
+  });
+
+  it('admin can create activity in another allowed company when company_id is provided', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        company_id: seeds.betaId,
+        store_id: betaStoreId,
+        date: '2026-07-11',
+        activity_type: 'store_reset',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.company_id).toBe(seeds.betaId);
+    expect(res.body.data.store_id).toBe(betaStoreId);
+  });
+
+  it('super_admin with a home company can create cross-company activity without explicit company_id', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${scopedSuperAdminToken}`)
+      .send({
+        store_id: betaStoreId,
+        date: '2026-08-11',
+        activity_type: 'store_cleaning',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.company_id).toBe(seeds.betaId);
+    expect(res.body.data.store_id).toBe(betaStoreId);
+  });
+
+  it('admin can create custom activity with custom_activity_name', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({
+        company_id: seeds.betaId,
+        store_id: betaStoreId,
+        date: '2026-09-17',
+        activity_type: 'custom_activity',
+        custom_activity_name: 'VIP private fitting',
+        activity_icon: '🧵',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.data.activity_type).toBe('custom_activity');
+    expect(res.body.data.custom_activity_name).toBe('VIP private fitting');
+    expect(res.body.data.activity_icon).toBe('🧵');
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -110,14 +245,40 @@ describe('POST /api/window-display', () => {
 // ---------------------------------------------------------------------------
 
 describe('PUT /api/window-display/:id', () => {
-  it('area_manager can update the date', async () => {
+  it('area_manager can update activity details', async () => {
     const res = await request
       .put(`/api/window-display/${createdId}`)
       .set('Authorization', `Bearer ${areaToken}`)
-      .send({ date: '2026-04-22' });
+      .send({
+        date: '2026-04-22',
+        activity_type: 'decoration_renovation',
+        activity_icon: '@',
+        duration_hours: 4,
+        notes: 'Spring promo showcase',
+      });
     expect(res.status).toBe(200);
     expect(res.body.data.date).toBe('2026-04-22');
     expect(res.body.data.year_month).toBe('2026-04');
+    expect(res.body.data.activity_type).toBe('decoration_renovation');
+    expect(res.body.data.activity_icon).toBe('@');
+    expect(Number(res.body.data.duration_hours)).toBe(4);
+    expect(res.body.data.notes).toBe('Spring promo showcase');
+  });
+
+  it('area_manager can switch to custom_activity with a custom name', async () => {
+    const res = await request
+      .put(`/api/window-display/${createdId}`)
+      .set('Authorization', `Bearer ${areaToken}`)
+      .send({
+        activity_type: 'custom_activity',
+        custom_activity_name: 'Client private event setup',
+        activity_icon: '🎉',
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.activity_type).toBe('custom_activity');
+    expect(res.body.data.custom_activity_name).toBe('Client private event setup');
+    expect(res.body.data.activity_icon).toBe('🎉');
   });
 });
 
