@@ -30,6 +30,8 @@ import notificationsRoutes from './modules/notifications/notifications.routes';
 import atsRoutes from './modules/ats/ats.routes';
 import onboardingRoutes from './modules/onboarding/onboarding.routes';
 import windowDisplayRoutes from './modules/window-display/window-display.routes';
+import publicCareersRoutes from './modules/publicCareers/publicCareers.routes';
+import emailRoutes from './modules/email/email.routes';
 import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
@@ -281,6 +283,8 @@ app.use('/api/messages', messagesRoutes);
 app.use('/api/documents', documentsRoutes);
 app.use('/api/notifications', notificationsRoutes);
 app.use('/api/ats', atsRoutes);
+app.use('/api/public', publicCareersRoutes);
+app.use('/api/email', emailRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/window-display', windowDisplayRoutes);
 

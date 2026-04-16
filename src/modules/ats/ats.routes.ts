@@ -7,7 +7,7 @@ import {
   updateCandidateHandler, deleteCandidateHandler,
   listInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
-  jobFeedHandler,
+  jobFeedHandler, translatePreviewHandler,
 } from './ats.controller';
 
 const router = Router();
@@ -21,24 +21,25 @@ router.get('/feed/:slug/jobs.xml', jobFeedHandler);
 router.use(authenticate);
 
 // Job postings
-router.get('/jobs',               listJobsHandler);
+router.get('/jobs',               requireRole('admin', 'hr', 'area_manager', 'store_manager'), listJobsHandler);
 router.post('/jobs',              requireRole('admin', 'hr'), createJobHandler);
-router.get('/jobs/:id',           getJobHandler);
+router.get('/jobs/:id',           requireRole('admin', 'hr', 'area_manager', 'store_manager'), getJobHandler);
 router.patch('/jobs/:id',         requireRole('admin', 'hr'), updateJobHandler);
 router.delete('/jobs/:id',        requireRole('admin', 'hr'), deleteJobHandler);
 router.post('/jobs/:id/publish',  requireRole('admin', 'hr'), publishJobHandler);
 router.post('/jobs/:id/sync',     requireRole('admin', 'hr'), syncJobHandler);
+router.post('/translate-preview', requireRole('admin', 'hr', 'area_manager', 'store_manager'), translatePreviewHandler);
 
 // Candidates
-router.get('/candidates',         listCandidatesHandler);
-router.post('/candidates',        createCandidateHandler);
-router.get('/candidates/:id',     getCandidateHandler);
-router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);
+router.get('/candidates',         requireRole('admin', 'hr', 'area_manager', 'store_manager'), listCandidatesHandler);
+router.post('/candidates',        requireRole('admin', 'hr'), createCandidateHandler);
+router.get('/candidates/:id',     requireRole('admin', 'hr', 'area_manager', 'store_manager'), getCandidateHandler);
+router.patch('/candidates/:id',   requireRole('admin', 'hr'), updateCandidateHandler);
 router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHandler);
 
 // Interviews nested under candidates
-router.get('/candidates/:candidateId/interviews',  listInterviewsHandler);
-router.post('/candidates/:candidateId/interviews', requireRole('admin', 'hr', 'area_manager', 'store_manager'), createInterviewHandler);
+router.get('/candidates/:candidateId/interviews',  requireRole('admin', 'hr', 'area_manager', 'store_manager'), listInterviewsHandler);
+router.post('/candidates/:candidateId/interviews', requireRole('admin', 'hr'), createInterviewHandler);
 
 // Interview updates by standalone ID
 router.patch('/interviews/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateInterviewHandler);
