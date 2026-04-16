@@ -718,7 +718,7 @@ export async function getDeletedDocuments(companyId: number): Promise<DocumentRe
   const genDocs: DocumentRecord[] = genRows.map((r: any) => ({
     id: r.id,
     companyId: r.company_id,
-    employeeId: r.employee_id || 0,
+    employeeId: r.employee_id, // Preserving null instead of using 0
     categoryId: null,
     categoryName: r.category,
     fileName: r.title,
@@ -740,12 +740,20 @@ export async function getDeletedDocuments(companyId: number): Promise<DocumentRe
     createdAt: r.created_at,
     updatedAt: r.created_at,
     sourceTable: 'documents',
-    employeeName: r.employee_name || undefined,
+    employeeName: r.employee_name && r.employee_name.trim() !== '' ? r.employee_name : undefined,
   }));
 
-  // 3. Deduplicate by storage path to avoid multiple entries for the same file
-  const seenPaths = new Set<string>();
+  // 3. Deduplicate by storage path, PRIORITIZING records that have an employee assigned
   const combined = [...empDocs, ...genDocs];
+  
+  // Sort combined array so that records with employeeId and employeeName come first
+  combined.sort((a, b) => {
+    const aHasEmp = (a.employeeId && a.employeeName) ? 1 : 0;
+    const bHasEmp = (b.employeeId && b.employeeName) ? 1 : 0;
+    return bHasEmp - aHasEmp;
+  });
+
+  const seenPaths = new Set<string>();
   const uniqueDocs: DocumentRecord[] = [];
 
   for (const doc of combined) {
