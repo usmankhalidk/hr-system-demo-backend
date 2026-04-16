@@ -75,7 +75,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   } else if (req.body.unique_id) {
     // Resolve unique_id → numeric user_id within this company
     const found = await queryOne<{ id: number }>(
-      `SELECT id FROM users WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
+      `SELECT id FROM users WHERE LOWER(unique_id) = LOWER($1) AND company_id = $2 AND status = 'active'`,
       [req.body.unique_id as string, companyId],
     );
     if (!found) {
@@ -558,16 +558,11 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
 });
 
 // ---------------------------------------------------------------------------
-// POST /api/attendance/sync  — offline batch sync (store_terminal only)
-// body: { events: Array<{ event_type, user_id, event_time, notes? }> }
+// POST /api/attendance/sync  — offline batch sync
+// body: { events: Array<{ event_type, user_id, event_time, qr_token?, notes?, client_uuid? }> }
 // ---------------------------------------------------------------------------
 export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, storeId } = req.user!;
-
-  if (!storeId) {
-    badRequest(res, 'store_id obbligatorio per la sincronizzazione', 'VALIDATION_ERROR');
-    return;
-  }
+  const { companyId, role, userId: callerId, storeId: callerStoreId } = req.user!;
 
   const { events } = req.body as {
     events: Array<{
@@ -575,6 +570,9 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       user_id?: number;
       unique_id?: string;
       event_time: string;
+      client_uuid?: string;
+      device_fingerprint?: string;
+      qr_token?: string;
       notes?: string;
     }>;
   };
@@ -584,57 +582,71 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  if (companyId == null) {
+    badRequest(res, 'Company ID non trovato nel token sessione', 'SESSION_ERROR');
+    return;
+  }
+
   const VALID_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
 
-  // Resolve unique_ids → numeric user IDs (for events that use unique_id)
+  // 1. Resolve users
   const uniqueIdStrings = [...new Set(events.filter((e) => e.unique_id).map((e) => e.unique_id as string))];
   const uniqueIdMap = new Map<string, number>();
   if (uniqueIdStrings.length > 0) {
     const uniqueIdRows = await query<{ id: number; unique_id: string }>(
       `SELECT id, unique_id FROM users
-       WHERE unique_id = ANY($1::text[]) AND company_id = $2 AND status = 'active'`,
+       WHERE LOWER(unique_id) = ANY(ARRAY(SELECT LOWER(x) FROM unnest($1::text[]) x)) 
+         AND company_id = $2::int AND status = 'active'`,
       [uniqueIdStrings, companyId],
     );
-    for (const row of uniqueIdRows) uniqueIdMap.set(row.unique_id, row.id);
+    for (const row of uniqueIdRows) {
+      uniqueIdMap.set(row.unique_id.toLowerCase(), row.id);
+    }
   }
-
-  // Pre-fetch all numeric user IDs in one query (avoids N+1)
   const numericUserIds = [...new Set(events.filter((e) => !e.unique_id && e.user_id != null).map((e) => e.user_id as number))];
   const validUserRows = await query<{ id: number }>(
     numericUserIds.length > 0
-      ? `SELECT id FROM users WHERE id = ANY($1::int[]) AND company_id = $2 AND status = 'active'`
-      : `SELECT id FROM users WHERE FALSE AND company_id = $2`,
+      ? `SELECT id FROM users WHERE id = ANY($1::int[]) AND company_id = $2::int AND status = 'active'`
+      : `SELECT id FROM users WHERE FALSE AND company_id = $1::int`,
     numericUserIds.length > 0 ? [numericUserIds, companyId] : [companyId],
   );
   const validUserSet = new Set(validUserRows.map((r) => r.id));
 
-  // Pre-fetch all shifts for this store across the event date range (avoids N+1 per event)
-  const eventTimestamps = events.map((e) => new Date(e.event_time)).filter((t) => !isNaN(t.getTime()));
-  const shiftMap = new Map<string, number>(); // "userId:date" → first shift id
-  if (eventTimestamps.length > 0) {
-    const dateStrings = eventTimestamps.map((t) => t.toISOString().split('T')[0]).sort();
-    const minDate = dateStrings[0];
-    const maxDate = dateStrings[dateStrings.length - 1];
-    const shiftRows = await query<{ id: number; user_id: number; date: string }>(
-      `SELECT id, user_id, TO_CHAR(date, 'YYYY-MM-DD') AS date FROM shifts
-       WHERE company_id = $1 AND store_id = $2 AND status != 'cancelled'
-         AND date BETWEEN $3 AND $4
-       ORDER BY start_time`,
-      [companyId, storeId, minDate, maxDate],
+  // If the caller doesn't have a storeId in their JWT (e.g. Admin/HR), 
+  // we try to resolve it from the user's registry if needed as a last resort.
+  let resolvedCallerStoreId = callerStoreId;
+  if (!resolvedCallerStoreId) {
+    const userRow = await queryOne<{ store_id: number | null }>(
+      `SELECT store_id FROM users WHERE id = $1::int`,
+      [callerId]
     );
-    for (const row of shiftRows) {
-      const key = `${row.user_id}:${row.date}`;
-      if (!shiftMap.has(key)) shiftMap.set(key, row.id); // keep earliest start_time
-    }
+    resolvedCallerStoreId = userRow?.store_id || null;
   }
 
   for (let i = 0; i < events.length; i++) {
     const ev = events[i];
     const rowNum = i + 1;
 
+    // Security: employees can only sync their own data
+    let resolvedUserId: number | undefined;
+    if (ev.unique_id) {
+      resolvedUserId = uniqueIdMap.get(ev.unique_id.toLowerCase());
+    }
+    
+    // Fallback to user_id if unique_id didn't resolve or wasn't provided
+    if (resolvedUserId == null && ev.user_id != null) {
+      resolvedUserId = ev.user_id;
+    }
+
+    if (role === 'employee' && resolvedUserId !== callerId) {
+      console.warn(`[Sync] Row ${rowNum} REJECTED: User mismatch (Target ${resolvedUserId} vs Caller ${callerId})`);
+      errors.push(`Evento ${rowNum}: Non puoi sincronizzare dati per altri utenti`);
+      failed++;
+      continue;
+    }
     if (!VALID_TYPES.has(ev.event_type)) {
       errors.push(`Evento ${rowNum}: tipo non valido '${ev.event_type}'`);
       failed++;
@@ -656,43 +668,86 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    // Resolve user_id: prefer unique_id lookup, fall back to numeric user_id
-    let resolvedUserId: number | undefined;
-    if (ev.unique_id) {
-      resolvedUserId = uniqueIdMap.get(ev.unique_id);
-      if (resolvedUserId == null) {
-        errors.push(`Evento ${rowNum}: dipendente con codice '${ev.unique_id}' non trovato`);
-        failed++;
-        continue;
-      }
-    } else if (ev.user_id != null) {
-      if (!validUserSet.has(ev.user_id)) {
-        errors.push(`Evento ${rowNum}: dipendente ${ev.user_id} non trovato`);
-        failed++;
-        continue;
-      }
-      resolvedUserId = ev.user_id;
-    } else {
-      errors.push(`Evento ${rowNum}: user_id o unique_id obbligatorio`);
+    // Resolve user ID within company
+    if (ev.unique_id && resolvedUserId == null) {
+      errors.push(`Evento ${rowNum}: dipendente '${ev.unique_id}' non trovato o inattivo`);
       failed++;
       continue;
     }
 
+    if (resolvedUserId == null) {
+      errors.push(`Evento ${rowNum}: utente non risolto`);
+      failed++;
+      continue;
+    }
+
+    // QR token verification for store resolution when present.
+    let storeId = resolvedCallerStoreId || 0;
+    let qrTokenId: number | null = null;
+    if (ev.qr_token) {
+      try {
+        const payload = verifyQrToken2(ev.qr_token);
+        if (payload.companyId === companyId) {
+          storeId = payload.storeId;
+          // [FIX] Table name is qr_tokens, not attendance_qr_tokens
+          const tokenRow = await queryOne<{ id: number }>(
+            `SELECT id FROM qr_tokens WHERE nonce = $1 AND store_id = $2::int`,
+            [payload.nonce, storeId]
+          );
+          if (tokenRow) qrTokenId = tokenRow.id;
+        }
+      } catch (err) {
+        // We log it but proceed with the user's home store if possible
+        console.warn(`[Sync] QR token in event ${rowNum} expired or invalid, using fallback store_id`);
+      }
+    }
+
+    if (!storeId) {
+      // Final attempt to find the target user's store
+      const targetUser = await queryOne<{ store_id: number | null }>(
+        `SELECT store_id FROM users WHERE id = $1::int`,
+        [resolvedUserId]
+      );
+      storeId = targetUser?.store_id || 0;
+    }
+
+    if (!storeId) {
+      errors.push(`Evento ${rowNum}: store_id non determinabile (nessun store assegnato all'utente)`);
+      failed++;
+      continue;
+    }
+
+    // Shift linking (optional helper for reporting)
     const dateStr = ts.toISOString().split('T')[0];
-    const linkedShiftId = shiftMap.get(`${resolvedUserId}:${dateStr}`) ?? null;
+    const linkedShift = await queryOne<{ id: number }>(
+      `SELECT id FROM shifts
+       WHERE company_id = $1::int AND user_id = $2::int AND date = $3
+         AND store_id = $4::int AND status != 'cancelled'
+       ORDER BY start_time LIMIT 1`,
+      [companyId, resolvedUserId, dateStr, storeId],
+    );
 
     try {
       await queryOne(
         `INSERT INTO attendance_events
-           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
-         VALUES ($1, $2, $3, $4, $5, 'sync', $6, $7)
+           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id)
+         VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7::int, $8, $9::int)
          ON CONFLICT (company_id, user_id, event_type, event_time) DO NOTHING`,
-        [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(),
-         linkedShiftId, ev.notes ?? null],
+        [
+          companyId,
+          storeId,
+          resolvedUserId,
+          ev.event_type,
+          ts.toISOString(),
+          qrTokenId != null ? 'qr' : 'sync',
+          linkedShift?.id ?? null,
+          ev.notes ?? null,
+          qrTokenId,
+        ],
       );
       synced++;
     } catch {
-      errors.push(`Evento ${rowNum}: errore inserimento`);
+      errors.push(`Evento ${i + 1}: errore inserimento`);
       failed++;
     }
   }
@@ -824,9 +879,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     evIdx++;
   }
   const events = await query<{
-    user_id: number; event_type: string; event_time: string;
+    user_id: number; event_type: string; event_time: string; source: string;
   }>(
-    `SELECT ae.user_id, ae.event_type, ae.event_time
+    `SELECT ae.user_id, ae.event_type, ae.event_time, ae.source
      FROM attendance_events ae
      WHERE ae.company_id = ANY($1)
        AND ae.event_time::DATE BETWEEN $2 AND $3
@@ -837,7 +892,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   );
 
   // Group events by (user_id, date)
-  type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date };
+  type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date; checkin_source?: string };
   const eventMap = new Map<string, EventGroup>();
   for (const e of events) {
     const date = new Date(e.event_time).toISOString().split('T')[0];
@@ -845,7 +900,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     if (!eventMap.has(key)) eventMap.set(key, {});
     const group = eventMap.get(key)!;
     const t = new Date(e.event_time);
-    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     group.checkin     = t;
+    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     { group.checkin = t; group.checkin_source = e.source; }
     if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
     if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
     if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
@@ -864,6 +919,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     details: string;
     details_key: string;
     details_params: Record<string, string | number>;
+    checkin_source: string | null;
   }> = [];
 
   for (const shift of shifts) {
@@ -882,6 +938,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
         details_key: 'attendance.detail_no_show',
         details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
+        checkin_source: null,
       });
       continue;
     }
@@ -901,6 +958,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
         details_key: 'attendance.detail_late_arrival',
         details_params: { minutes: lateMin, entry: checkin.toTimeString().slice(0, 5), shift: shift.start_time.slice(0, 5) },
+        checkin_source: evGroup.checkin_source ?? null,
       });
     }
 
@@ -918,6 +976,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
           details_key: 'attendance.detail_early_exit',
           details_params: { minutes: earlyMin, exit: checkout.toTimeString().slice(0, 5), shift: shift.end_time.slice(0, 5) },
+          checkin_source: evGroup.checkin_source ?? null,
         });
       }
     }
@@ -936,6 +995,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           details: `Pausa di ${breakMin} min (limite: 60 min)`,
           details_key: 'attendance.detail_long_break',
           details_params: { minutes: breakMin },
+          checkin_source: evGroup.checkin_source ?? null,
         });
       }
     }
@@ -1100,7 +1160,7 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
     [companyId, userId, from, to],
   );
 
-  ok(res, { events, total: events.length });
+  ok(res, { events: events || [], total: (events || []).length });
 });
 
 // ---------------------------------------------------------------------------

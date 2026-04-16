@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1775816539254,
+  "lastScanned": 1776131347604,
   "projectRoot": "/Users/user/hr-software/hr-system-demo-backend",
   "techStack": {
     "languages": [
@@ -62,6 +62,7 @@
     "isMonorepo": false,
     "workspaces": [],
     "mainDirectories": [
+      "scripts",
       "src"
     ],
     "gitBranches": {
@@ -75,7 +76,7 @@
       "path": "database",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1775816539217,
+      "lastAccessed": 1776131347586,
       "keyFiles": [
         "schema.sql"
       ]
@@ -84,16 +85,34 @@
       "path": "dist",
       "purpose": "Distribution/build output",
       "fileCount": 1,
-      "lastAccessed": 1775816539218,
+      "lastAccessed": 1776131347587,
       "keyFiles": [
         "index.js"
+      ]
+    },
+    "scratch": {
+      "path": "scratch",
+      "purpose": null,
+      "fileCount": 1,
+      "lastAccessed": 1776131347593,
+      "keyFiles": [
+        "ensure-indexes.js"
+      ]
+    },
+    "scripts": {
+      "path": "scripts",
+      "purpose": "Build/utility scripts",
+      "fileCount": 1,
+      "lastAccessed": 1776131347594,
+      "keyFiles": [
+        "check_db.js"
       ]
     },
     "src": {
       "path": "src",
       "purpose": "Source code",
       "fileCount": 1,
-      "lastAccessed": 1775816539225,
+      "lastAccessed": 1776131347594,
       "keyFiles": [
         "index.ts"
       ]
@@ -102,14 +121,14 @@
       "path": "uploads",
       "purpose": null,
       "fileCount": 1,
-      "lastAccessed": 1775816539226,
+      "lastAccessed": 1776131347594,
       "keyFiles": []
     },
     "database/migrations": {
       "path": "database/migrations",
       "purpose": "Database migrations",
-      "fileCount": 42,
-      "lastAccessed": 1775816539226,
+      "fileCount": 48,
+      "lastAccessed": 1776131347596,
       "keyFiles": [
         "001_initial_schema.sql",
         "002_phase1_schema.sql",
@@ -120,14 +139,14 @@
       "path": "dist/__tests__",
       "purpose": "Test files",
       "fileCount": 0,
-      "lastAccessed": 1775816539227,
+      "lastAccessed": 1776131347596,
       "keyFiles": []
     },
     "dist/config": {
       "path": "dist/config",
       "purpose": "Configuration files",
       "fileCount": 2,
-      "lastAccessed": 1775816539227,
+      "lastAccessed": 1776131347596,
       "keyFiles": [
         "database.js",
         "jwt.js"
@@ -137,7 +156,7 @@
       "path": "dist/controllers",
       "purpose": "Controllers",
       "fileCount": 5,
-      "lastAccessed": 1775816539228,
+      "lastAccessed": 1776131347597,
       "keyFiles": [
         "attendanceController.js",
         "authController.js",
@@ -148,7 +167,7 @@
       "path": "dist/middleware",
       "purpose": "Middleware",
       "fileCount": 3,
-      "lastAccessed": 1775816539228,
+      "lastAccessed": 1776131347597,
       "keyFiles": [
         "auditLog.js",
         "auth.js",
@@ -159,7 +178,7 @@
       "path": "dist/routes",
       "purpose": "Route handlers",
       "fileCount": 5,
-      "lastAccessed": 1775816539229,
+      "lastAccessed": 1776131347598,
       "keyFiles": [
         "attendance.js",
         "auth.js",
@@ -170,7 +189,7 @@
       "path": "dist/scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 1,
-      "lastAccessed": 1775816539229,
+      "lastAccessed": 1776131347598,
       "keyFiles": [
         "seed.js"
       ]
@@ -179,7 +198,7 @@
       "path": "dist/services",
       "purpose": "Business logic services",
       "fileCount": 2,
-      "lastAccessed": 1775816539230,
+      "lastAccessed": 1776131347598,
       "keyFiles": [
         "email.service.js",
         "indeed.adapter.js"
@@ -189,14 +208,14 @@
       "path": "src/__tests__",
       "purpose": "Test files",
       "fileCount": 0,
-      "lastAccessed": 1775816539231,
+      "lastAccessed": 1776131347599,
       "keyFiles": []
     },
     "src/config": {
       "path": "src/config",
       "purpose": "Configuration files",
       "fileCount": 3,
-      "lastAccessed": 1775816539231,
+      "lastAccessed": 1776131347600,
       "keyFiles": [
         "database.ts",
         "jwt.ts",
@@ -207,7 +226,7 @@
       "path": "src/controllers",
       "purpose": "Controllers",
       "fileCount": 5,
-      "lastAccessed": 1775816539231,
+      "lastAccessed": 1776131347600,
       "keyFiles": [
         "attendanceController.ts",
         "authController.ts",
@@ -218,7 +237,7 @@
       "path": "src/middleware",
       "purpose": "Middleware",
       "fileCount": 3,
-      "lastAccessed": 1775816539231,
+      "lastAccessed": 1776131347600,
       "keyFiles": [
         "auditLog.ts",
         "auth.ts",
@@ -229,7 +248,7 @@
       "path": "src/routes",
       "purpose": "Route handlers",
       "fileCount": 5,
-      "lastAccessed": 1775816539232,
+      "lastAccessed": 1776131347601,
       "keyFiles": [
         "attendance.ts",
         "auth.ts",
@@ -240,19 +259,9 @@
       "path": "src/scripts",
       "purpose": "Build/utility scripts",
       "fileCount": 1,
-      "lastAccessed": 1775816539232,
+      "lastAccessed": 1776131347601,
       "keyFiles": [
         "seed.ts"
-      ]
-    },
-    "src/services": {
-      "path": "src/services",
-      "purpose": "Business logic services",
-      "fileCount": 2,
-      "lastAccessed": 1775816539232,
-      "keyFiles": [
-        "email.service.ts",
-        "indeed.adapter.ts"
       ]
     }
   },
@@ -270,6 +279,12 @@
       "type": "file"
     },
     {
+      "path": "src/modules/attendance/attendance.controller.ts",
+      "accessCount": 10,
+      "lastAccessed": 1776316745027,
+      "type": "file"
+    },
+    {
       "path": "src/modules/shifts/__tests__/shifts.test.ts",
       "accessCount": 9,
       "lastAccessed": 1775820252145,
@@ -283,8 +298,8 @@
     },
     {
       "path": "",
-      "accessCount": 7,
-      "lastAccessed": 1776258806080,
+      "accessCount": 8,
+      "lastAccessed": 1776316490287,
       "type": "directory"
     },
     {
@@ -298,6 +313,18 @@
       "accessCount": 5,
       "lastAccessed": 1776258895194,
       "type": "file"
+    },
+    {
+      "path": "src/modules/employees/employees.controller.ts",
+      "accessCount": 4,
+      "lastAccessed": 1776130436691,
+      "type": "directory"
+    },
+    {
+      "path": "src",
+      "accessCount": 4,
+      "lastAccessed": 1776316484160,
+      "type": "directory"
     },
     {
       "path": "src/config/jwt.ts",
@@ -324,9 +351,9 @@
       "type": "directory"
     },
     {
-      "path": "src",
+      "path": "src/modules/attendance",
       "accessCount": 2,
-      "lastAccessed": 1776258806395,
+      "lastAccessed": 1776316494264,
       "type": "directory"
     },
     {
@@ -436,6 +463,18 @@
       "accessCount": 1,
       "lastAccessed": 1776258811154,
       "type": "directory"
+    },
+    {
+      "path": "database/migrations/004_phase2_attendance.sql",
+      "accessCount": 1,
+      "lastAccessed": 1776316493574,
+      "type": "file"
+    },
+    {
+      "path": "database/schema.sql",
+      "accessCount": 1,
+      "lastAccessed": 1776316493710,
+      "type": "file"
     }
   ],
   "userDirectives": []
