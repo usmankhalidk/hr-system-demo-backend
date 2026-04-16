@@ -87,7 +87,8 @@ export async function seed() {
     // This guarantees a clean slate regardless of what was previously deployed
     // (e.g. old 4-table schema on an existing Railway DB).
     await client.query(`
-      DROP TABLE IF EXISTS messages, store_affluence, shift_templates,
+      DROP TABLE IF EXISTS window_display_activities, messages,
+                           store_affluence, shift_templates,
                            leave_balances, leave_approvals, leave_requests,
                            attendance_events, qr_tokens,
                            attendance, shifts, role_module_permissions,
