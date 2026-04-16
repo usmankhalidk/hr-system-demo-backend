@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env
 *.log
+uploads/*
 uploads/avatars/*
 uploads/company-logos/*
 uploads/company-banners/*

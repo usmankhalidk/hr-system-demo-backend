@@ -95,11 +95,68 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       date        DATE NOT NULL,
       year_month  VARCHAR(7) NOT NULL,
       flagged_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      activity_type VARCHAR(40) NOT NULL DEFAULT 'window_display',
+      activity_icon VARCHAR(16),
+      custom_activity_name VARCHAR(120),
+      duration_hours NUMERIC(4,2),
+      notes       TEXT,
       created_at  TIMESTAMPTZ DEFAULT NOW(),
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
       CONSTRAINT unique_store_month UNIQUE (store_id, year_month),
-      CONSTRAINT chk_year_month_matches_date CHECK (year_month = TO_CHAR(date, 'YYYY-MM'))
+      CONSTRAINT chk_year_month_matches_date CHECK (year_month = TO_CHAR(date, 'YYYY-MM')),
+      CONSTRAINT chk_wda_activity_type
+        CHECK (activity_type IN (
+          'window_display', 'campaign_launch', 'visual_merchandising', 'promo_setup',
+          'event_activation', 'seasonal_changeover', 'pop_up_corner', 'store_cleaning',
+          'deep_cleaning', 'maintenance_repair', 'decoration_renovation', 'layout_change',
+          'store_reset', 'product_restock', 'inventory_count', 'price_update',
+          'audit_inspection', 'staff_training', 'custom_activity'
+        )),
+      CONSTRAINT chk_wda_custom_activity_name
+        CHECK (
+          (activity_type = 'custom_activity' AND custom_activity_name IS NOT NULL AND BTRIM(custom_activity_name) <> '')
+          OR (activity_type <> 'custom_activity' AND custom_activity_name IS NULL)
+        ),
+      CONSTRAINT chk_wda_duration_hours
+        CHECK (duration_hours IS NULL OR (duration_hours >= 0 AND duration_hours <= 24))
     );
+
+    ALTER TABLE window_display_activities
+      ADD COLUMN IF NOT EXISTS activity_type VARCHAR(40) NOT NULL DEFAULT 'window_display',
+      ADD COLUMN IF NOT EXISTS activity_icon VARCHAR(16),
+      ADD COLUMN IF NOT EXISTS custom_activity_name VARCHAR(120),
+      ADD COLUMN IF NOT EXISTS duration_hours NUMERIC(4,2),
+      ADD COLUMN IF NOT EXISTS notes TEXT;
+
+    ALTER TABLE window_display_activities
+      DROP CONSTRAINT IF EXISTS chk_wda_activity_type;
+
+    ALTER TABLE window_display_activities
+      ADD CONSTRAINT chk_wda_activity_type
+        CHECK (activity_type IN (
+          'window_display', 'campaign_launch', 'visual_merchandising', 'promo_setup',
+          'event_activation', 'seasonal_changeover', 'pop_up_corner', 'store_cleaning',
+          'deep_cleaning', 'maintenance_repair', 'decoration_renovation', 'layout_change',
+          'store_reset', 'product_restock', 'inventory_count', 'price_update',
+          'audit_inspection', 'staff_training', 'custom_activity'
+        ));
+
+    ALTER TABLE window_display_activities
+      DROP CONSTRAINT IF EXISTS chk_wda_custom_activity_name;
+
+    ALTER TABLE window_display_activities
+      ADD CONSTRAINT chk_wda_custom_activity_name
+        CHECK (
+          (activity_type = 'custom_activity' AND custom_activity_name IS NOT NULL AND BTRIM(custom_activity_name) <> '')
+          OR (activity_type <> 'custom_activity' AND custom_activity_name IS NULL)
+        );
+
+    ALTER TABLE window_display_activities
+      DROP CONSTRAINT IF EXISTS chk_wda_duration_hours;
+
+    ALTER TABLE window_display_activities
+      ADD CONSTRAINT chk_wda_duration_hours
+        CHECK (duration_hours IS NULL OR (duration_hours >= 0 AND duration_hours <= 24));
   `);
 
   // Ensure companies.is_active exists (used to block operations on deactivated companies).

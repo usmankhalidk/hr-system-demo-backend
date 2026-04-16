@@ -560,25 +560,35 @@ export const listCandidatesHandler = asyncHandler(async (req: Request, res: Resp
 });
 
 export const getCandidateHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
 
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const owner = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  if (!owner) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
   const storeIds = resolveStoreIds(req.user);
-  const candidate = await getCandidate(id, companyId, storeIds);
+  const candidate = await getCandidate(id, owner.company_id, storeIds);
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
 
   // Mark as read on retrieval
-  await markCandidateRead(id, companyId);
+  await markCandidateRead(id, owner.company_id);
 
   ok(res, { candidate });
 });
 
 export const createCandidateHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+  const { companyId: userCompanyId, userId } = req.user!;
+  if (!userCompanyId) { forbidden(res, 'Nessuna azienda'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
   const {
     full_name,
@@ -604,12 +614,71 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     return;
   }
 
-  const candidate = await createCandidate(companyId, {
+  const parsedJobPostingId = typeof job_posting_id === 'number'
+    ? job_posting_id
+    : (typeof job_posting_id === 'string' && job_posting_id.trim() !== ''
+      ? Number.parseInt(job_posting_id, 10)
+      : undefined);
+
+  if (parsedJobPostingId !== undefined && Number.isNaN(parsedJobPostingId)) {
+    badRequest(res, 'Posizione non valida', 'VALIDATION_ERROR');
+    return;
+  }
+
+  let parsedStoreId = typeof store_id === 'number'
+    ? store_id
+    : (typeof store_id === 'string' && store_id.trim() !== ''
+      ? Number.parseInt(store_id, 10)
+      : undefined);
+
+  if (parsedStoreId !== undefined && Number.isNaN(parsedStoreId)) {
+    badRequest(res, 'Punto vendita non valido', 'VALIDATION_ERROR');
+    return;
+  }
+
+  let targetCompanyId = userCompanyId;
+
+  if (parsedJobPostingId !== undefined) {
+    const jobRow = await queryOne<{ id: number; company_id: number; store_id: number | null }>(
+      `SELECT id, company_id, store_id FROM job_postings WHERE id = $1`,
+      [parsedJobPostingId],
+    );
+
+    if (!jobRow) {
+      badRequest(res, 'Posizione non valida', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (!allowedCompanyIds.includes(jobRow.company_id)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+
+    targetCompanyId = jobRow.company_id;
+
+    if (parsedStoreId !== undefined) {
+      const storeError = await validateAtsStore(parsedStoreId, targetCompanyId);
+      if (storeError) {
+        badRequest(res, storeError, 'INVALID_STORE');
+        return;
+      }
+    } else if (jobRow.store_id !== null) {
+      parsedStoreId = jobRow.store_id;
+    }
+  } else if (parsedStoreId !== undefined) {
+    const storeError = await validateAtsStore(parsedStoreId, targetCompanyId);
+    if (storeError) {
+      badRequest(res, storeError, 'INVALID_STORE');
+      return;
+    }
+  }
+
+  const candidate = await createCandidate(targetCompanyId, {
     fullName:     full_name.trim(),
     email:        typeof email === 'string' ? email : undefined,
     phone:        typeof phone === 'string' ? phone : undefined,
-    jobPostingId: typeof job_posting_id === 'number' ? job_posting_id : undefined,
-    storeId:      typeof store_id === 'number' ? store_id : undefined,
+    jobPostingId: parsedJobPostingId,
+    storeId:      parsedStoreId,
     tags:         Array.isArray(tags) ? (tags as string[]) : [],
     cvPath:       typeof cv_path === 'string' ? cv_path : undefined,
     resumePath:   typeof resume_path === 'string' ? resume_path : undefined,
@@ -626,7 +695,7 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
   const locale = (req.user as any)?.locale || 'it';
 
   sendNotification({
-    companyId,
+    companyId: targetCompanyId,
     userId,
     type: 'ats.candidate_received',
     title:   t(locale, 'notifications.ats_candidate_received.title'),
@@ -635,17 +704,24 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     locale,
   }).catch(() => undefined);
 
-  emitToCompany(companyId, 'ATS_CANDIDATE_CREATED', { candidate });
+  emitToCompany(targetCompanyId, 'ATS_CANDIDATE_CREATED', { candidate });
 
   created(res, { candidate }, 'Candidato aggiunto');
 });
 
 export const updateCandidateHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const owner = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  if (!owner) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
   const { status } = req.body as { status?: unknown };
 
@@ -661,7 +737,7 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
   }
 
   const storeIds = resolveStoreIds(req.user);
-  const { candidate, error } = await updateCandidateStage(id, companyId, status as CandidateStatus, storeIds);
+  const { candidate, error } = await updateCandidateStage(id, owner.company_id, status as CandidateStatus, storeIds);
   if (error) { badRequest(res, error, 'INVALID_TRANSITION'); return; }
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
 
@@ -669,13 +745,20 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
 });
 
 export const deleteCandidateHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
 
-  const deleted = await deleteCandidate(id, companyId);
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const owner = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  if (!owner) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const deleted = await deleteCandidate(id, owner.company_id);
   if (!deleted) { notFound(res, 'Candidato non trovato'); return; }
   ok(res, {}, 'Candidato eliminato');
 });

@@ -3,58 +3,233 @@ import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, notFound, conflict } from '../../utils/response';
+import { CUSTOM_ACTIVITY_TYPE, WindowDisplayActivityType } from './activity-types';
 
 interface WindowDisplayActivity {
   id: number;
   company_id: number;
   store_id: number;
+  store_name?: string | null;
   date: string;
   year_month: string;
   flagged_by: number;
+  activity_type: WindowDisplayActivityType;
+  activity_icon: string | null;
+  custom_activity_name: string | null;
+  duration_hours: number | null;
+  notes: string | null;
+  flagged_by_name?: string | null;
+  flagged_by_surname?: string | null;
   created_at: string;
   updated_at: string;
 }
 
+type OptionalIntParseResult =
+  | { ok: true; value: number | null }
+  | { ok: false };
+
+function parseOptionalPositiveInt(value: unknown): OptionalIntParseResult {
+  if (value === undefined || value === null || value === '') {
+    return { ok: true, value: null };
+  }
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return { ok: false };
+  }
+  return { ok: true, value: parsed };
+}
+
+function resolveRequestedCompanyId(req: Request): OptionalIntParseResult {
+  const parsed = parseOptionalPositiveInt(req.query?.company_id ?? req.body?.company_id);
+  if (!parsed.ok) return parsed;
+
+  if (parsed.value != null) {
+    return { ok: true, value: parsed.value };
+  }
+
+  // Super admins should default to all-company scope when no explicit company
+  // target is provided, even if their token carries a home company id.
+  if (req.user?.is_super_admin === true) {
+    return { ok: true, value: null };
+  }
+
+  return { ok: true, value: req.user!.companyId };
+}
+
+const WINDOW_DISPLAY_SELECT = `
+  SELECT
+    wda.id,
+    wda.company_id,
+    wda.store_id,
+    s.name AS store_name,
+    TO_CHAR(wda.date, 'YYYY-MM-DD') AS date,
+    wda.year_month,
+    wda.flagged_by,
+    wda.activity_type,
+    wda.activity_icon,
+    wda.custom_activity_name,
+    wda.duration_hours,
+    wda.notes,
+    u.name AS flagged_by_name,
+    u.surname AS flagged_by_surname,
+    wda.created_at,
+    wda.updated_at
+  FROM window_display_activities wda
+  JOIN stores s ON s.id = wda.store_id
+  LEFT JOIN users u ON u.id = wda.flagged_by
+`;
+
+function normalizeNotes(notes: string | null | undefined): string | null {
+  if (notes == null) return null;
+  const value = String(notes).trim();
+  return value.length > 0 ? value : null;
+}
+
+function normalizeActivityIcon(activityIcon: string | null | undefined): string | null {
+  if (activityIcon == null) return null;
+  const value = String(activityIcon).trim();
+  return value.length > 0 ? value.slice(0, 16) : null;
+}
+
+function normalizeCustomActivityName(customActivityName: string | null | undefined): string | null {
+  if (customActivityName == null) return null;
+  const value = String(customActivityName).trim();
+  return value.length > 0 ? value.slice(0, 120) : null;
+}
+
+async function findWindowDisplayById(companyId: number | null, id: number): Promise<WindowDisplayActivity | null> {
+  if (companyId == null) {
+    return queryOne<WindowDisplayActivity>(
+      `${WINDOW_DISPLAY_SELECT}
+       WHERE wda.id = $1`,
+      [id],
+    );
+  }
+
+  return queryOne<WindowDisplayActivity>(
+    `${WINDOW_DISPLAY_SELECT}
+     WHERE wda.company_id = $1 AND wda.id = $2`,
+    [companyId, id],
+  );
+}
+
 export const getWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  const storeId = parseInt(req.query.store_id as string, 10);
+  const scopedCompany = resolveRequestedCompanyId(req);
+  if (!scopedCompany.ok) return badRequest(res, 'company_id must be a positive integer');
+
+  const companyId = scopedCompany.value;
+  const rawStoreId = req.query.store_id;
   const month = String(req.query.month ?? '');
 
-  if (isNaN(storeId)) return badRequest(res, 'store_id is required');
   if (!/^\d{4}-\d{2}$/.test(month)) return badRequest(res, 'month must be YYYY-MM');
 
-  const row = await queryOne<WindowDisplayActivity>(
-    `SELECT id, company_id, store_id, TO_CHAR(date, 'YYYY-MM-DD') AS date,
-            year_month, flagged_by, created_at, updated_at
-     FROM window_display_activities
-     WHERE company_id = $1 AND store_id = $2 AND year_month = $3`,
-    [companyId, storeId, month],
-  );
+  if (rawStoreId === undefined || rawStoreId === null || rawStoreId === '') {
+    const rows = companyId == null
+      ? await query<WindowDisplayActivity>(
+        `${WINDOW_DISPLAY_SELECT}
+         WHERE wda.year_month = $1
+         ORDER BY wda.date ASC, s.name ASC`,
+        [month],
+      )
+      : await query<WindowDisplayActivity>(
+        `${WINDOW_DISPLAY_SELECT}
+         WHERE wda.company_id = $1 AND wda.year_month = $2
+         ORDER BY wda.date ASC, s.name ASC`,
+        [companyId, month],
+      );
+    return ok(res, rows);
+  }
+
+  const storeId = parseInt(String(rawStoreId), 10);
+  if (isNaN(storeId)) return badRequest(res, 'store_id must be a number');
+
+  const row = companyId == null
+    ? await queryOne<WindowDisplayActivity>(
+      `${WINDOW_DISPLAY_SELECT}
+       WHERE wda.store_id = $1 AND wda.year_month = $2`,
+      [storeId, month],
+    )
+    : await queryOne<WindowDisplayActivity>(
+      `${WINDOW_DISPLAY_SELECT}
+       WHERE wda.company_id = $1 AND wda.store_id = $2 AND wda.year_month = $3`,
+      [companyId, storeId, month],
+    );
 
   return ok(res, row ?? null);
 });
 
 export const createWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId } = req.user!;
-  const { store_id, date } = req.body as { store_id: number; date: string };
+  const { userId } = req.user!;
+  const scopedCompany = resolveRequestedCompanyId(req);
+  if (!scopedCompany.ok) return badRequest(res, 'company_id must be a positive integer');
+
+  const companyId = scopedCompany.value;
+  const {
+    store_id,
+    date,
+    activity_type,
+    activity_icon,
+    custom_activity_name,
+    duration_hours,
+    notes,
+  } = req.body as {
+    store_id: number;
+    date: string;
+    activity_type?: WindowDisplayActivityType;
+    activity_icon?: string | null;
+    custom_activity_name?: string | null;
+    duration_hours?: number | null;
+    notes?: string | null;
+  };
 
   const yearMonth = date.slice(0, 7);
+  const normalizedNotes = normalizeNotes(notes);
+  const nextActivityType = activity_type ?? 'window_display';
+  const normalizedActivityIcon = normalizeActivityIcon(activity_icon);
+  const normalizedCustomActivityName = normalizeCustomActivityName(custom_activity_name);
+
+  if (nextActivityType === CUSTOM_ACTIVITY_TYPE && !normalizedCustomActivityName) {
+    return badRequest(res, 'custom_activity_name is required when activity_type is custom_activity');
+  }
+  if (nextActivityType !== CUSTOM_ACTIVITY_TYPE && normalizedCustomActivityName) {
+    return badRequest(res, 'custom_activity_name can only be used when activity_type is custom_activity');
+  }
 
   // Verify store belongs to this company
-  const store = await queryOne<{ id: number }>(
-    'SELECT id FROM stores WHERE id = $1 AND company_id = $2',
-    [store_id, companyId],
-  );
+  const store = companyId == null
+    ? await queryOne<{ id: number; company_id: number }>(
+      'SELECT id, company_id FROM stores WHERE id = $1',
+      [store_id],
+    )
+    : await queryOne<{ id: number; company_id: number }>(
+      'SELECT id, company_id FROM stores WHERE id = $1 AND company_id = $2',
+      [store_id, companyId],
+    );
   if (!store) return notFound(res, 'Store not found');
 
+  const targetCompanyId = store.company_id;
+
   try {
-    const row = await queryOne<WindowDisplayActivity>(
-      `INSERT INTO window_display_activities (company_id, store_id, date, year_month, flagged_by)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING id, company_id, store_id, TO_CHAR(date, 'YYYY-MM-DD') AS date,
-                 year_month, flagged_by, created_at, updated_at`,
-      [companyId, store_id, date, yearMonth, userId],
+    const inserted = await queryOne<{ id: number }>(
+      `INSERT INTO window_display_activities
+         (company_id, store_id, date, year_month, flagged_by, activity_type, activity_icon, custom_activity_name, duration_hours, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id`,
+      [
+        targetCompanyId,
+        store_id,
+        date,
+        yearMonth,
+        userId,
+        nextActivityType,
+        normalizedActivityIcon,
+        nextActivityType === CUSTOM_ACTIVITY_TYPE ? normalizedCustomActivityName : null,
+        duration_hours ?? null,
+        normalizedNotes,
+      ],
     );
+
+    const row = await findWindowDisplayById(targetCompanyId, inserted!.id);
     return created(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
@@ -65,27 +240,105 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
 });
 
 export const updateWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const scopedCompany = resolveRequestedCompanyId(req);
+  if (!scopedCompany.ok) return badRequest(res, 'company_id must be a positive integer');
+
+  const companyId = scopedCompany.value;
   const id = Number(req.params.id);
-  const { date } = req.body as { date: string };
+  const {
+    date,
+    activity_type,
+    activity_icon,
+    custom_activity_name,
+    duration_hours,
+    notes,
+  } = req.body as {
+    date?: string;
+    activity_type?: WindowDisplayActivityType;
+    activity_icon?: string | null;
+    custom_activity_name?: string | null;
+    duration_hours?: number | null;
+    notes?: string | null;
+  };
 
-  const yearMonth = date.slice(0, 7);
-
-  const existing = await queryOne<{ id: number }>(
-    'SELECT id FROM window_display_activities WHERE id = $1 AND company_id = $2',
-    [id, companyId],
-  );
+  const existing = companyId == null
+    ? await queryOne<WindowDisplayActivity>(
+      `SELECT
+         id,
+         TO_CHAR(date, 'YYYY-MM-DD') AS date,
+         year_month,
+         activity_type,
+         activity_icon,
+         custom_activity_name,
+         duration_hours,
+         notes,
+         company_id,
+         store_id,
+         flagged_by,
+         created_at,
+         updated_at
+       FROM window_display_activities
+       WHERE id = $1`,
+      [id],
+    )
+    : await queryOne<WindowDisplayActivity>(
+      `SELECT
+         id,
+         TO_CHAR(date, 'YYYY-MM-DD') AS date,
+         year_month,
+         activity_type,
+         activity_icon,
+         custom_activity_name,
+         duration_hours,
+         notes,
+         company_id,
+         store_id,
+         flagged_by,
+         created_at,
+         updated_at
+       FROM window_display_activities
+       WHERE id = $1 AND company_id = $2`,
+      [id, companyId],
+    );
   if (!existing) return notFound(res, 'Window display activity not found');
 
+  const nextDate = date ?? existing.date;
+  const nextYearMonth = nextDate.slice(0, 7);
+  const nextActivityType = activity_type ?? existing.activity_type;
+  const nextActivityIcon = activity_icon !== undefined ? normalizeActivityIcon(activity_icon) : normalizeActivityIcon(existing.activity_icon);
+  const nextCustomActivityNameCandidate = custom_activity_name !== undefined
+    ? normalizeCustomActivityName(custom_activity_name)
+    : normalizeCustomActivityName(existing.custom_activity_name);
+  const nextCustomActivityName = nextActivityType === CUSTOM_ACTIVITY_TYPE
+    ? nextCustomActivityNameCandidate
+    : null;
+  const nextDurationHours = duration_hours !== undefined ? duration_hours : existing.duration_hours;
+  const nextNotes = notes !== undefined ? normalizeNotes(notes) : normalizeNotes(existing.notes);
+
+  if (custom_activity_name !== undefined && nextActivityType !== CUSTOM_ACTIVITY_TYPE && nextCustomActivityNameCandidate) {
+    return badRequest(res, 'custom_activity_name can only be used when activity_type is custom_activity');
+  }
+
+  if (nextActivityType === CUSTOM_ACTIVITY_TYPE && !nextCustomActivityName) {
+    return badRequest(res, 'custom_activity_name is required when activity_type is custom_activity');
+  }
+
   try {
-    const row = await queryOne<WindowDisplayActivity>(
+    await queryOne<WindowDisplayActivity>(
       `UPDATE window_display_activities
-       SET date = $1, year_month = $2, updated_at = NOW()
-       WHERE id = $3
-       RETURNING id, company_id, store_id, TO_CHAR(date, 'YYYY-MM-DD') AS date,
-                 year_month, flagged_by, created_at, updated_at`,
-      [date, yearMonth, id],
+       SET date = $1,
+           year_month = $2,
+           activity_type = $3,
+           activity_icon = $4,
+           custom_activity_name = $5,
+           duration_hours = $6,
+           notes = $7,
+           updated_at = NOW()
+         WHERE id = $8`,
+        [nextDate, nextYearMonth, nextActivityType, nextActivityIcon, nextCustomActivityName, nextDurationHours, nextNotes, id],
     );
+
+    const row = await findWindowDisplayById(companyId, id);
     return ok(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
@@ -96,13 +349,21 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
 });
 
 export const deleteWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const scopedCompany = resolveRequestedCompanyId(req);
+  if (!scopedCompany.ok) return badRequest(res, 'company_id must be a positive integer');
+
+  const companyId = scopedCompany.value;
   const id = Number(req.params.id);
 
-  const existing = await queryOne<{ id: number }>(
-    'SELECT id FROM window_display_activities WHERE id = $1 AND company_id = $2',
-    [id, companyId],
-  );
+  const existing = companyId == null
+    ? await queryOne<{ id: number }>(
+      'SELECT id FROM window_display_activities WHERE id = $1',
+      [id],
+    )
+    : await queryOne<{ id: number }>(
+      'SELECT id FROM window_display_activities WHERE id = $1 AND company_id = $2',
+      [id, companyId],
+    );
   if (!existing) return notFound(res, 'Window display activity not found');
 
   await query('DELETE FROM window_display_activities WHERE id = $1', [id]);
