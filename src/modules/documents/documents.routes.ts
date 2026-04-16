@@ -7,14 +7,18 @@ import {
   getCategories,
   createCategory,
   updateCategory,
+  deleteCategory,
   getDocumentById,
   softDeleteDocument,
   updateDocumentVisibility,
   signDocument,
+  signGenericDocument,
   createGenericDocument,
   getGenericDocuments,
   updateGenericDocumentEmployee,
   deleteDocumentUnified,
+  getDeletedDocuments,
+  restoreDocument,
 } from './documents.service';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { query, queryOne, pool } from '../../config/database';
@@ -195,62 +199,55 @@ async function performAutoAssign(
     surname: string;
     unique_id: string | null;
   }>(
-    `SELECT id, name, surname, unique_id FROM users WHERE company_id = $1 AND status = 'active'`,
+    `SELECT id, name, surname, unique_id FROM users WHERE company_id = $1 AND status = 'active' AND role <> 'admin'`,
     [companyId],
   );
 
   // Normalize filename for matching: remove extension and trim
   const cleanBaseName = filename.replace(/\.(pdf|zip|jpg|jpeg|png|webp|bin|docx|xlsx)$/i, '').trim();
-  // Normalize: treat spaces and underscores as the same
-  const lowerBaseName = cleanBaseName.toLowerCase().replace(/\s+/g, '_');
+  // Split into tokens (lowercase)
+  const tokens = cleanBaseName.toLowerCase().split(/[_\s.-]+/).filter(Boolean);
+  const fullLowerName = cleanBaseName.toLowerCase();
 
-  let matchedEmpId: number | null = null;
-
-  // 1. Internal ID Match (e.g. EMP001_file.pdf or EMP001 File.pdf)
-  // Extract segment before first underscore
-  const firstUnderscore = lowerBaseName.indexOf('_');
-  const prefix = firstUnderscore > 0 ? lowerBaseName.substring(0, firstUnderscore) : lowerBaseName;
+  const matchesLevel1: number[] = []; // ID Match
+  const matchesLevel2: number[] = []; // Full name Match
+  const matchesLevel3: number[] = []; // Single name/surname token Match
 
   for (const emp of employees) {
-    if (emp.unique_id && emp.unique_id.toLowerCase() === prefix) {
-      matchedEmpId = emp.id;
-      break;
+    const name = emp.name.toLowerCase();
+    const surname = emp.surname.toLowerCase();
+    const uid = emp.unique_id?.toLowerCase();
+
+    // Level 1: Unique ID (highest priority)
+    if (uid && tokens.includes(uid)) {
+      matchesLevel1.push(emp.id);
+      continue;
+    }
+
+    // Level 2: Full Name (Surname_Name or Name_Surname tokens anywhere)
+    if (fullLowerName.includes(`${name} ${surname}`) || 
+        fullLowerName.includes(`${surname} ${name}`) ||
+        fullLowerName.includes(`${name}_${surname}`) ||
+        fullLowerName.includes(`${surname}_${name}`)) {
+      matchesLevel2.push(emp.id);
+      continue;
+    }
+
+    // Level 3: Partial token match
+    if (tokens.includes(name) || tokens.includes(surname)) {
+      matchesLevel3.push(emp.id);
     }
   }
 
-  // 2. Exact Surname_Name or Name_Surname (e.g. rossi_mario.pdf or mario rossi.pdf)
-  if (!matchedEmpId) {
-    for (const emp of employees) {
-      const s = emp.surname.toLowerCase();
-      const n = emp.name.toLowerCase();
-      // Match full name in either order
-      if (lowerBaseName === `${s}_${n}` || lowerBaseName.startsWith(`${s}_${n}_`) ||
-          lowerBaseName === `${n}_${s}` || lowerBaseName.startsWith(`${n}_${s}_`)) {
-        matchedEmpId = emp.id;
-        break;
-      }
-    }
+  let matchedEmpId: number | null = null;
+  if (matchesLevel1.length === 1) {
+    matchedEmpId = matchesLevel1[0];
+  } else if (matchesLevel1.length === 0 && matchesLevel2.length === 1) {
+    matchedEmpId = matchesLevel2[0];
+  } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
+    matchedEmpId = matchesLevel3[0];
   }
 
-  // 3. Single Name Match (e.g. anna.pdf)
-  if (!matchedEmpId) {
-    for (const emp of employees) {
-      if (lowerBaseName === emp.name.toLowerCase()) {
-        matchedEmpId = emp.id;
-        break;
-      }
-    }
-  }
-
-  // 4. Single Surname Match (e.g. conti.pdf)
-  if (!matchedEmpId) {
-    for (const emp of employees) {
-      if (lowerBaseName === emp.surname.toLowerCase()) {
-        matchedEmpId = emp.id;
-        break;
-      }
-    }
-  }
 
   if (matchedEmpId) {
     const empId = matchedEmpId;
@@ -318,6 +315,7 @@ async function performAutoAssign(
 
 // --- Secure Download Feature ---
 
+// --- Unified Download Route ---
 router.get(
   '/:id/download',
   authenticate,
@@ -329,53 +327,20 @@ router.get(
       return;
     }
 
-    const doc = await queryOne<{
-      id: number;
-      file_url: string;
-      title: string;
-      employee_id: number | null;
-    }>(
-      `SELECT id, file_url, title, employee_id FROM documents WHERE id = $1`,
-      [id],
-    );
+    const doc = await getDocumentById(id, user.companyId!, user);
 
     if (!doc) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+      notFound(res, 'Documento non trovato o non autorizzato', 'NOT_FOUND');
       return;
     }
 
-    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
-
-    // Permission check: Admin/HR, Owner, or scoped Supervisor/Store Manager
-    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
-    const isOwner = doc.employee_id === user.userId;
-
-    let isAuthorized = isAdminOrHr || isOwner;
-
-    if (!isAuthorized && doc.employee_id) {
-       // Check if manager is authorized for this employee's scope
-       if (user.role === 'area_manager') {
-         const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2 AND company_id = ANY($3)`, [doc.employee_id, user.userId, allowedCompanyIds]);
-         if (supervised) isAuthorized = true;
-       } else if (user.role === 'store_manager' && user.storeId) {
-         const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2 AND company_id = ANY($3)`, [doc.employee_id, user.storeId, allowedCompanyIds]);
-         if (inStore) isAuthorized = true;
-       }
-    }
-
-    if (!isAuthorized) {
-      forbidden(res, 'Non sei autorizzato a scaricare questo documento');
-      return;
-    }
-
-    const resolvedPath = path.resolve(doc.file_url);
+    const resolvedPath = path.resolve(doc.storagePath);
     if (!fs.existsSync(resolvedPath)) {
       notFound(res, 'File non trovato sul server', 'FILE_NOT_FOUND');
       return;
     }
 
-    // Send file securely using res.download
-    res.download(resolvedPath, doc.title);
+    res.download(resolvedPath, doc.fileName);
   }),
 );
 
@@ -399,8 +364,9 @@ router.put(
       id: number;
       file_url: string;
       title: string;
+      is_visible_to_roles: string[];
     }>(
-      `SELECT id, file_url, title FROM documents WHERE id = $1`,
+      `SELECT id, file_url, title, is_visible_to_roles FROM documents WHERE id = $1`,
       [id],
     );
 
@@ -431,10 +397,16 @@ router.put(
 
       if (employee_id) {
         // Resolve company and category for the employee
-        const emp = await queryOne<{ company_id: number }>(
-          `SELECT company_id FROM users WHERE id = $1`,
+        const emp = await queryOne<{ company_id: number; role: string }>(
+          `SELECT company_id, role FROM users WHERE id = $1`,
           [employee_id]
         );
+        
+        if (emp && emp.role === 'admin') {
+          badRequest(res, 'I documenti non possono essere assegnati agli amministratori', 'FORBIDDEN_ASSIGNMENT');
+          return;
+        }
+
         if (emp) {
           const categoryRow = await queryOne<{ id: number; name: string }>(
             `SELECT id, name FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
@@ -485,9 +457,9 @@ router.put(
             await query(
               `INSERT INTO employee_documents (
                 company_id, employee_id, category_id, file_name, storage_path, mime_type,
-                uploaded_by_user_id
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, mimeType, req.user!.userId]
+                uploaded_by_user_id, is_visible_to_roles
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, mimeType, req.user!.userId, doc.is_visible_to_roles]
             );
           } else {
             // Re-assignment: Update existing record with NEW company and NEW employee
@@ -561,7 +533,7 @@ router.get(
       res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
       return;
     }
-    const docs = await getEmployeeDocuments(user.companyId, user.userId, user.role);
+    const docs = await getEmployeeDocuments(user.companyId, user.userId, user);
     ok(res, docs);
   }),
 );
@@ -588,6 +560,14 @@ router.post(
                   ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
 
     const { requires_signature, expires_at, visible_to_roles } = req.body;
+
+    // Requirement: Admin or HR must set Expiration Date
+    if (['admin', 'hr'].includes(req.user!.role) && (!expires_at || String(expires_at).trim() === '')) {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+      badRequest(res, 'La data di scadenza è obbligatoria per Admin e HR', 'EXPIRY_DATE_REQUIRED');
+      return;
+    }
+
     const requiresSignature = requires_signature === 'true' || requires_signature === true;
     let visibleToRolesArr: string[] | undefined;
     if (visible_to_roles) {
@@ -622,11 +602,13 @@ router.post(
 
           const filePath = path.join(extractDir, entry.entryName);
           const doc = await createGenericDocument({
+            companyId: req.user!.companyId!,
             title: entry.name,
             fileUrl: filePath,
             uploadedBy: req.user!.userId,
             requiresSignature: options.requiresSignature,
             expiresAt: options.expiresAt,
+            isVisibleToRoles: options.visibleToRoles,
           });
 
           // Rule based auto-assignment
@@ -646,11 +628,13 @@ router.post(
       fs.renameSync(tempPath, destPath);
 
       const doc = await createGenericDocument({
+        companyId: req.user!.companyId!,
         title: originalname,
         fileUrl: destPath,
         uploadedBy: req.user!.userId,
         requiresSignature: options.requiresSignature,
         expiresAt: options.expiresAt,
+        isVisibleToRoles: options.visibleToRoles,
       });
 
       // Rule based auto-assignment
@@ -718,6 +702,12 @@ router.post(
     }
 
     try {
+      const existing = await queryOne(`SELECT id FROM document_categories WHERE company_id = $1`, [targetCompanyId]);
+      if (existing) {
+        conflict(res, 'Questa azienda ha già una categoria. Puoi solo modificarla.', 'CATEGORY_EXISTS');
+        return;
+      }
+
       const category = await createCategory(targetCompanyId, name.trim());
       
       // Retroactive assignment:
@@ -805,10 +795,53 @@ router.patch(
         return;
       }
 
+      if (name !== undefined) {
+         await query(
+           `UPDATE documents d
+               SET category = $1 
+              FROM users u
+             WHERE d.employee_id = u.id
+               AND u.company_id = $2`,
+           [updated.name, updated.companyId]
+         );
+      }
+
       ok(res, updated, 'Categoria aggiornata con successo');
     } catch (err: any) {
       throw err;
     }
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// DELETE /api/documents/categories/:id
+// ---------------------------------------------------------------------------
+
+router.delete(
+  '/categories/:id',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  asyncHandler(async (req: Request, res: Response) => {
+    const id = parseInt(req.params.id, 10);
+    if (Number.isNaN(id)) {
+      badRequest(res, 'ID categoria non valido', 'BAD_REQUEST');
+      return;
+    }
+
+    const companyId = req.body.current_company_id || req.query.current_company_id || req.user!.companyId;
+    if (!companyId) {
+      badRequest(res, 'ID azienda mancante', 'MISSING_COMPANY_ID');
+      return;
+    }
+
+    const deleted = await deleteCategory(id, companyId);
+    if (!deleted) {
+      notFound(res, 'Categoria non trovata', 'NOT_FOUND');
+      return;
+    }
+
+    ok(res, { id }, 'Categoria eliminata con successo');
   }),
 );
 
@@ -1176,7 +1209,7 @@ router.get(
       }
     }
 
-    const docs = await getEmployeeDocuments(employee.company_id, employeeId, user.role);
+    const docs = await getEmployeeDocuments(employee.company_id, employeeId, user);
     ok(res, docs);
   }),
 );
@@ -1237,6 +1270,14 @@ router.post(
 
     const { requires_signature, expires_at, visible_to_roles } = req.body;
     const requiresSignature = requires_signature === 'true' || requires_signature === true;
+
+    // Requirement: Admin or HR must set Expiration Date
+    if (['admin', 'hr'].includes(user.role) && (!expires_at || String(expires_at).trim() === '')) {
+      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
+      badRequest(res, 'La data di scadenza è obbligatoria per Admin e HR', 'EXPIRY_DATE_REQUIRED');
+      return;
+    }
+
     const expiresAt: string | null = expires_at ? String(expires_at) : null;
 
     // Fetch first active category for the company automatically
@@ -1280,94 +1321,6 @@ router.post(
   }),
 );
 
-// ---------------------------------------------------------------------------
-// GET /api/documents/:id/download
-// ---------------------------------------------------------------------------
-
-router.get(
-  '/:id/download',
-  authenticate,
-  asyncHandler(async (req: Request, res: Response) => {
-    const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
-      return;
-    }
-
-    const id = parseInt(req.params.id, 10);
-    if (Number.isNaN(id)) {
-      badRequest(res, 'ID documento non valido', 'BAD_REQUEST');
-      return;
-    }
-
-    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
-
-    // Look up across all allowed companies for this user
-    const doc = await queryOne<{
-      id: number;
-      company_id: number;
-      file_name: string;
-      storage_path: string;
-      mime_type: string | null;
-      is_visible_to_roles: string[];
-      deleted_at: string | null;
-    }>(
-      `SELECT id, company_id, file_name, storage_path, mime_type,
-              is_visible_to_roles, deleted_at
-         FROM employee_documents
-        WHERE id = $1 AND company_id = ANY($2)`,
-      [id, allowedCompanyIds],
-    );
-
-    if (!doc || doc.deleted_at !== null) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
-      return;
-    }
-
-    // Role and scope check
-    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
-    const isOwner = doc.employee_id === user.userId;
-
-    let isAuthorized = isAdminOrHr || isOwner;
-
-    if (!isAuthorized) {
-      // Check if the current user's role is allowed to see this document in general
-      if (doc.is_visible_to_roles && doc.is_visible_to_roles.includes(user.role)) {
-        // For managers, we also verify the employee scope
-        if (user.role === 'area_manager') {
-          const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2`, [doc.employee_id, user.userId]);
-          if (supervised) isAuthorized = true;
-        } else if (user.role === 'store_manager' && user.storeId) {
-          const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2`, [doc.employee_id, user.storeId]);
-          if (inStore) isAuthorized = true;
-        }
-      }
-    }
-
-    if (!isAuthorized) {
-      forbidden(res, 'Non sei autorizzato a scaricare questo documento');
-      return;
-    }
-
-    // Security: path traversal prevention
-    const resolvedPath = path.resolve(doc.storage_path);
-    const resolvedDir = path.resolve(DOCUMENTS_UPLOAD_DIR);
-    if (!resolvedPath.startsWith(resolvedDir + path.sep) && resolvedPath !== resolvedDir) {
-      forbidden(res, 'Percorso file non valido', 'INVALID_PATH');
-      return;
-    }
-
-    if (!fs.existsSync(resolvedPath)) {
-      notFound(res, 'File non trovato sul server', 'FILE_NOT_FOUND');
-      return;
-    }
-
-    const contentType = doc.mime_type ?? 'application/octet-stream';
-    res.setHeader('Content-Type', contentType);
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(doc.file_name)}"`);
-    res.sendFile(resolvedPath);
-  }),
-);
 
 // ---------------------------------------------------------------------------
 // DELETE /api/documents/:id — soft delete
@@ -1392,13 +1345,71 @@ router.delete(
 
     const allowedCompanyIds = await resolveAllowedCompanyIds(user);
 
-    const deleted = await deleteDocumentUnified(id, user.companyId);
+    const deleted = await deleteDocumentUnified(id, allowedCompanyIds);
     if (deleted) {
       ok(res, { id }, 'Documento eliminato con successo');
       return;
     }
 
     notFound(res, 'Documento non trovato o già eliminato');
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/documents/trash — fetch trash bin
+// ---------------------------------------------------------------------------
+
+router.get(
+  '/trash',
+  authenticate,
+  requireRole('admin', 'hr'),
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!;
+    if (!user.companyId) {
+      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+      return;
+    }
+
+    const docs = await getDeletedDocuments(user.companyId);
+    ok(res, docs);
+  }),
+);
+
+// ---------------------------------------------------------------------------
+// POST /api/documents/:source/:id/restore — recover a soft-deleted document
+// ---------------------------------------------------------------------------
+
+router.post(
+  '/:source/:id/restore',
+  authenticate,
+  requireRole('admin', 'hr'),
+  asyncHandler(async (req: Request, res: Response) => {
+    const user = req.user!;
+    if (!user.companyId) {
+      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+      return;
+    }
+
+    const id = parseInt(req.params.id, 10);
+    const source = req.params.source as 'documents' | 'employee_documents';
+
+    if (Number.isNaN(id)) {
+      badRequest(res, 'ID documento non valido', 'BAD_REQUEST');
+      return;
+    }
+
+    if (source !== 'documents' && source !== 'employee_documents') {
+      badRequest(res, 'Sorgente documento non valida', 'INVALID_SOURCE');
+      return;
+    }
+
+    const restored = await restoreDocument(id, user.companyId, user.userId, source);
+    if (restored) {
+      ok(res, { id }, 'Documento ripristinato con successo');
+      return;
+    }
+
+    notFound(res, 'Documento non trovato nel cestino o già ripristinato');
   }),
 );
 
@@ -1437,19 +1448,42 @@ router.patch(
 
     const allowedCompanyIds = await resolveAllowedCompanyIds(user);
 
-    const doc = await queryOne<{ id: number; company_id: number; deleted_at: string | null }>(
-      `SELECT id, company_id, deleted_at FROM employee_documents WHERE id = $1`,
-      [id],
+    // Collision-aware lookup for visibility update
+    let docData: { id: number; company_id: number; source: 'employee_documents' | 'documents' } | null = null;
+
+    const empDoc = await queryOne<{ id: number; company_id: number }>(
+      `SELECT id, company_id FROM employee_documents WHERE id = $1 AND company_id = ANY($2) AND deleted_at IS NULL`,
+      [id, allowedCompanyIds],
     );
 
-    if (!doc || !allowedCompanyIds.includes(doc.company_id) || doc.deleted_at !== null) {
+    if (empDoc) {
+      docData = { id: empDoc.id, company_id: empDoc.company_id, source: 'employee_documents' };
+    } else {
+      const genDoc = await queryOne<{ id: number; company_id: number }>(
+        `SELECT id, company_id FROM documents WHERE id = $1 AND company_id = ANY($2)`,
+        [id, allowedCompanyIds],
+      );
+      if (genDoc) {
+        docData = { id: genDoc.id, company_id: genDoc.company_id, source: 'documents' };
+      }
+    }
+
+    if (!docData) {
       notFound(res, 'Documento non trovato', 'NOT_FOUND');
       return;
     }
 
-    const updated = await updateDocumentVisibility(id, doc.company_id, roles);
+    let updated = false;
+    if (docData.source === 'employee_documents') {
+      updated = await updateDocumentVisibility(id, docData.company_id, roles);
+    } else {
+      // Update generic document visibility
+      await query(`UPDATE documents SET is_visible_to_roles = $1 WHERE id = $2`, [roles, id]);
+      updated = true;
+    }
+
     if (!updated) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+      notFound(res, 'Documento non trovato per l\'aggiornamento', 'NOT_FOUND');
       return;
     }
 
@@ -1461,71 +1495,145 @@ router.patch(
 // POST /api/documents/:id/sign — e-signature
 // ---------------------------------------------------------------------------
 
-router.post(
+    router.post(
   '/:id/sign',
   authenticate,
   asyncHandler(async (req: Request, res: Response) => {
-    const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
-      return;
-    }
+    try {
+      const user = req.user!;
+      if (!user.companyId) {
+        forbidden(res, 'Accesso negato: azienda non valida', 'COMPANY_MISMATCH');
+        return;
+      }
 
-    const id = parseInt(req.params.id, 10);
-    if (Number.isNaN(id)) {
-      badRequest(res, 'ID documento non valido', 'BAD_REQUEST');
-      return;
-    }
+      const id = parseInt(req.params.id, 10);
+      if (Number.isNaN(id)) {
+        badRequest(res, 'ID documento non valido', 'BAD_REQUEST');
+        return;
+      }
 
-    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+      const allowedCompanyIds = await resolveAllowedCompanyIds(user);
 
-    const doc = await queryOne<{
-      id: number;
-      company_id: number;
-      employee_id: number;
-      file_name: string;
-      storage_path: string;
-      mime_type: string | null;
-      requires_signature: boolean;
-      signed_at: string | null;
-      deleted_at: string | null;
-    }>(
-      `SELECT id, company_id, employee_id, file_name, storage_path, mime_type,
-              requires_signature, signed_at, deleted_at
-         FROM employee_documents
-        WHERE id = $1 AND company_id = ANY($2)`,
-      [id, allowedCompanyIds],
-    );
+      // Look up across both potential tables - Handle ID Collisions
+      let docData: any = null;
 
-    if (!doc || doc.deleted_at !== null) {
+      // 1. Try employee_documents
+      const empDoc = await queryOne<{
+        id: number;
+        company_id: number;
+        employee_id: number;
+        file_name: string;
+        storage_path: string;
+        mime_type: string | null;
+        requires_signature: boolean;
+        signed_at: string | null;
+        deleted_at: string | null;
+      }>(
+        `SELECT id, company_id, employee_id, file_name, storage_path, mime_type, 
+                requires_signature, signed_at, deleted_at
+           FROM employee_documents 
+          WHERE id = $1 AND company_id = ANY($2)`,
+        [id, allowedCompanyIds],
+      );
+
+      // 2. Try generic documents
+      const genDocRow = await queryOne<{
+        id: number;
+        company_id: number;
+        employee_id: number | null;
+        title: string;
+        file_url: string;
+        requires_signature: boolean;
+        signed_at: string | null;
+      }>(
+        `SELECT id, company_id, employee_id, title, file_url,
+                requires_signature, signed_at
+           FROM documents
+          WHERE id = $1 AND company_id = ANY($2)`,
+        [id, allowedCompanyIds],
+      );
+
+      // Decision Logic: If both exist, pick the most relevant one
+      if (empDoc && genDocRow) {
+        const genDoc = {
+          id: genDocRow.id,
+          company_id: genDocRow.company_id,
+          employee_id: genDocRow.employee_id,
+          file_name: genDocRow.title,
+          storage_path: genDocRow.file_url,
+          mime_type: genDocRow.file_url.toLowerCase().endsWith('.pdf') ? 'application/pdf' : null,
+          requires_signature: genDocRow.requires_signature,
+          signed_at: genDocRow.signed_at,
+          sourceTable: 'documents'
+        };
+
+        // If one is assigned to the current user and the other isn't, pick the assigned one
+        const empIsAssigned = empDoc.employee_id === user.userId;
+        const genIsAssigned = genDoc.employee_id === user.userId;
+
+        if (genIsAssigned && !empIsAssigned) {
+          docData = genDoc;
+        } else if (empIsAssigned && !genIsAssigned) {
+          docData = { ...empDoc, sourceTable: 'employee_documents' };
+        } else {
+          // If both assigned (or neither), prefer the one that is NOT signed yet
+          if (genDoc.signed_at === null && empDoc.signed_at !== null) {
+            docData = genDoc;
+          } else {
+            docData = { ...empDoc, sourceTable: 'employee_documents' };
+          }
+        }
+      } else if (empDoc && empDoc.deleted_at === null) {
+        docData = { ...empDoc, sourceTable: 'employee_documents' };
+      } else if (genDocRow) {
+        docData = {
+          id: genDocRow.id,
+          company_id: genDocRow.company_id,
+          employee_id: genDocRow.employee_id,
+          file_name: genDocRow.title,
+          storage_path: genDocRow.file_url,
+          mime_type: genDocRow.file_url.toLowerCase().endsWith('.pdf') ? 'application/pdf' : null,
+          requires_signature: genDocRow.requires_signature,
+          signed_at: genDocRow.signed_at,
+          sourceTable: 'documents'
+        };
+      }
+
+    if (!docData) {
       notFound(res, 'Documento non trovato', 'NOT_FOUND');
       return;
     }
 
-    if (!doc.requires_signature) {
+    if (!docData.requires_signature) {
       badRequest(res, 'Questo documento non richiede firma', 'SIGNATURE_NOT_REQUIRED');
       return;
     }
 
-    if (doc.signed_at !== null) {
+    if (docData.signed_at !== null) {
       conflict(res, 'Documento già firmato', 'ALREADY_SIGNED');
       return;
     }
 
-    // Authorization: employee signing own doc, or admin/hr signing on behalf
+    // New Expiry Check: Reject if document is expired
+    if (docData.expires_at && new Date(docData.expires_at) < new Date()) {
+      const isIt = (req.headers['x-lang'] || 'it') === 'it';
+      badRequest(
+        res, 
+        isIt ? 'Impossibile firmare: il documento è scaduto' : 'Cannot sign: the document has expired', 
+        'DOCUMENT_EXPIRED'
+      );
+      return;
+    }
+
+    // Role-agnostic Authorization: owner (assigned user) or admin/hr
     const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
-    if (!isAdminOrHr && user.userId !== doc.employee_id) {
+    if (!isAdminOrHr && user.userId !== docData.employee_id) {
       forbidden(res, 'Non sei autorizzato a firmare questo documento');
       return;
     }
 
-    // Fetch signer's full name and role from DB for signature_meta
-    const signerInfo = await queryOne<{
-      name: string;
-      surname: string;
-      role: string;
-      email: string;
-    }>(
+    // Signer info gathering
+    const signerInfo = await queryOne<{ name: string; surname: string; role: string; email: string }>(
       `SELECT name, surname, role, email FROM users WHERE id = $1`,
       [user.userId],
     );
@@ -1535,47 +1643,58 @@ router.post(
     const signerRole = signerInfo?.role ?? user.role;
     const signerEmail = signerInfo?.email ?? user.email ?? '';
 
-    // Resolve caller's IP
+    // IP Normalization
     const forwardedFor = req.headers['x-forwarded-for'];
-    const signedIp = Array.isArray(forwardedFor)
-      ? forwardedFor[0]
-      : typeof forwardedFor === 'string'
-        ? forwardedFor.split(',')[0].trim()
-        : req.ip ?? '0.0.0.0';
+    let signedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : req.ip ?? '0.0.0.0');
+    if (signedIp.startsWith('::ffff:')) signedIp = signedIp.substring(7);
+    else if (signedIp === '::1') signedIp = '127.0.0.1';
 
-    const now = new Date();
+    // Timestamp handling - handle both camelCase and snake_case from frontend
+    const body = req.body as any;
+    const rawSignedAt = body.signedAt || body.signed_at;
+    const rawSignedAtDisplay = body.signedAtDisplay || body.signed_at_display;
+    
+    // Diagnostic log update
+    console.log('[DEBUG_SIGN] Derived values - rawSignedAt:', rawSignedAt, 'rawSignedAtDisplay:', rawSignedAtDisplay);
+    
+    const now = rawSignedAt ? new Date(rawSignedAt) : new Date();
+    const finalDate = isNaN(now.getTime()) ? new Date() : now;
+
     const signatureMeta: Record<string, unknown> = {
       signerName,
       signerSurname,
       signerRole,
       signerEmail,
-      timestamp: now.toISOString(),
+      timestamp: finalDate.toISOString(),
+      signedAtDisplay: rawSignedAtDisplay || null,
       ip: signedIp,
       userAgent: req.headers['user-agent'] ?? '',
     };
 
     let newStoragePath: string | undefined;
 
-    // Append signature page to PDF if applicable
-    if (doc.mime_type === 'application/pdf') {
+    // PDF modification
+    if (docData.mime_type === 'application/pdf' || docData.storage_path.toLowerCase().endsWith('.pdf')) {
       try {
-        const pdfBytes = fs.readFileSync(doc.storage_path);
+        const fullPath = path.resolve(docData.storage_path);
+        if (!fs.existsSync(fullPath)) throw new Error(`File not found at ${fullPath}`);
+        
+        const pdfBytes = fs.readFileSync(fullPath);
         const pdfDoc = await PDFDocument.load(pdfBytes);
         const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
         const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
         const page = pdfDoc.addPage();
-        const { width, height } = page.getSize();
+        const { height } = page.getSize();
         const fontSize = 12;
         const lineHeight = fontSize * 1.8;
         const margin = 60;
 
-        // Language detection
         const lang = (req.headers['accept-language'] || req.headers['x-lang'] || 'it').toString().toLowerCase();
         const isIt = lang.startsWith('it');
-
+        
         const labels = isIt ? {
-          title: 'Dettagli Firma Elettronica',
+          title: 'Dettagli Firma Elettronica (Verify V3)',
           signedBy: 'Firmato da',
           role: 'Ruolo',
           email: 'Email',
@@ -1584,7 +1703,7 @@ router.post(
           browser: 'Browser',
           disclaimer: 'Questo documento è stato firmato elettronicamente con consenso legale.'
         } : {
-          title: 'E-Signature Audit Trail',
+          title: 'E-Signature Audit Trail (Verify V3)',
           signedBy: 'Signed by',
           role: 'Role',
           email: 'Email',
@@ -1594,17 +1713,37 @@ router.post(
           disclaimer: 'This document has been electronically signed with legal consent.'
         };
 
-        const dateStr = now.toLocaleString(isIt ? 'it-IT' : 'en-US', { 
-          timeZone: 'Europe/Rome',
-          dateStyle: 'medium',
-          timeStyle: 'medium'
-        });
+        const roleMap: Record<string, string> = isIt ? {
+          admin: 'Amministratore',
+          hr: 'Risorse Umane',
+          area_manager: 'Area Manager',
+          store_manager: 'Store Manager',
+          employee: 'Dipendente',
+          store_terminal: 'Terminale Negozio'
+        } : {
+          admin: 'Administrator',
+          hr: 'Human Resources',
+          area_manager: 'Area Manager',
+          store_manager: 'Store Manager',
+          employee: 'Employee',
+          store_terminal: 'Store Terminal'
+        };
 
-        const browser = req.headers['user-agent'] || 'Unknown';
+        const displayRole = roleMap[signerRole] || signerRole;
+        
+        // Priority: 
+        // 1. Explicit display string from client
+        // 2. Format the ISO date from client using server locale as backup
+        // 3. Current server time as ultimate fallback
+        const dateStr = rawSignedAtDisplay || finalDate.toLocaleString(isIt ? 'it-IT' : 'en-US', { 
+          dateStyle: 'medium', 
+          timeStyle: 'medium',
+          hour12: false 
+        });
+        
+        console.log('[DEBUG_SIGN] Final dateStr for PDF:', dateStr);
 
         let y = height - margin;
-        
-        // Title
         page.drawText(labels.title, { x: margin, y, size: 16, font: fontBold });
         y -= lineHeight * 1.5;
 
@@ -1615,49 +1754,125 @@ router.post(
         };
 
         drawField(labels.signedBy, `${signerName} ${signerSurname}`);
-        drawField(labels.role, signerRole);
+        drawField(labels.role, displayRole);
         drawField(labels.email, signerEmail);
         drawField(labels.date, dateStr);
         drawField(labels.ip, signedIp);
         
-        // Browser handling (may wrap)
+        const browser = req.headers['user-agent'] || 'Unknown';
         page.drawText(`${labels.browser}:`, { x: margin, y, size: fontSize, font: fontBold });
-        const browserShort = browser.length > 60 ? browser.substring(0, 57) + '...' : browser;
-        page.drawText(browserShort, { x: margin + 100, y, size: fontSize, font });
+        page.drawText(browser.length > 60 ? browser.substring(0, 57) + '...' : browser, { x: margin + 100, y, size: fontSize, font });
         y -= lineHeight * 2;
 
-        // Disclaimer
-        page.drawText(labels.disclaimer, {
-          x: margin,
-          y,
-          size: 10,
-          font,
-          color: rgb(0.4, 0.4, 0.4),
-        });
+        page.drawText(labels.disclaimer, { x: margin, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
 
         const modifiedPdfBytes = await pdfDoc.save();
-        fs.writeFileSync(doc.storage_path, modifiedPdfBytes);
-        newStoragePath = doc.storage_path;
+        
+        // Generate a new unique filename for the signed version
+        const dir = path.dirname(fullPath);
+        const ext = path.extname(fullPath);
+        const baseName = path.basename(fullPath, ext);
+        const newFileName = `signed_${user.userId}_${Date.now()}_${baseName}${ext}`;
+        const newFullPath = path.join(dir, newFileName);
+        
+        fs.writeFileSync(newFullPath, modifiedPdfBytes);
+        
+        // The path we store in the database (relative or absolute as per convention)
+        // Here we use the same directory structure but the new file name
+        newStoragePath = path.join(path.dirname(docData.storage_path), newFileName);
       } catch (pdfErr: any) {
         signatureMeta['pdfSignatureError'] = pdfErr?.message ?? 'Errore PDF';
       }
     }
 
-    const updated = await signDocument(id, {
-      signedByUserId: user.userId,
-      signedIp,
-      signatureMeta,
-      newStoragePath,
-    });
+    // Update the correct table
+    let updated: any = null;
+    if (docData.sourceTable === 'employee_documents') {
+      updated = await signDocument(id, {
+        signedByUserId: user.userId,
+        signedIp,
+        signatureMeta,
+        newStoragePath, // Use the new signed file path
+        signedAt: finalDate.toISOString(),
+      });
+
+      // SYNC: Update corresponding record in 'documents' table if exists
+      if (updated) {
+        await query(
+          `UPDATE documents 
+              SET signed_at = $1, 
+                  signed_by_user_id = $2, 
+                  signed_ip = $3::inet, 
+                  signature_meta = $4,
+                  file_url = $5
+            WHERE (file_url = $6 OR file_url = $7) AND (employee_id = $8 OR employee_id IS NULL)`,
+          [
+            finalDate.toISOString(), 
+            user.userId, 
+            signedIp, 
+            signatureMeta, 
+            newStoragePath || docData.storage_path, 
+            docData.storage_path, 
+            newStoragePath || docData.storage_path,
+            docData.employee_id
+          ]
+        );
+      }
+    } else {
+      updated = await signGenericDocument(id, {
+        signedByUserId: user.userId,
+        signedIp,
+        signatureMeta,
+        newStoragePath,
+        signedAt: finalDate.toISOString(),
+      });
+
+      // SYNC: Update corresponding record in 'employee_documents' table if exists
+      if (updated) {
+        await query(
+          `UPDATE employee_documents 
+              SET signed_at = $1, 
+                  signed_by_user_id = $2, 
+                  signed_ip = $3::inet, 
+                  signature_meta = $4,
+                  storage_path = $5
+            WHERE storage_path = $6 AND employee_id = $7`,
+          [
+            finalDate.toISOString(), 
+            user.userId, 
+            signedIp, 
+            signatureMeta, 
+            newStoragePath || docData.storage_path, 
+            docData.storage_path, 
+            docData.employee_id
+          ]
+        );
+      }
+    }
 
     if (!updated) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
+      notFound(res, 'Documento non trovato per l\'aggiornamento', 'NOT_FOUND');
       return;
     }
 
-    // Never expose internal storage path
-    const { storagePath: _sp, ...safeDoc } = updated;
-    ok(res, safeDoc, 'Documento firmato con successo');
+    // Success response
+    const { storage_path: _sp1, storagePath: _sp2, fileUrl: _sp3, file_url: _sp4, ...safeDoc } = updated;
+    ok(res, {
+      ...safeDoc,
+      signedAt: finalDate.toISOString(),
+      signedByUserId: user.userId,
+      signedIp,
+      signatureMeta
+    }, 'Documento firmato con successo');
+    } catch (error: any) {
+      console.error('SIGN_ERROR_DETAILS:', error);
+      res.status(500).json({ 
+        success: false, 
+        error: 'Errore durante la firma del documento', 
+        details: error.message,
+        code: 'SIGN_ERROR' 
+      });
+    }
   }),
 );
 

@@ -181,6 +181,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     department,
     status: statusFilter,
     role: roleFilter,
+    exclude_admins,
     target_company_id,
     page = '1',
     limit = '20',
@@ -250,6 +251,10 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
 
   // Globally exclude store_terminal from the Employee module list
   where += " AND u.role <> 'store_terminal'";
+
+  if (exclude_admins === 'true' || exclude_admins === '1') {
+    where += " AND u.role <> 'admin'";
+  }
 
   let extraWhere = '';
   const extraParams: any[] = [];

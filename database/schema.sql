@@ -712,13 +712,26 @@ CREATE INDEX IF NOT EXISTS idx_employee_onboarding_employee
 -- 19. generic documents (Step 1)
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS documents (
-  id          SERIAL PRIMARY KEY,
-  title       TEXT NOT NULL,
-  file_url    TEXT NOT NULL,
-  category    TEXT,
-  employee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-  uploaded_by INTEGER NOT NULL REFERENCES users(id),
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+  id                  SERIAL PRIMARY KEY,
+  company_id          INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  title               TEXT NOT NULL,
+  file_url            TEXT NOT NULL,
+  category            TEXT,
+  employee_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_by         INTEGER NOT NULL REFERENCES users(id),
+  requires_signature  BOOLEAN DEFAULT false,
+  signed_at           TIMESTAMPTZ,
+  signed_by_user_id   INTEGER REFERENCES users(id),
+  signed_ip           INET,
+  signature_meta      JSONB,
+  expires_at          TIMESTAMPTZ,
+  is_visible_to_roles TEXT[],
+  is_deleted          BOOLEAN DEFAULT false,
+  deleted_at          TIMESTAMPTZ,
+  restored_at         TIMESTAMPTZ,
+  restored_by         INTEGER REFERENCES users(id),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_documents_uploaded_by ON documents (uploaded_by);
