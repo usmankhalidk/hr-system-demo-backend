@@ -337,7 +337,9 @@ app.use('/api/messages', messagesRoutes);
 // Phase 3 APIs
 app.use('/api/documents', documentsRoutes);
 app.use('/api/notifications', notificationsRoutes);
+app.use('/api/public', publicCareersRoutes);
 app.use('/api/ats', atsRoutes);
+app.use('/api/email', emailRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/window-display', windowDisplayRoutes);
 
