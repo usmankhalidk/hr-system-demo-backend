@@ -17,6 +17,25 @@ type PublicJobRow = {
   title: string;
   description: string | null;
   tags: string[] | null;
+  language: string | null;
+  job_type: string | null;
+  department: string | null;
+  weekly_hours: number | null;
+  contract_type: string | null;
+  salary_min: number | null;
+  salary_max: number | null;
+  salary_period: string | null;
+  experience: string | null;
+  education: string | null;
+  category: string | null;
+  expiration_date: string | null;
+  is_remote: boolean | null;
+  remote_type: string | null;
+  job_city: string | null;
+  job_state: string | null;
+  job_country: string | null;
+  job_postal_code: string | null;
+  job_address: string | null;
   created_at: string;
   published_at: string | null;
   company_group_name: string | null;
@@ -168,6 +187,10 @@ function resumeUploadMiddleware(req: Request, res: Response, next: NextFunction)
 }
 
 function mapPublicJob(row: PublicJobRow): Record<string, unknown> {
+  const language = row.language ?? 'it';
+  const jobType = row.job_type ?? 'fulltime';
+  const remoteType = row.remote_type ?? ((row.is_remote ?? false) ? 'remote' : 'onsite');
+
   const postedBy = row.posted_by_id
     ? {
       id: row.posted_by_id,
@@ -191,20 +214,25 @@ function mapPublicJob(row: PublicJobRow): Record<string, unknown> {
     title: row.title,
     description: row.description,
     tags: row.tags ?? [],
-    language: 'it',
-    job_type: 'fulltime',
-    department: null,
-    weekly_hours: null,
-    contract_type: null,
-    salary_min: null,
-    salary_max: null,
-    is_remote: false,
-    remote_type: 'onsite',
-    job_city: null,
-    job_state: null,
-    job_country: null,
-    job_postal_code: row.location_postal_code,
-    job_address: row.location_address,
+    language,
+    job_type: jobType,
+    department: row.department,
+    weekly_hours: row.weekly_hours,
+    contract_type: row.contract_type,
+    salary_min: row.salary_min,
+    salary_max: row.salary_max,
+    salary_period: row.salary_period,
+    experience: row.experience,
+    education: row.education,
+    category: row.category,
+    expiration_date: row.expiration_date,
+    is_remote: row.is_remote ?? (remoteType === 'remote'),
+    remote_type: remoteType,
+    job_city: row.job_city ?? row.location_city,
+    job_state: row.job_state ?? row.location_state,
+    job_country: row.job_country ?? row.location_country,
+    job_postal_code: row.job_postal_code ?? row.location_postal_code,
+    job_address: row.job_address ?? row.location_address,
     published_at: row.published_at,
     created_at: row.created_at,
     company_group_name: row.company_group_name,
@@ -341,6 +369,25 @@ async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
             j.title,
             j.description,
             j.tags,
+            j.language,
+            j.job_type,
+            j.department,
+            j.weekly_hours,
+            j.contract_type,
+            j.salary_min,
+            j.salary_max,
+            j.salary_period,
+            j.experience,
+            j.education,
+            j.category,
+            j.expiration_date,
+            j.is_remote,
+            j.remote_type,
+            j.job_city,
+            j.job_state,
+            j.job_country,
+            j.job_postal_code,
+            j.job_address,
             j.created_at,
             j.published_at,
             cg.name AS company_group_name,
@@ -364,11 +411,11 @@ async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
               FROM candidates ca
               WHERE ca.job_posting_id = j.id
             ) AS applicants_count,
-            COALESCE(s.address, c.address) AS location_address,
-            s.cap AS location_postal_code,
-            c.city AS location_city,
-            c.state AS location_state,
-            c.country AS location_country,
+            COALESCE(j.job_address, s.address, c.address) AS location_address,
+            COALESCE(j.job_postal_code, s.cap) AS location_postal_code,
+            COALESCE(j.job_city, s.city, c.city) AS location_city,
+            COALESCE(j.job_state, s.state, c.state) AS location_state,
+            COALESCE(j.job_country, s.country, c.country) AS location_country,
             creator.id AS posted_by_id,
             creator.name AS posted_by_name,
             creator.surname AS posted_by_surname,
@@ -409,6 +456,25 @@ async function getPublicJobById(jobId: number, companySlug?: string): Promise<Pu
             j.title,
             j.description,
             j.tags,
+            j.language,
+            j.job_type,
+            j.department,
+            j.weekly_hours,
+            j.contract_type,
+            j.salary_min,
+            j.salary_max,
+            j.salary_period,
+            j.experience,
+            j.education,
+            j.category,
+            j.expiration_date,
+            j.is_remote,
+            j.remote_type,
+            j.job_city,
+            j.job_state,
+            j.job_country,
+            j.job_postal_code,
+            j.job_address,
             j.created_at,
             j.published_at,
             cg.name AS company_group_name,
@@ -432,11 +498,11 @@ async function getPublicJobById(jobId: number, companySlug?: string): Promise<Pu
               FROM candidates ca
               WHERE ca.job_posting_id = j.id
             ) AS applicants_count,
-            COALESCE(s.address, c.address) AS location_address,
-            s.cap AS location_postal_code,
-            c.city AS location_city,
-            c.state AS location_state,
-            c.country AS location_country,
+            COALESCE(j.job_address, s.address, c.address) AS location_address,
+            COALESCE(j.job_postal_code, s.cap) AS location_postal_code,
+            COALESCE(j.job_city, s.city, c.city) AS location_city,
+            COALESCE(j.job_state, s.state, c.state) AS location_state,
+            COALESCE(j.job_country, s.country, c.country) AS location_country,
             creator.id AS posted_by_id,
             creator.name AS posted_by_name,
             creator.surname AS posted_by_surname,
@@ -619,12 +685,19 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
        full_name,
        email,
        phone,
+       cv_path,
        resume_path,
+       linkedin_url,
+       cover_letter,
        tags,
        source,
-       source_ref
+       source_ref,
+       gdpr_consent,
+       applicant_locale,
+       consent_accepted_at,
+       applied_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8::text[], $9, $10)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[], $12, $13, $14, $15, NOW(), NOW())
      RETURNING id`,
     [
       job.company_id,
@@ -634,9 +707,14 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
       email,
       phone,
       resumeRelativePath,
+      resumeRelativePath,
+      linkedinUrl,
+      coverLetter,
       ['public-careers', `locale:${applicantLocale}`],
       'internal',
       sourceRef,
+      gdprConsent,
+      applicantLocale,
     ],
   );
 

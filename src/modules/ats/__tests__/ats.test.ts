@@ -41,6 +41,25 @@ beforeAll(async () => {
       source TEXT NOT NULL DEFAULT 'internal',
       indeed_post_id TEXT,
       created_by_id INTEGER,
+      language TEXT NOT NULL DEFAULT 'it',
+      job_type TEXT NOT NULL DEFAULT 'fulltime',
+      is_remote BOOLEAN NOT NULL DEFAULT FALSE,
+      remote_type TEXT NOT NULL DEFAULT 'onsite',
+      job_city TEXT,
+      job_state TEXT,
+      job_country TEXT,
+      job_postal_code TEXT,
+      job_address TEXT,
+      department TEXT,
+      weekly_hours NUMERIC(5,2),
+      contract_type TEXT,
+      salary_min NUMERIC(12,2),
+      salary_max NUMERIC(12,2),
+      salary_period TEXT,
+      experience TEXT,
+      education TEXT,
+      category TEXT,
+      expiration_date DATE,
       published_at TIMESTAMPTZ,
       closed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -54,11 +73,18 @@ beforeAll(async () => {
       full_name TEXT NOT NULL,
       email TEXT,
       phone TEXT,
+      cv_path TEXT,
       resume_path TEXT,
+      linkedin_url TEXT,
+      cover_letter TEXT,
       tags TEXT[] DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'received',
       source TEXT NOT NULL DEFAULT 'internal',
       source_ref TEXT,
+      gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
+      applicant_locale VARCHAR(10),
+      consent_accepted_at TIMESTAMPTZ,
+      applied_at TIMESTAMPTZ,
       unread BOOLEAN NOT NULL DEFAULT TRUE,
       last_stage_change TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -84,6 +110,46 @@ beforeAll(async () => {
       no_interviews BOOLEAN NOT NULL DEFAULT FALSE,
       no_hires BOOLEAN NOT NULL DEFAULT FALSE
     );
+
+    ALTER TABLE job_postings
+      ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'it',
+      ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'fulltime',
+      ADD COLUMN IF NOT EXISTS is_remote BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS remote_type TEXT NOT NULL DEFAULT 'onsite',
+      ADD COLUMN IF NOT EXISTS job_city TEXT,
+      ADD COLUMN IF NOT EXISTS job_state TEXT,
+      ADD COLUMN IF NOT EXISTS job_country TEXT,
+      ADD COLUMN IF NOT EXISTS job_postal_code TEXT,
+      ADD COLUMN IF NOT EXISTS job_address TEXT,
+      ADD COLUMN IF NOT EXISTS department TEXT,
+      ADD COLUMN IF NOT EXISTS weekly_hours NUMERIC(5,2),
+      ADD COLUMN IF NOT EXISTS contract_type TEXT,
+      ADD COLUMN IF NOT EXISTS salary_min NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS salary_max NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS salary_period TEXT,
+      ADD COLUMN IF NOT EXISTS experience TEXT,
+      ADD COLUMN IF NOT EXISTS education TEXT,
+      ADD COLUMN IF NOT EXISTS category TEXT,
+      ADD COLUMN IF NOT EXISTS expiration_date DATE;
+
+    ALTER TABLE candidates
+      ADD COLUMN IF NOT EXISTS cv_path TEXT,
+      ADD COLUMN IF NOT EXISTS linkedin_url TEXT,
+      ADD COLUMN IF NOT EXISTS cover_letter TEXT,
+      ADD COLUMN IF NOT EXISTS gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS applicant_locale VARCHAR(10),
+      ADD COLUMN IF NOT EXISTS consent_accepted_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ;
+
+    UPDATE candidates
+    SET gdpr_consent = FALSE
+    WHERE gdpr_consent IS NULL;
+
+    ALTER TABLE candidates
+      ALTER COLUMN gdpr_consent SET DEFAULT FALSE;
+
+    ALTER TABLE candidates
+      ALTER COLUMN gdpr_consent SET NOT NULL;
   `);
 
   adminToken = await login('admin@acme-test.com');
