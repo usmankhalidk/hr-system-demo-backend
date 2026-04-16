@@ -190,6 +190,7 @@ async function performAutoAssign(
     expiresAt?: string | null;
     visibleToRoles?: string[];
     uploadedBy?: number;
+    employeeId?: number | null;
   },
 ): Promise<void> {
   // Fetch active employees for this company, including unique_id
@@ -239,13 +240,16 @@ async function performAutoAssign(
     }
   }
 
-  let matchedEmpId: number | null = null;
-  if (matchesLevel1.length === 1) {
-    matchedEmpId = matchesLevel1[0];
-  } else if (matchesLevel1.length === 0 && matchesLevel2.length === 1) {
-    matchedEmpId = matchesLevel2[0];
-  } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
-    matchedEmpId = matchesLevel3[0];
+  let matchedEmpId: number | null = options?.employeeId !== undefined ? options.employeeId : null;
+  
+  if (matchedEmpId === null) {
+    if (matchesLevel1.length === 1) {
+      matchedEmpId = matchesLevel1[0];
+    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 1) {
+      matchedEmpId = matchesLevel2[0];
+    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
+      matchedEmpId = matchesLevel3[0];
+    }
   }
 
 
@@ -559,7 +563,7 @@ router.post(
     const isZip = originalname.toLowerCase().endsWith('.zip') ||
                   ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
 
-    const { requires_signature, expires_at, visible_to_roles } = req.body;
+    const { requires_signature, expires_at, visible_to_roles, employee_id } = req.body;
 
     // Requirement: Admin or HR must set Expiration Date
     if (['admin', 'hr'].includes(req.user!.role) && (!expires_at || String(expires_at).trim() === '')) {
@@ -584,6 +588,7 @@ router.post(
       expiresAt: expires_at || null,
       visibleToRoles: visibleToRolesArr,
       uploadedBy: req.user!.userId,
+      employeeId: employee_id ? parseInt(String(employee_id), 10) : undefined
     };
 
     if (isZip) {
@@ -1192,8 +1197,10 @@ router.get(
       return;
     }
 
-    // Scoped check for managers
-    if (!isAdminOrHr) {
+    const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
+
+    // Scoped check for managers: skip if caller has cross-company access (Area Managers for a group)
+    if (!isAdminOrHr && !hasCrossCompanyAccess) {
       if (isAreaManager) {
         const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2`, [employeeId, user.userId]);
         if (!supervised) {
@@ -1370,8 +1377,10 @@ router.get(
       return;
     }
 
-    const docs = await getDeletedDocuments(user.companyId);
+    const employeeId = req.query.employee_id ? parseInt(req.query.employee_id as string, 10) : undefined;
+    const docs = await getDeletedDocuments(user.companyId, employeeId);
     ok(res, docs);
+
   }),
 );
 

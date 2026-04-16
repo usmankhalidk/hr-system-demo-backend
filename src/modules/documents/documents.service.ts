@@ -330,6 +330,7 @@ function mapDocumentRecord(row: {
     restoredBy: row.restored_by || null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    employeeName: row.employee_name,
     sourceTable: 'employee_documents',
   };
 }
@@ -338,6 +339,7 @@ const DOC_SELECT = `
   SELECT d.id,
          d.company_id,
          d.employee_id,
+         CONCAT(e.name, ' ', e.surname) AS employee_name,
          d.category_id,
          c.name AS category_name,
          d.file_name,
@@ -360,6 +362,7 @@ const DOC_SELECT = `
          d.updated_at
     FROM employee_documents d
     LEFT JOIN document_categories c ON c.id = d.category_id
+    LEFT JOIN users e ON e.id = d.employee_id
 `;
 
 /**
@@ -478,6 +481,10 @@ export async function getGenericDocumentById(
     signed_by_user_id: number | null;
     signed_ip: string | null;
     signature_meta: Record<string, unknown> | null;
+    is_deleted?: boolean;
+    deleted_at?: string | null;
+    restored_at?: string | null;
+    restored_by?: number | null;
   }>(
     `SELECT d.*, u_up.company_id as u_up_company_id, e.company_id as e_company_id
        FROM documents d
@@ -589,6 +596,7 @@ export async function getEmployeeDocuments(
     signature_meta: Record<string, unknown> | null;
     expires_at: string | null;
     is_visible_to_roles: string[];
+    employee_name: string | null;
     deleted_at: string | null;
     created_at: string;
     updated_at: string;
@@ -694,26 +702,40 @@ export async function restoreDocument(id: number, companyId: number, restoredBy:
 }
 
 
-export async function getDeletedDocuments(companyId: number): Promise<DocumentRecord[]> {
+export async function getDeletedDocuments(companyId: number, employeeId?: number): Promise<DocumentRecord[]> {
   // 1. Fetch from employee_documents
+  let empWhere = 'd.company_id = $1 AND d.is_deleted = true';
+  const empParams: any[] = [companyId];
+  if (employeeId) {
+    empWhere += ' AND d.employee_id = $2';
+    empParams.push(employeeId);
+  }
+
   const empRows = await query<any>(
     `${DOC_SELECT}
-     WHERE d.company_id = $1 AND d.is_deleted = true
+     WHERE ${empWhere}
      ORDER BY d.deleted_at DESC`,
-    [companyId]
+    empParams
   );
   const empDocs = empRows.map(mapDocumentRecord);
 
   // 2. Fetch from documents (generic)
+  let genWhere = 'd.company_id = $1 AND d.is_deleted = true';
+  const genParams: any[] = [companyId];
+  if (employeeId) {
+    genWhere += ' AND d.employee_id = $2';
+    genParams.push(employeeId);
+  }
+
   const genRows = await query<any>(
     `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
-      WHERE d.company_id = $1
-        AND d.is_deleted = true
+      WHERE ${genWhere}
       ORDER BY d.deleted_at DESC`,
-    [companyId]
+    genParams
   );
+
   
   const genDocs: DocumentRecord[] = genRows.map((r: any) => ({
     id: r.id,
@@ -908,6 +930,10 @@ export async function createGenericDocument(data: {
     requires_signature: boolean;
     expires_at: string | null;
     is_visible_to_roles: string[];
+    is_deleted: boolean;
+    deleted_at: string | null;
+    restored_at: string | null;
+    restored_by: number | null;
     created_at: string;
   }>(
     `INSERT INTO documents (company_id, title, file_url, category, employee_id, uploaded_by, requires_signature, expires_at, is_visible_to_roles)
@@ -936,11 +962,11 @@ export async function createGenericDocument(data: {
     requiresSignature: row!.requires_signature,
     expiresAt: row!.expires_at,
     isVisibleToRoles: row!.is_visible_to_roles,
-    isDeleted: row!.is_deleted || false,
-    deletedAt: row!.deleted_at || null,
-    restoredAt: row!.restored_at || null,
-    restoredBy: row!.restored_by || null,
     createdAt: row!.created_at,
+    isDeleted: false,
+    deletedAt: null,
+    restoredAt: null,
+    restoredBy: null,
   };
 }
 
@@ -1028,6 +1054,10 @@ export async function getGenericDocuments(options: {
     signed_by_user_id: number | null;
     signed_ip: string | null;
     signature_meta: Record<string, unknown> | null;
+    is_deleted: boolean;
+    deleted_at: string | null;
+    restored_at: string | null;
+    restored_by: number | null;
   }>(
     `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name,
             COALESCE(d.signed_at, (SELECT max(ed.signed_at) FROM employee_documents ed WHERE ed.storage_path = d.file_url AND ed.employee_id = d.employee_id AND ed.is_deleted = false)) as signed_at_combined
@@ -1055,6 +1085,10 @@ export async function getGenericDocuments(options: {
     isVisibleToRoles: r.is_visible_to_roles,
     createdAt: r.created_at,
     employeeName: r.employee_name || undefined,
+    isDeleted: r.is_deleted,
+    deletedAt: r.deleted_at,
+    restoredAt: r.restored_at,
+    restoredBy: r.restored_by,
   }));
 }
 
@@ -1095,6 +1129,10 @@ export async function signGenericDocument(
     signature_meta: Record<string, unknown> | null;
     expires_at: string | null;
     is_visible_to_roles: string[];
+    is_deleted: boolean;
+    deleted_at: string | null;
+    restored_at: string | null;
+    restored_by: number | null;
     created_at: string;
   }>(
     `UPDATE documents
@@ -1120,6 +1158,10 @@ export async function signGenericDocument(
     expiresAt: row.expires_at,
     isVisibleToRoles: row.is_visible_to_roles,
     createdAt: row.created_at,
+    isDeleted: row.is_deleted || false,
+    deletedAt: row.deleted_at || null,
+    restoredAt: row.restored_at || null,
+    restoredBy: row.restored_by || null,
   };
 }
 
