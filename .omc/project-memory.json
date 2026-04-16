@@ -279,6 +279,12 @@
       "type": "file"
     },
     {
+      "path": "src/modules/attendance/attendance.controller.ts",
+      "accessCount": 10,
+      "lastAccessed": 1776316745027,
+      "type": "file"
+    },
+    {
       "path": "src/modules/shifts/__tests__/shifts.test.ts",
       "accessCount": 9,
       "lastAccessed": 1775820252145,
@@ -292,8 +298,8 @@
     },
     {
       "path": "",
-      "accessCount": 7,
-      "lastAccessed": 1776258806080,
+      "accessCount": 8,
+      "lastAccessed": 1776316490287,
       "type": "directory"
     },
     {
@@ -312,6 +318,12 @@
       "path": "src/modules/employees/employees.controller.ts",
       "accessCount": 4,
       "lastAccessed": 1776130436691,
+      "type": "directory"
+    },
+    {
+      "path": "src",
+      "accessCount": 4,
+      "lastAccessed": 1776316484160,
       "type": "directory"
     },
     {
@@ -339,9 +351,9 @@
       "type": "directory"
     },
     {
-      "path": "src",
+      "path": "src/modules/attendance",
       "accessCount": 2,
-      "lastAccessed": 1776258806395,
+      "lastAccessed": 1776316494264,
       "type": "directory"
     },
     {
@@ -451,6 +463,18 @@
       "accessCount": 1,
       "lastAccessed": 1776258811154,
       "type": "directory"
+    },
+    {
+      "path": "database/migrations/004_phase2_attendance.sql",
+      "accessCount": 1,
+      "lastAccessed": 1776316493574,
+      "type": "file"
+    },
+    {
+      "path": "database/schema.sql",
+      "accessCount": 1,
+      "lastAccessed": 1776316493710,
+      "type": "file"
     }
   ],
   "userDirectives": []

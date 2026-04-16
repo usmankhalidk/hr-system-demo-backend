@@ -579,18 +579,11 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }>;
   };
 
-  const fs = require('fs');
-
   if (companyId == null) {
     return badRequest(res, 'Company ID non trovato nel token sessione', 'SESSION_ERROR');
   }
 
   try {
-    console.log(`[AttendanceSync] Received sync request with ${events.length} events from user ${callerId} (Company: ${companyId})`);
-    if (events.length > 0) {
-      console.log('[AttendanceSync] PAYLOAD PREVIEW:');
-      console.table(events.slice(0, 5).map(e => ({ type: e.event_type, time: e.event_time, uuid: e.client_uuid?.slice(0,8) })));
-    }
 
   const VALID_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
   let synced = 0;
@@ -612,7 +605,6 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       uniqueIdMap.set(row.unique_id.toLowerCase(), row.id);
     }
   }
-  console.log(`[AttendanceSync] Processing batch of ${events.length}. UserMap Size: ${uniqueIdMap.size}`);
   const numericUserIds = [...new Set(events.filter((e) => !e.unique_id && e.user_id != null).map((e) => e.user_id as number))];
   const validUserRows = await query<{ id: number }>(
     numericUserIds.length > 0
@@ -654,8 +646,6 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       failed++;
       continue;
     }
-    console.log(`[Sync] Row ${rowNum} START: type=${ev.event_type}, user=${resolvedUserId}, time=${ev.event_time}`);
-
     if (!VALID_TYPES.has(ev.event_type)) {
       errors.push(`Evento ${rowNum}: tipo non valido '${ev.event_type}'`);
       failed++;
@@ -733,17 +723,18 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       await queryOne(
         `INSERT INTO attendance_events
            (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id, client_uuid, device_fingerprint, source_ip)
-         VALUES ($1::int, $2::int, $3::int, $4, $5, 'sync', $6::int, $7, $8::int, $9, $10, $11)
+         VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7::int, $8, $9::int, $10, $11, $12)
          ON CONFLICT (client_uuid) DO NOTHING`,
         [
-          companyId, 
-          storeId, 
-          resolvedUserId, 
-          ev.event_type, 
+          companyId,
+          storeId,
+          resolvedUserId,
+          ev.event_type,
           ts.toISOString(),
-          linkedShift?.id ?? null, 
-          ev.notes ?? null, 
-          qrTokenId, 
+          qrTokenId != null ? 'qr' : 'sync',
+          linkedShift?.id ?? null,
+          ev.notes ?? null,
+          qrTokenId,
           ev.client_uuid && /^[0-9a-fA-F-]{36}$/.test(ev.client_uuid) ? ev.client_uuid : null,
           ev.device_fingerprint ?? null,
           req.ip
@@ -751,24 +742,14 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       );
       synced++;
       if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
-      
-      try {
-        const logMsg = `[${new Date().toISOString()}] Sync Row ${i+1} SUCCESS: user=${resolvedUserId}, store=${storeId}\n`;
-        require('fs').appendFileSync('sync_debug.log', logMsg);
-      } catch {}
     } catch (err: any) {
-      try {
-        const logErr = `[${new Date().toISOString()}] Sync Row ${i+1} DATABASE ERROR: ${err.message}\n`;
-        require('fs').appendFileSync('sync_debug.log', logErr);
-      } catch {}
-
       // FALLBACK: Try without client_uuid if the DB still has issues with it
       try {
         await queryOne(
           `INSERT INTO attendance_events
              (company_id, store_id, user_id, event_type, event_time, source, notes)
-           VALUES ($1::int, $2::int, $3::int, $4, $5, 'sync', $6)`,
-          [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(), `[RESTORED SYNC] ${ev.notes || ''}`]
+           VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7)`,
+          [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(), qrTokenId != null ? 'qr' : 'sync', `[RESTORED SYNC] ${ev.notes || ''}`]
         );
         synced++;
         if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
@@ -779,8 +760,6 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-    const summary = `[${new Date().toISOString()}] Finished batch: ${synced} synced, ${failed} failed.\n`;
-    try { fs.appendFileSync('sync_debug.log', summary); } catch (e) {}
     return ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length, syncedUuids });
   } catch (err: any) {
     console.error('[AttendanceSync] CRITICAL 500 ERROR:', err);
@@ -912,9 +891,9 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     evIdx++;
   }
   const events = await query<{
-    user_id: number; event_type: string; event_time: string;
+    user_id: number; event_type: string; event_time: string; source: string;
   }>(
-    `SELECT ae.user_id, ae.event_type, ae.event_time
+    `SELECT ae.user_id, ae.event_type, ae.event_time, ae.source
      FROM attendance_events ae
      WHERE ae.company_id = ANY($1)
        AND ae.event_time::DATE BETWEEN $2 AND $3
@@ -925,7 +904,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   );
 
   // Group events by (user_id, date)
-  type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date };
+  type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date; checkin_source?: string };
   const eventMap = new Map<string, EventGroup>();
   for (const e of events) {
     const date = new Date(e.event_time).toISOString().split('T')[0];
@@ -933,7 +912,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     if (!eventMap.has(key)) eventMap.set(key, {});
     const group = eventMap.get(key)!;
     const t = new Date(e.event_time);
-    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     group.checkin     = t;
+    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     { group.checkin = t; group.checkin_source = e.source; }
     if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
     if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
     if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
@@ -952,6 +931,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     details: string;
     details_key: string;
     details_params: Record<string, string | number>;
+    checkin_source: string | null;
   }> = [];
 
   for (const shift of shifts) {
@@ -970,6 +950,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
         details_key: 'attendance.detail_no_show',
         details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
+        checkin_source: null,
       });
       continue;
     }
@@ -989,6 +970,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
         details_key: 'attendance.detail_late_arrival',
         details_params: { minutes: lateMin, entry: checkin.toTimeString().slice(0, 5), shift: shift.start_time.slice(0, 5) },
+        checkin_source: evGroup.checkin_source ?? null,
       });
     }
 
@@ -1006,6 +988,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
           details_key: 'attendance.detail_early_exit',
           details_params: { minutes: earlyMin, exit: checkout.toTimeString().slice(0, 5), shift: shift.end_time.slice(0, 5) },
+          checkin_source: evGroup.checkin_source ?? null,
         });
       }
     }
@@ -1024,6 +1007,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           details: `Pausa di ${breakMin} min (limite: 60 min)`,
           details_key: 'attendance.detail_long_break',
           details_params: { minutes: breakMin },
+          checkin_source: evGroup.checkin_source ?? null,
         });
       }
     }
