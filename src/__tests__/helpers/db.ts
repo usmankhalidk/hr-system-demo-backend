@@ -28,6 +28,7 @@ export async function clearTestData(): Promise<void> {
              qr_tokens, attendance_events,
              leave_approvals, leave_balances, leave_requests,
              store_affluence, shift_templates, shifts, temporary_store_assignments,
+             window_display_activities,
              attendance, users, stores, companies,
              group_role_visibility, company_groups
     RESTART IDENTITY CASCADE
@@ -86,6 +87,19 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
 
     ALTER TABLE shifts
       ADD COLUMN IF NOT EXISTS assignment_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL;
+
+    CREATE TABLE IF NOT EXISTS window_display_activities (
+      id          SERIAL PRIMARY KEY,
+      company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+      store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+      date        DATE NOT NULL,
+      year_month  VARCHAR(7) NOT NULL,
+      flagged_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      updated_at  TIMESTAMPTZ DEFAULT NOW(),
+      CONSTRAINT unique_store_month UNIQUE (store_id, year_month),
+      CONSTRAINT chk_year_month_matches_date CHECK (year_month = TO_CHAR(date, 'YYYY-MM'))
+    );
   `);
 
   // Ensure companies.is_active exists (used to block operations on deactivated companies).
