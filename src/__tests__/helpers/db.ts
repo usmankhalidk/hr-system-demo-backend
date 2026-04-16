@@ -165,21 +165,24 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT true;
   `);
 
-  // Shift off-day marker (migration 039 — may not exist in older CI DB setups).
+  // off_days column (migration 034 — may not exist in older CI DB setups).
   await testPool.query(`
-    ALTER TABLE shifts
-      ADD COLUMN IF NOT EXISTS is_off_day BOOLEAN NOT NULL DEFAULT false;
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS off_days SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[];
 
-    ALTER TABLE shifts
-      DROP CONSTRAINT IF EXISTS shifts_off_day_status_chk;
+    ALTER TABLE users
+      DROP CONSTRAINT IF EXISTS users_off_days_valid_chk;
 
-    ALTER TABLE shifts
-      ADD CONSTRAINT shifts_off_day_status_chk
-        CHECK (NOT is_off_day OR status = 'cancelled');
+    ALTER TABLE users
+      ADD CONSTRAINT users_off_days_valid_chk
+        CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]);
 
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_off_day_unique
-      ON shifts(company_id, user_id, store_id, date)
-      WHERE is_off_day = true;
+    ALTER TABLE users
+      DROP CONSTRAINT IF EXISTS users_off_days_not_empty_chk;
+
+    ALTER TABLE users
+      ADD CONSTRAINT users_off_days_not_empty_chk
+        CHECK (cardinality(off_days) >= 1);
   `);
 
   // Device binding columns (may not exist in older CI DB setups).

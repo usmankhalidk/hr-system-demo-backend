@@ -85,8 +85,8 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
     it: 'Firma documento richiesta',
   },
   'notifications.document_signature_required.message': {
-    en: 'The document "{{fileName}}" requires your signature. Log in to the portal to proceed.',
-    it: 'Il documento "{{fileName}}" richiede la tua firma. Accedi al portale per procedere.',
+    en: 'You need to sign your document. Please sign your document first.',
+    it: 'Devi firmare il tuo documento. Per favore, firma prima il tuo documento.',
   },
 
   // ── manager.alert (pending leave) ──────────────────────────────────────────

@@ -23,8 +23,6 @@ export interface JwtPayload {
 export interface QrPayload {
   companyId: number;
   shiftId: number;
-  storeId?: number;
-  nonce?: string;
   iat: number;
   exp: number;
 }
@@ -64,6 +62,6 @@ export function signQrToken2(companyId: number, storeId: number, nonce: string):
   return jwt.sign({ companyId, storeId, nonce }, QR_SECRET!, { expiresIn: QR_TOKEN_TTL });
 }
 
-export function verifyQrToken2(token: string, options?: jwt.VerifyOptions): QrTokenPayload {
-  return jwt.verify(token, QR_SECRET!, options) as QrTokenPayload;
+export function verifyQrToken2(token: string): QrTokenPayload {
+  return jwt.verify(token, QR_SECRET!) as QrTokenPayload;
 }

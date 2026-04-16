@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS users (
   contract_end_date DATE,
   working_type      VARCHAR(20) CHECK (working_type IN ('full_time', 'part_time')),
   weekly_hours      NUMERIC(4,1),
+  off_days          SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[]
+                    CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[] AND cardinality(off_days) >= 1),
   personal_email    VARCHAR(255),
   date_of_birth     DATE,
   nationality       VARCHAR(100),
@@ -87,6 +89,35 @@ CREATE INDEX IF NOT EXISTS idx_users_company_id    ON users(company_id);
 CREATE INDEX IF NOT EXISTS idx_users_email         ON users(email);
 CREATE INDEX IF NOT EXISTS idx_users_store_id      ON users(store_id);
 CREATE INDEX IF NOT EXISTS idx_users_supervisor_id ON users(supervisor_id);
+
+ALTER TABLE users
+  ADD COLUMN IF NOT EXISTS off_days SMALLINT[] NOT NULL DEFAULT ARRAY[5,6]::SMALLINT[];
+
+UPDATE users
+SET off_days = ARRAY[5,6]::SMALLINT[]
+WHERE off_days IS NULL OR cardinality(off_days) = 0;
+
+UPDATE users
+SET off_days = (
+  SELECT COALESCE(array_agg(DISTINCT d ORDER BY d), ARRAY[5,6]::SMALLINT[])
+  FROM unnest(off_days) AS d
+  WHERE d BETWEEN 0 AND 6
+)
+WHERE off_days IS NOT NULL;
+
+ALTER TABLE users
+  DROP CONSTRAINT IF EXISTS users_off_days_valid_chk;
+
+ALTER TABLE users
+  ADD CONSTRAINT users_off_days_valid_chk
+  CHECK (off_days <@ ARRAY[0,1,2,3,4,5,6]::SMALLINT[]);
+
+ALTER TABLE users
+  DROP CONSTRAINT IF EXISTS users_off_days_not_empty_chk;
+
+ALTER TABLE users
+  ADD CONSTRAINT users_off_days_not_empty_chk
+  CHECK (cardinality(off_days) >= 1);
 
 ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS owner_user_id INTEGER,
@@ -365,7 +396,6 @@ CREATE TABLE IF NOT EXISTS shifts (
   is_split     BOOLEAN DEFAULT false,
   split_start2 TIME,
   split_end2   TIME,
-  is_off_day   BOOLEAN NOT NULL DEFAULT false,
   status       VARCHAR(20) DEFAULT 'scheduled'
                CHECK (status IN ('scheduled','confirmed','cancelled')),
   notes        TEXT,
@@ -379,24 +409,6 @@ CREATE INDEX IF NOT EXISTS idx_shifts_user_date    ON shifts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_store_date   ON shifts(store_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_assignment_id ON shifts(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_shifts_cancelled_by_transfer_id ON shifts(cancelled_by_transfer_id);
-
-ALTER TABLE shifts
-  ADD COLUMN IF NOT EXISTS is_off_day BOOLEAN NOT NULL DEFAULT false;
-
-UPDATE shifts
-SET is_off_day = false
-WHERE is_off_day IS NULL;
-
-ALTER TABLE shifts
-  DROP CONSTRAINT IF EXISTS shifts_off_day_status_chk;
-
-ALTER TABLE shifts
-  ADD CONSTRAINT shifts_off_day_status_chk
-  CHECK (NOT is_off_day OR status = 'cancelled');
-
-CREATE UNIQUE INDEX IF NOT EXISTS idx_shifts_off_day_unique
-  ON shifts(company_id, user_id, store_id, date)
-  WHERE is_off_day = true;
 
 -- ---------------------------------------------------------------------------
 -- 9. qr_tokens  (Phase 2 — replay prevention)
@@ -696,3 +708,31 @@ CREATE TABLE IF NOT EXISTS employee_onboarding_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_employee_onboarding_employee
   ON employee_onboarding_tasks (employee_id);
+-- ---------------------------------------------------------------------------
+-- 19. generic documents (Step 1)
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS documents (
+  id                  SERIAL PRIMARY KEY,
+  company_id          INTEGER REFERENCES companies(id) ON DELETE CASCADE,
+  title               TEXT NOT NULL,
+  file_url            TEXT NOT NULL,
+  category            TEXT,
+  employee_id         INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  uploaded_by         INTEGER NOT NULL REFERENCES users(id),
+  requires_signature  BOOLEAN DEFAULT false,
+  signed_at           TIMESTAMPTZ,
+  signed_by_user_id   INTEGER REFERENCES users(id),
+  signed_ip           INET,
+  signature_meta      JSONB,
+  expires_at          TIMESTAMPTZ,
+  is_visible_to_roles TEXT[],
+  is_deleted          BOOLEAN DEFAULT false,
+  deleted_at          TIMESTAMPTZ,
+  restored_at         TIMESTAMPTZ,
+  restored_by         INTEGER REFERENCES users(id),
+  created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_documents_uploaded_by ON documents (uploaded_by);
+CREATE INDEX IF NOT EXISTS idx_documents_employee_id ON documents (employee_id);

@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import crypto from 'crypto';
 import * as XLSX from 'xlsx';
 import { pool, query, queryOne } from '../../config/database';
-import { ok, created, badRequest, conflict, forbidden, notFound, serverError } from '../../utils/response';
+import { ok, created, badRequest, conflict, forbidden, notFound } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
@@ -274,8 +274,8 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     );
     const result = await client.query(
       `INSERT INTO attendance_events
-         (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes, device_fingerprint, source_ip)
-       VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7, $8, $9)
+         (company_id, store_id, user_id, event_type, source, qr_token_id, shift_id, notes)
+       VALUES ($1, $2, $3, $4, 'qr', $5, $6, $7)
        RETURNING *`,
       [
         companyId,
@@ -285,8 +285,6 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
         qrToken.id,
         currentShift.id,
         notes ?? null,
-        device_fingerprint ?? null,
-        req.ip
       ],
     );
     await client.query('COMMIT');
@@ -579,17 +577,20 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }>;
   };
 
-  if (companyId == null) {
-    return badRequest(res, 'Company ID non trovato nel token sessione', 'SESSION_ERROR');
+  if (!Array.isArray(events) || events.length === 0) {
+    badRequest(res, 'Nessun evento da sincronizzare', 'VALIDATION_ERROR');
+    return;
   }
 
-  try {
+  if (companyId == null) {
+    badRequest(res, 'Company ID non trovato nel token sessione', 'SESSION_ERROR');
+    return;
+  }
 
   const VALID_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
   let synced = 0;
   let failed = 0;
   const errors: string[] = [];
-  const syncedUuids: string[] = [];
 
   // 1. Resolve users
   const uniqueIdStrings = [...new Set(events.filter((e) => e.unique_id).map((e) => e.unique_id as string))];
@@ -659,6 +660,14 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
+    // Reject timestamps more than 5 minutes in the future
+    const FIVE_MIN_MS = 5 * 60 * 1000;
+    if (ts.getTime() > Date.now() + FIVE_MIN_MS) {
+      errors.push(`Evento ${rowNum}: data/ora non può essere nel futuro`);
+      failed++;
+      continue;
+    }
+
     // Resolve user ID within company
     if (ev.unique_id && resolvedUserId == null) {
       errors.push(`Evento ${rowNum}: dipendente '${ev.unique_id}' non trovato o inattivo`);
@@ -672,12 +681,12 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    // QR Token verification (lenient on expiry for sync)
+    // QR token verification for store resolution when present.
     let storeId = resolvedCallerStoreId || 0;
     let qrTokenId: number | null = null;
     if (ev.qr_token) {
       try {
-        const payload = verifyQrToken2(ev.qr_token, { ignoreExpiration: true });
+        const payload = verifyQrToken2(ev.qr_token);
         if (payload.companyId === companyId) {
           storeId = payload.storeId;
           // [FIX] Table name is qr_tokens, not attendance_qr_tokens
@@ -719,12 +728,11 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     );
 
     try {
-      // Use client_uuid for deduplication (ON CONFLICT DO NOTHING)
       await queryOne(
         `INSERT INTO attendance_events
-           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id, client_uuid, device_fingerprint, source_ip)
-         VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7::int, $8, $9::int, $10, $11, $12)
-         ON CONFLICT (client_uuid) DO NOTHING`,
+           (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes, qr_token_id)
+         VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7::int, $8, $9::int)
+         ON CONFLICT (company_id, user_id, event_type, event_time) DO NOTHING`,
         [
           companyId,
           storeId,
@@ -735,36 +743,16 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
           linkedShift?.id ?? null,
           ev.notes ?? null,
           qrTokenId,
-          ev.client_uuid && /^[0-9a-fA-F-]{36}$/.test(ev.client_uuid) ? ev.client_uuid : null,
-          ev.device_fingerprint ?? null,
-          req.ip
         ],
       );
       synced++;
-      if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
-    } catch (err: any) {
-      // FALLBACK: Try without client_uuid if the DB still has issues with it
-      try {
-        await queryOne(
-          `INSERT INTO attendance_events
-             (company_id, store_id, user_id, event_type, event_time, source, notes)
-           VALUES ($1::int, $2::int, $3::int, $4, $5, $6, $7)`,
-          [companyId, storeId, resolvedUserId, ev.event_type, ts.toISOString(), qrTokenId != null ? 'qr' : 'sync', `[RESTORED SYNC] ${ev.notes || ''}`]
-        );
-        synced++;
-        if (ev.client_uuid) syncedUuids.push(ev.client_uuid);
-      } catch (fallbackErr: any) {
-        errors.push(`Evento ${i+1}: errore (${err.message})`);
-        failed++;
-      }
+    } catch {
+      errors.push(`Evento ${i + 1}: errore inserimento`);
+      failed++;
     }
   }
 
-    return ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length, syncedUuids });
-  } catch (err: any) {
-    console.error('[AttendanceSync] CRITICAL 500 ERROR:', err);
-    return serverError(res, `Sync failed: ${err.message}`, 'SYNC_CRASH');
-  }
+  ok(res, { synced, failed, errors: errors.slice(0, 20), total: events.length });
 });
 
 // ---------------------------------------------------------------------------

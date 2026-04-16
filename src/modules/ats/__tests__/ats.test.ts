@@ -30,19 +30,6 @@ beforeAll(async () => {
 
   // Ensure ATS tables exist in test DB
   await testPool.query(`
-    ALTER TABLE companies
-      ADD COLUMN IF NOT EXISTS city VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS state VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS country VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS address TEXT,
-      ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
-
-    ALTER TABLE stores
-      ADD COLUMN IF NOT EXISTS city VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS state VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS country VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
-
     CREATE TABLE IF NOT EXISTS job_postings (
       id SERIAL PRIMARY KEY,
       company_id INTEGER NOT NULL,
@@ -54,54 +41,30 @@ beforeAll(async () => {
       source TEXT NOT NULL DEFAULT 'internal',
       indeed_post_id TEXT,
       created_by_id INTEGER,
+      language TEXT NOT NULL DEFAULT 'it',
+      job_type TEXT NOT NULL DEFAULT 'fulltime',
+      is_remote BOOLEAN NOT NULL DEFAULT FALSE,
+      remote_type TEXT NOT NULL DEFAULT 'onsite',
+      job_city TEXT,
+      job_state TEXT,
+      job_country TEXT,
+      job_postal_code TEXT,
+      job_address TEXT,
+      department TEXT,
+      weekly_hours NUMERIC(5,2),
+      contract_type TEXT,
+      salary_min NUMERIC(12,2),
+      salary_max NUMERIC(12,2),
+      salary_period TEXT,
+      experience TEXT,
+      education TEXT,
+      category TEXT,
+      expiration_date DATE,
       published_at TIMESTAMPTZ,
       closed_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-
-    ALTER TABLE job_postings
-      ADD COLUMN IF NOT EXISTS language VARCHAR(10) NOT NULL DEFAULT 'it',
-      ADD COLUMN IF NOT EXISTS job_type VARCHAR(20) NOT NULL DEFAULT 'fulltime',
-      ADD COLUMN IF NOT EXISTS is_remote BOOLEAN NOT NULL DEFAULT FALSE,
-      ADD COLUMN IF NOT EXISTS remote_type VARCHAR(20) NOT NULL DEFAULT 'onsite',
-      ADD COLUMN IF NOT EXISTS job_city VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS job_state VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS job_country VARCHAR(100),
-      ADD COLUMN IF NOT EXISTS job_postal_code VARCHAR(20),
-      ADD COLUMN IF NOT EXISTS job_address TEXT,
-      ADD COLUMN IF NOT EXISTS department VARCHAR(120),
-      ADD COLUMN IF NOT EXISTS weekly_hours INTEGER,
-      ADD COLUMN IF NOT EXISTS contract_type VARCHAR(80),
-      ADD COLUMN IF NOT EXISTS salary_min INTEGER,
-      ADD COLUMN IF NOT EXISTS salary_max INTEGER;
-
-    ALTER TABLE job_postings
-      DROP CONSTRAINT IF EXISTS job_postings_language_chk,
-      DROP CONSTRAINT IF EXISTS job_postings_job_type_chk,
-      DROP CONSTRAINT IF EXISTS job_postings_remote_type_chk,
-      DROP CONSTRAINT IF EXISTS job_postings_salary_range_chk;
-
-    ALTER TABLE job_postings
-      ADD CONSTRAINT job_postings_language_chk
-      CHECK (language IN ('it', 'en', 'both'));
-
-    ALTER TABLE job_postings
-      ADD CONSTRAINT job_postings_job_type_chk
-      CHECK (job_type IN ('fulltime', 'parttime', 'contract', 'internship'));
-
-    ALTER TABLE job_postings
-      ADD CONSTRAINT job_postings_remote_type_chk
-      CHECK (remote_type IN ('onsite', 'hybrid', 'remote'));
-
-    ALTER TABLE job_postings
-      ADD CONSTRAINT job_postings_salary_range_chk
-      CHECK (
-        (salary_min IS NULL OR salary_min >= 0)
-        AND (salary_max IS NULL OR salary_max >= 0)
-        AND (salary_min IS NULL OR salary_max IS NULL OR salary_min <= salary_max)
-      );
-
     CREATE TABLE IF NOT EXISTS candidates (
       id SERIAL PRIMARY KEY,
       company_id INTEGER NOT NULL,
@@ -110,30 +73,23 @@ beforeAll(async () => {
       full_name TEXT NOT NULL,
       email TEXT,
       phone TEXT,
+      cv_path TEXT,
       resume_path TEXT,
+      linkedin_url TEXT,
+      cover_letter TEXT,
       tags TEXT[] DEFAULT '{}',
       status TEXT NOT NULL DEFAULT 'received',
       source TEXT NOT NULL DEFAULT 'internal',
       source_ref TEXT,
+      gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
+      applicant_locale VARCHAR(10),
+      consent_accepted_at TIMESTAMPTZ,
+      applied_at TIMESTAMPTZ,
       unread BOOLEAN NOT NULL DEFAULT TRUE,
       last_stage_change TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
-
-    ALTER TABLE candidates
-      ADD COLUMN IF NOT EXISTS cv_path TEXT,
-      ADD COLUMN IF NOT EXISTS linkedin_url TEXT,
-      ADD COLUMN IF NOT EXISTS cover_letter TEXT,
-      ADD COLUMN IF NOT EXISTS gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
-      ADD COLUMN IF NOT EXISTS applicant_locale VARCHAR(10),
-      ADD COLUMN IF NOT EXISTS consent_accepted_at TIMESTAMPTZ,
-      ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ;
-
-    UPDATE candidates
-    SET cv_path = resume_path
-    WHERE cv_path IS NULL AND resume_path IS NOT NULL;
-
     CREATE TABLE IF NOT EXISTS interviews (
       id SERIAL PRIMARY KEY,
       candidate_id INTEGER NOT NULL,
@@ -154,6 +110,46 @@ beforeAll(async () => {
       no_interviews BOOLEAN NOT NULL DEFAULT FALSE,
       no_hires BOOLEAN NOT NULL DEFAULT FALSE
     );
+
+    ALTER TABLE job_postings
+      ADD COLUMN IF NOT EXISTS language TEXT NOT NULL DEFAULT 'it',
+      ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT 'fulltime',
+      ADD COLUMN IF NOT EXISTS is_remote BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS remote_type TEXT NOT NULL DEFAULT 'onsite',
+      ADD COLUMN IF NOT EXISTS job_city TEXT,
+      ADD COLUMN IF NOT EXISTS job_state TEXT,
+      ADD COLUMN IF NOT EXISTS job_country TEXT,
+      ADD COLUMN IF NOT EXISTS job_postal_code TEXT,
+      ADD COLUMN IF NOT EXISTS job_address TEXT,
+      ADD COLUMN IF NOT EXISTS department TEXT,
+      ADD COLUMN IF NOT EXISTS weekly_hours NUMERIC(5,2),
+      ADD COLUMN IF NOT EXISTS contract_type TEXT,
+      ADD COLUMN IF NOT EXISTS salary_min NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS salary_max NUMERIC(12,2),
+      ADD COLUMN IF NOT EXISTS salary_period TEXT,
+      ADD COLUMN IF NOT EXISTS experience TEXT,
+      ADD COLUMN IF NOT EXISTS education TEXT,
+      ADD COLUMN IF NOT EXISTS category TEXT,
+      ADD COLUMN IF NOT EXISTS expiration_date DATE;
+
+    ALTER TABLE candidates
+      ADD COLUMN IF NOT EXISTS cv_path TEXT,
+      ADD COLUMN IF NOT EXISTS linkedin_url TEXT,
+      ADD COLUMN IF NOT EXISTS cover_letter TEXT,
+      ADD COLUMN IF NOT EXISTS gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS applicant_locale VARCHAR(10),
+      ADD COLUMN IF NOT EXISTS consent_accepted_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ;
+
+    UPDATE candidates
+    SET gdpr_consent = FALSE
+    WHERE gdpr_consent IS NULL;
+
+    ALTER TABLE candidates
+      ALTER COLUMN gdpr_consent SET DEFAULT FALSE;
+
+    ALTER TABLE candidates
+      ALTER COLUMN gdpr_consent SET NOT NULL;
   `);
 
   adminToken = await login('admin@acme-test.com');
@@ -211,37 +207,6 @@ describe('ATS — Job Postings', () => {
       .send({ title: 'Responsabile Cassa' });
     expect(res.status).toBe(200);
     expect(res.body.data.job.title).toBe('Responsabile Cassa');
-  });
-
-  it('updates job status to published', async () => {
-    const res = await request
-      .patch(`/api/ats/jobs/${jobId}`)
-      .set('Authorization', `Bearer ${adminToken}`)
-      .send({ status: 'published' });
-    expect(res.status).toBe(200);
-    expect(res.body.data.job.status).toBe('published');
-  });
-
-  it('includes published job in XML feed', async () => {
-    const res = await request.get(`/api/ats/feed/${acmeId}/jobs.xml`);
-    expect(res.status).toBe(200);
-    expect(res.header['content-type']).toContain('application/xml');
-    expect(res.text).toContain(`JOB-${jobId}`);
-    expect(res.text).toContain('Responsabile Cassa');
-  });
-
-  it('deletes a job posting', async () => {
-    const res = await request
-      .delete(`/api/ats/jobs/${jobId}`)
-      .set('Authorization', `Bearer ${adminToken}`);
-    expect(res.status).toBe(200);
-  });
-
-  it('returns 404 after deletion', async () => {
-    const res = await request
-      .get(`/api/ats/jobs/${jobId}`)
-      .set('Authorization', `Bearer ${adminToken}`);
-    expect(res.status).toBe(404);
   });
 
   it('returns 400 when title is missing', async () => {

@@ -145,7 +145,6 @@ const baseShiftObject = z.object({
   is_split:      z.boolean().optional(),
   split_start2:  z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
   split_end2:    z.string().regex(/^\d{2}:\d{2}$/).optional().nullable(),
-  is_off_day:    z.boolean().optional(),
   notes:         z.string().max(500).optional().nullable(),
   status:        z.enum(['scheduled','confirmed','cancelled']).optional(),
 });

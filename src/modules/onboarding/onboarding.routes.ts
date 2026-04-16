@@ -25,8 +25,8 @@ router.post('/employees/:employeeId/remind',        requireRole('admin', 'hr'), 
 router.patch('/tasks/:taskId/complete',             completeTaskHandler);
 router.patch('/tasks/:taskId/uncomplete',           requireRole('admin', 'hr'), uncompleteTaskHandler);
 
-// Overview + stats — scoped management roles
-router.get('/overview', requireRole('admin', 'hr', 'area_manager'), getOverviewHandler);
+// Overview + stats — admin/HR only
+router.get('/overview', requireRole('admin', 'hr'), getOverviewHandler);
 router.get('/stats',    requireRole('admin', 'hr'), getStatsHandler);
 
 // Bulk actions

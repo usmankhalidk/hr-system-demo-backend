@@ -51,6 +51,7 @@ export const SYSTEM_MODULES = [
   'negozi',
   'dipendenti',
   'messaggi',
+  'documenti',
   'impostazioni',
   'gestione_accessi',
   'terminali',

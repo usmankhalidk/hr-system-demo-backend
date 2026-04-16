@@ -13,14 +13,35 @@ export async function runSignatureReminderJob(companyId: number): Promise<void> 
     file_name: string;
     locale?: string;
   }>(
-    `SELECT d.id, d.employee_id, d.file_name, u.locale
-       FROM employee_documents d
-       JOIN users u ON u.id = d.employee_id
-      WHERE d.company_id = $1
-        AND d.deleted_at IS NULL
-        AND d.requires_signature = TRUE
-        AND d.signed_at IS NULL
-        AND d.uploaded_at < NOW() - INTERVAL '1 day'`,
+    `SELECT id, employee_id, file_name, locale
+       FROM (
+         -- Direct employee documents
+         SELECT d.id, d.employee_id, d.file_name, u.locale
+           FROM employee_documents d
+           JOIN users u ON u.id = d.employee_id
+          WHERE d.company_id = $1
+            AND d.deleted_at IS NULL
+            AND d.requires_signature = TRUE
+            AND d.signed_at IS NULL
+            AND d.uploaded_at <= NOW() - INTERVAL '1 day'
+            
+         UNION ALL
+         
+         -- Generic assigned documents (excluding those already synced to employee_documents)
+         SELECT d.id, d.employee_id, d.title AS file_name, u.locale
+           FROM documents d
+           JOIN users u ON u.id = d.employee_id
+          WHERE u.company_id = $1
+            AND d.requires_signature = TRUE
+            AND d.signed_at IS NULL
+            AND d.created_at <= NOW() - INTERVAL '1 day'
+            AND NOT EXISTS (
+              SELECT 1 FROM employee_documents ed 
+               WHERE ed.storage_path = d.file_url 
+                 AND ed.employee_id = d.employee_id
+                 AND ed.deleted_at IS NULL
+            )
+       ) combined`,
     [companyId],
   );
 

@@ -44,20 +44,6 @@ export interface OnboardingProgress {
   tasks: OnboardingTask[];
 }
 
-interface OverviewRow {
-  employee_id: number;
-  company_id: number;
-  company_name: string;
-  name: string;
-  surname: string;
-  email: string;
-  store_id: number | null;
-  store_name: string | null;
-  avatar_filename: string | null;
-  total: string;
-  completed: string;
-}
-
 // ---------------------------------------------------------------------------
 // Mappers
 // ---------------------------------------------------------------------------
@@ -115,21 +101,6 @@ export async function getTemplates(
      WHERE company_id = $1 ${includeInactive ? '' : 'AND is_active = TRUE'}
      ORDER BY sort_order ASC, id ASC`,
     [companyId],
-  );
-  return rows.map(mapTemplate);
-}
-
-export async function getTemplatesByCompanyIds(
-  companyIds: number[],
-  includeInactive = false,
-): Promise<OnboardingTemplate[]> {
-  if (companyIds.length === 0) return [];
-
-  const rows = await query<Record<string, unknown>>(
-    `SELECT * FROM onboarding_templates
-     WHERE company_id = ANY($1) ${includeInactive ? '' : 'AND is_active = TRUE'}
-     ORDER BY company_id ASC, sort_order ASC, id ASC`,
-    [companyIds],
   );
   return rows.map(mapTemplate);
 }
@@ -244,12 +215,9 @@ export async function deleteTemplate(
 
 export interface EmployeeOnboardingOverview {
   employeeId: number;
-  companyId: number;
-  companyName: string;
   name: string;
   surname: string;
   email: string;
-  storeId: number | null;
   storeName: string | null;
   avatarFilename: string | null;
   total: number;
@@ -258,86 +226,54 @@ export interface EmployeeOnboardingOverview {
   hasTasksAssigned: boolean;
 }
 
-function mapOverviewRow(row: OverviewRow): EmployeeOnboardingOverview {
-  const total = parseInt(row.total, 10);
-  const completed = parseInt(row.completed, 10);
-  return {
-    employeeId: row.employee_id,
-    companyId: row.company_id,
-    companyName: row.company_name,
-    name: row.name,
-    surname: row.surname,
-    email: row.email,
-    storeId: row.store_id,
-    storeName: row.store_name,
-    avatarFilename: row.avatar_filename,
-    total,
-    completed,
-    percentage: total === 0 ? 0 : Math.round((completed / total) * 100),
-    hasTasksAssigned: total > 0,
-  };
-}
-
 export async function getOnboardingOverview(companyId: number): Promise<EmployeeOnboardingOverview[]> {
-  const rows = await query<OverviewRow>(
+  const rows = await query<{
+    employee_id: number;
+    name: string;
+    surname: string;
+    email: string;
+    store_name: string | null;
+    avatar_filename: string | null;
+    total: string;
+    completed: string;
+  }>(
     `SELECT
        u.id AS employee_id,
-       u.company_id,
-       c.name AS company_name,
        u.name,
        u.surname,
        u.email,
-       u.store_id,
        s.name AS store_name,
        u.avatar_filename,
        COUNT(t.id)::text AS total,
        COUNT(t.id) FILTER (WHERE t.completed = TRUE)::text AS completed
      FROM users u
-     JOIN companies c ON c.id = u.company_id
      LEFT JOIN stores s ON s.id = u.store_id
      LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
      LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = $1
      WHERE u.company_id = $1
        AND u.role = 'employee'
        AND u.status = 'active'
-     GROUP BY u.id, u.company_id, c.name, u.name, u.surname, u.email, u.store_id, s.name, u.avatar_filename
+     GROUP BY u.id, u.name, u.surname, u.email, s.name, u.avatar_filename
      ORDER BY u.surname ASC, u.name ASC`,
     [companyId],
   );
 
-  return rows.map(mapOverviewRow);
-}
-
-export async function getOnboardingOverviewByCompanyIds(companyIds: number[]): Promise<EmployeeOnboardingOverview[]> {
-  if (companyIds.length === 0) return [];
-
-  const rows = await query<OverviewRow>(
-    `SELECT
-       u.id AS employee_id,
-       u.company_id,
-       c.name AS company_name,
-       u.name,
-       u.surname,
-       u.email,
-       u.store_id,
-       s.name AS store_name,
-       u.avatar_filename,
-       COUNT(t.id)::text AS total,
-       COUNT(t.id) FILTER (WHERE t.completed = TRUE)::text AS completed
-     FROM users u
-     JOIN companies c ON c.id = u.company_id
-     LEFT JOIN stores s ON s.id = u.store_id
-     LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
-     LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = u.company_id
-     WHERE u.company_id = ANY($1)
-       AND u.role = 'employee'
-       AND u.status = 'active'
-     GROUP BY u.id, u.company_id, c.name, u.name, u.surname, u.email, u.store_id, s.name, u.avatar_filename
-     ORDER BY c.name ASC, s.name ASC NULLS LAST, u.surname ASC, u.name ASC`,
-    [companyIds],
-  );
-
-  return rows.map(mapOverviewRow);
+  return rows.map((r) => {
+    const total = parseInt(r.total, 10);
+    const completed = parseInt(r.completed, 10);
+    return {
+      employeeId: r.employee_id,
+      name: r.name,
+      surname: r.surname,
+      email: r.email,
+      storeName: r.store_name,
+      avatarFilename: r.avatar_filename,
+      total,
+      completed,
+      percentage: total === 0 ? 0 : Math.round((completed / total) * 100),
+      hasTasksAssigned: total > 0,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

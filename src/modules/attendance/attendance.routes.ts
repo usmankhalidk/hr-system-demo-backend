@@ -11,6 +11,8 @@ const checkinSchema = z.object({
   event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
   user_id:    z.number().int().positive().optional(),
   unique_id:  z.string().optional(),
+  // Device binding: sent by the employee's own device.
+  // For non-employee roles we ignore it.
   device_fingerprint: z.string().min(10).optional(),
   notes:      z.string().max(500).optional(),
 });
@@ -19,13 +21,12 @@ const allRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 's
 const managementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
 // POST /api/attendance/checkin — validate QR token and record event
-// No module permission check: clock-in must always work regardless of whether
-// the presenze module is enabled or disabled for the role in Access Management.
 router.post(
   '/checkin',
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   validate(checkinSchema),
   checkin,
 );
@@ -64,25 +65,21 @@ const syncSchema = z.object({
     event_type: z.enum(['checkin', 'checkout', 'break_start', 'break_end']),
     user_id:    z.number().int().positive().optional(),
     unique_id:  z.string().min(1).optional(),
-    event_time: z.string().min(1), // Accept any string, controller handles parsing
-    qr_token:   z.string().optional(),
-    client_uuid: z.string().min(1).optional(),
+    event_time: z.string().datetime(),
     notes:      z.string().max(500).optional(),
-    device_fingerprint: z.string().optional(),
   }).refine(
     (e) => e.user_id != null || (e.unique_id != null && e.unique_id.length > 0),
     { message: 'user_id o unique_id obbligatorio' },
   )).min(1).max(500),
 });
 
-// POST /api/attendance/sync — allow all roles to sync offline events
-// No module permission check: offline sync must always work regardless of whether
-// the presenze module is enabled or disabled for the role in Access Management.
+// POST /api/attendance/sync — store_terminal only
 router.post(
   '/sync',
   authenticate,
-  requireRole(...allRoles),
+  requireRole('store_terminal'),
   enforceCompany,
+  requireModulePermission('presenze', 'write'),
   validate(syncSchema),
   syncEvents,
 );
