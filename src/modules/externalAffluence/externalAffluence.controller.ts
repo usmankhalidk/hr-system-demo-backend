@@ -11,7 +11,9 @@ import {
   checkExternalConnection,
   fetchExternalTableDetails,
   fetchDepositoByCode,
+  fetchDepositiByStoreCodes,
   fetchDepositiRows,
+  fetchIngressiAvailabilityByStoreCodes,
   fetchIngressiDaily,
   getExternalDbConfigStatus,
   getExternalTableCatalog,
@@ -21,6 +23,8 @@ import {
 interface MappingViewRow {
   id: number;
   companyId: number;
+  companyName: string;
+  externalCompanyName?: string | null;
   localStoreId: number;
   localStoreName: string;
   localStoreCode: string;
@@ -29,6 +33,14 @@ interface MappingViewRow {
   notes: string | null;
   isActive: boolean;
   sourceTable: string;
+  createdBy: number | null;
+  createdByName: string | null;
+  createdBySurname: string | null;
+  createdByAvatarFilename?: string | null;
+  updatedBy: number | null;
+  updatedByName: string | null;
+  updatedBySurname: string | null;
+  updatedByAvatarFilename?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -574,8 +586,10 @@ export const listDepositi = asyncHandler(async (req: Request, res: Response) => 
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 1000) : 300;
 
   try {
-    const [externalStores, mappingRows] = await Promise.all([
-      fetchDepositiRows(search, limit),
+    const externalStores = await fetchDepositiRows(search, limit);
+    const externalStoreCodes = externalStores.map((item) => item.externalStoreCode);
+
+    const [mappingRows, availabilityByCode] = await Promise.all([
       query<{
         externalStoreCode: string;
         localStoreId: number;
@@ -592,6 +606,7 @@ export const listDepositi = asyncHandler(async (req: Request, res: Response) => 
          WHERE m.company_id = $1 AND m.is_active = true`,
         [companyId],
       ),
+      fetchIngressiAvailabilityByStoreCodes(externalStoreCodes),
     ]);
 
     const mappingByCode = new Map<string, {
@@ -610,11 +625,15 @@ export const listDepositi = asyncHandler(async (req: Request, res: Response) => 
 
     const rows = externalStores.map((item) => {
       const mapping = mappingByCode.get(item.externalStoreCode);
+      const availability = availabilityByCode.get(item.externalStoreCode);
       return {
         ...item,
         mappedLocalStoreId: mapping?.localStoreId ?? null,
         mappedLocalStoreName: mapping?.localStoreName ?? null,
         mappedLocalStoreCode: mapping?.localStoreCode ?? null,
+        availableDays: availability?.availableDays ?? 0,
+        availableFromDate: availability?.availableFromDate ?? null,
+        availableToDate: availability?.availableToDate ?? null,
       };
     });
 
@@ -626,16 +645,35 @@ export const listDepositi = asyncHandler(async (req: Request, res: Response) => 
 });
 
 export const listMappings = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = await resolveTargetCompanyId(req);
-  if (companyId == null) {
-    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) {
+    res.status(403).json({ success: false, error: 'Access denied: no companies in scope', code: 'COMPANY_MISMATCH' });
     return;
+  }
+
+  const explicit = req.query?.target_company_id ?? req.query?.company_id ?? req.body?.target_company_id ?? req.body?.company_id;
+  let scopedCompanyId: number | null = null;
+  if (explicit != null) {
+    const parsed = parseInt(String(explicit), 10);
+    if (!Number.isFinite(parsed) || !allowedCompanyIds.includes(parsed)) {
+      res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+      return;
+    }
+    scopedCompanyId = parsed;
+  }
+
+  const whereParts = ['m.company_id = ANY($1)'];
+  const params: Array<number[] | number> = [allowedCompanyIds];
+  if (scopedCompanyId != null) {
+    whereParts.push('m.company_id = $2');
+    params.push(scopedCompanyId);
   }
 
   const rows = await query<MappingViewRow>(
     `SELECT
        m.id,
        m.company_id AS "companyId",
+       c.name AS "companyName",
        m.local_store_id AS "localStoreId",
        s.name AS "localStoreName",
        s.code AS "localStoreCode",
@@ -644,16 +682,41 @@ export const listMappings = asyncHandler(async (req: Request, res: Response) => 
        m.notes,
        m.is_active AS "isActive",
        m.source_table AS "sourceTable",
+       m.created_by AS "createdBy",
+       cb.name AS "createdByName",
+       cb.surname AS "createdBySurname",
+      cb.avatar_filename AS "createdByAvatarFilename",
+       m.updated_by AS "updatedBy",
+       ub.name AS "updatedByName",
+       ub.surname AS "updatedBySurname",
+      ub.avatar_filename AS "updatedByAvatarFilename",
        m.created_at AS "createdAt",
        m.updated_at AS "updatedAt"
      FROM external_store_mappings m
      JOIN stores s ON s.id = m.local_store_id
-     WHERE m.company_id = $1
-     ORDER BY s.name`,
-    [companyId],
+     JOIN companies c ON c.id = m.company_id
+     LEFT JOIN users cb ON cb.id = m.created_by
+     LEFT JOIN users ub ON ub.id = m.updated_by
+     WHERE ${whereParts.join(' AND ')}
+     ORDER BY c.name, s.name`,
+    params,
   );
 
-  ok(res, { mappings: rows });
+  let externalByCode = new Map<string, { storeName: string | null; companyName: string | null }>();
+  try {
+    externalByCode = await fetchDepositiByStoreCodes(rows.map((row) => row.externalStoreCode));
+  } catch (err) {
+    if (!(err instanceof ExternalDbUnavailableError)) {
+      throw err;
+    }
+  }
+
+  const enrichedRows = rows.map((row) => ({
+    ...row,
+    externalCompanyName: externalByCode.get(row.externalStoreCode)?.companyName ?? null,
+  }));
+
+  ok(res, { mappings: enrichedRows });
 });
 
 export const upsertMapping = asyncHandler(async (req: Request, res: Response) => {
@@ -677,6 +740,7 @@ export const upsertMapping = asyncHandler(async (req: Request, res: Response) =>
   }
 
   let externalStoreName: string | null = null;
+  let externalCompanyName: string | null = null;
   try {
     const found = await fetchDepositoByCode(externalStoreCode);
     if (!found) {
@@ -684,6 +748,7 @@ export const upsertMapping = asyncHandler(async (req: Request, res: Response) =>
       return;
     }
     externalStoreName = found.storeName ?? null;
+    externalCompanyName = found.companyName ?? null;
   } catch (err) {
     if (sendExternalDbError(res, err)) return;
     throw err;
@@ -720,6 +785,7 @@ export const upsertMapping = asyncHandler(async (req: Request, res: Response) =>
        SELECT
          u.id,
          u.company_id AS "companyId",
+        c.name AS "companyName",
          u.local_store_id AS "localStoreId",
          s.name AS "localStoreName",
          s.code AS "localStoreCode",
@@ -728,10 +794,21 @@ export const upsertMapping = asyncHandler(async (req: Request, res: Response) =>
          u.notes,
          u.is_active AS "isActive",
          u.source_table AS "sourceTable",
+        u.created_by AS "createdBy",
+        cb.name AS "createdByName",
+        cb.surname AS "createdBySurname",
+        cb.avatar_filename AS "createdByAvatarFilename",
+        u.updated_by AS "updatedBy",
+        ub.name AS "updatedByName",
+        ub.surname AS "updatedBySurname",
+        ub.avatar_filename AS "updatedByAvatarFilename",
          u.created_at AS "createdAt",
          u.updated_at AS "updatedAt"
        FROM upsert u
-       JOIN stores s ON s.id = u.local_store_id`,
+       JOIN stores s ON s.id = u.local_store_id
+       JOIN companies c ON c.id = u.company_id
+       LEFT JOIN users cb ON cb.id = u.created_by
+       LEFT JOIN users ub ON ub.id = u.updated_by`,
       [
         store.companyId,
         store.id,
@@ -747,7 +824,12 @@ export const upsertMapping = asyncHandler(async (req: Request, res: Response) =>
       return;
     }
 
-    created(res, { mapping: row }, 'Mapping saved');
+    created(res, {
+      mapping: {
+        ...row,
+        externalCompanyName,
+      },
+    }, 'Mapping saved');
   } catch (err: any) {
     if (err?.code === '23505') {
       conflict(res, 'External store code is already mapped to another local store in this company', 'DUPLICATE_EXTERNAL_STORE_CODE');

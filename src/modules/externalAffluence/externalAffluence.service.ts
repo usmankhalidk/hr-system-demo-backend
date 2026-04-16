@@ -21,6 +21,9 @@ export interface ExternalDepositoRow {
   externalStoreCode: string;
   storeName: string | null;
   companyName: string | null;
+  availableDays?: number;
+  availableFromDate?: string | null;
+  availableToDate?: string | null;
 }
 
 export interface ExternalIngressiDailyRow {
@@ -97,6 +100,13 @@ interface IngressiSqlRow extends RowDataPacket {
   date: string;
   external_store_code: string | null;
   visitors: number | string | null;
+}
+
+interface IngressiAvailabilitySqlRow extends RowDataPacket {
+  external_store_code: string | null;
+  available_days: number | string | null;
+  min_date: string | null;
+  max_date: string | null;
 }
 
 const EXTERNAL_TABLE_CATALOG: ExternalTableCatalogItem[] = [
@@ -477,6 +487,85 @@ export async function fetchDepositiRows(search: string | null, limit = 300): Pro
       companyName: row.company_name ?? null,
     }))
     .filter((row) => row.externalStoreCode.length > 0);
+}
+
+export async function fetchDepositiByStoreCodes(
+  externalStoreCodes: string[],
+): Promise<Map<string, { storeName: string | null; companyName: string | null }>> {
+  const normalizedCodes = Array.from(new Set(
+    externalStoreCodes
+      .map((code) => normalizeStoreCode(code))
+      .filter((code) => code.length > 0),
+  ));
+
+  if (normalizedCodes.length === 0) {
+    return new Map();
+  }
+
+  const pool = getExternalPool();
+  const placeholders = normalizedCodes.map(() => '?').join(',');
+  const [rows] = await pool.query<DepositoSqlRow[]>(
+    `SELECT
+       TRIM(coddep) AS external_store_code,
+       NULLIF(TRIM(deposito), '') AS store_name,
+       NULLIF(TRIM(azienda), '') AS company_name
+     FROM depositi
+     WHERE TRIM(coddep) IN (${placeholders})`,
+    normalizedCodes,
+  );
+
+  const output = new Map<string, { storeName: string | null; companyName: string | null }>();
+  for (const row of rows) {
+    const code = normalizeStoreCode(row.external_store_code);
+    if (!code) continue;
+    output.set(code, {
+      storeName: row.store_name ?? null,
+      companyName: row.company_name ?? null,
+    });
+  }
+
+  return output;
+}
+
+export async function fetchIngressiAvailabilityByStoreCodes(
+  externalStoreCodes: string[],
+): Promise<Map<string, { availableDays: number; availableFromDate: string | null; availableToDate: string | null }>> {
+  const normalizedCodes = Array.from(new Set(
+    externalStoreCodes
+      .map((code) => normalizeStoreCode(code))
+      .filter((code) => code.length > 0),
+  ));
+
+  if (normalizedCodes.length === 0) {
+    return new Map();
+  }
+
+  const pool = getExternalPool();
+  const placeholders = normalizedCodes.map(() => '?').join(',');
+  const [rows] = await pool.query<IngressiAvailabilitySqlRow[]>(
+    `SELECT
+       TRIM(deposito) AS external_store_code,
+       COUNT(DISTINCT DATE(data)) AS available_days,
+       DATE_FORMAT(MIN(DATE(data)), '%Y-%m-%d') AS min_date,
+       DATE_FORMAT(MAX(DATE(data)), '%Y-%m-%d') AS max_date
+     FROM ingressi
+     WHERE TRIM(deposito) IN (${placeholders})
+     GROUP BY TRIM(deposito)`,
+    normalizedCodes,
+  );
+
+  const output = new Map<string, { availableDays: number; availableFromDate: string | null; availableToDate: string | null }>();
+  for (const row of rows) {
+    const code = normalizeStoreCode(row.external_store_code);
+    if (!code) continue;
+    output.set(code, {
+      availableDays: Number(row.available_days ?? 0),
+      availableFromDate: row.min_date ?? null,
+      availableToDate: row.max_date ?? null,
+    });
+  }
+
+  return output;
 }
 
 export async function fetchDepositoByCode(code: string): Promise<ExternalDepositoRow | null> {
