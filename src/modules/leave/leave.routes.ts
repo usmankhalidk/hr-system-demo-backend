@@ -58,6 +58,9 @@ const submitSchema = z.object({
   leave_type: z.enum(['vacation', 'sick']),
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
   end_date:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
+  leave_duration_type: z.enum(['full_day', 'short_leave']).optional(),
+  short_start_time: z.string().regex(/^\d{2}:\d{2}$/, 'Formato ora non valido (HH:MM)').optional(),
+  short_end_time: z.string().regex(/^\d{2}:\d{2}$/, 'Formato ora non valido (HH:MM)').optional(),
   notes:      z.string().max(1000).optional(),
 });
 
@@ -77,6 +80,9 @@ const adminCreateSchema = z.object({
   leave_type: z.enum(['vacation', 'sick']),
   start_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
   end_date:   z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Formato data non valido (YYYY-MM-DD)'),
+  leave_duration_type: z.enum(['full_day', 'short_leave']).optional(),
+  short_start_time: z.string().regex(/^\d{2}:\d{2}$/, 'Formato ora non valido (HH:MM)').optional(),
+  short_end_time: z.string().regex(/^\d{2}:\d{2}$/, 'Formato ora non valido (HH:MM)').optional(),
   notes:      z.string().max(1000).optional(),
 });
 

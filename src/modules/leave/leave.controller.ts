@@ -11,6 +11,10 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 const VALID_LEAVE_TYPES = ['vacation', 'sick'] as const;
 type LeaveType = typeof VALID_LEAVE_TYPES[number];
+type LeaveDurationType = 'full_day' | 'short_leave';
+
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+const HHMM_RE = /^\d{2}:\d{2}$/;
 
 /**
  * Roles that are completely barred from all leave-management endpoints.
@@ -52,6 +56,146 @@ function countWorkingDays(startDateIn: string | Date, endDateIn: string | Date):
     current.setDate(current.getDate() + 1);
   }
   return count;
+}
+
+function parseTimeToMinutes(raw: string): number | null {
+  if (!raw) return null;
+  const parts = raw.split(':');
+  if (parts.length < 2) return null;
+  const hours = Number(parts[0]);
+  const minutes = Number(parts[1]);
+  if (!Number.isInteger(hours) || !Number.isInteger(minutes)) return null;
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+}
+
+function isWeekendIsoDate(isoDate: string): boolean {
+  const [y, m, d] = isoDate.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  const day = dt.getDay();
+  return day === 0 || day === 6;
+}
+
+function calculateShortLeaveDurationHours(startTime: string, endTime: string): number | null {
+  const startMinutes = parseTimeToMinutes(startTime);
+  const endMinutes = parseTimeToMinutes(endTime);
+  if (startMinutes == null || endMinutes == null || endMinutes <= startMinutes) {
+    return null;
+  }
+  return Number(((endMinutes - startMinutes) / 60).toFixed(2));
+}
+
+function normalizeLeaveDurationInput(
+  params: {
+    leaveType: LeaveType;
+    startDate: string;
+    endDate: string;
+    leaveDurationType?: string;
+    shortStartTime?: string | null;
+    shortEndTime?: string | null;
+  },
+):
+  | {
+      leaveDurationType: LeaveDurationType;
+      shortStartTime: string | null;
+      shortEndTime: string | null;
+      requestedDays: number;
+      durationHours: number | null;
+    }
+  | { error: string; code: string } {
+  const leaveDurationType: LeaveDurationType =
+    params.leaveDurationType === 'short_leave' ? 'short_leave' : 'full_day';
+
+  if (leaveDurationType === 'full_day') {
+    return {
+      leaveDurationType,
+      shortStartTime: null,
+      shortEndTime: null,
+      requestedDays: countWorkingDays(params.startDate, params.endDate),
+      durationHours: null,
+    };
+  }
+
+  if (params.leaveType !== 'vacation') {
+    return {
+      error: 'Il permesso a ore è disponibile solo per ferie',
+      code: 'SHORT_LEAVE_ONLY_FOR_VACATION',
+    };
+  }
+
+  if (params.startDate !== params.endDate) {
+    return {
+      error: 'Per il permesso a ore la data di inizio e fine deve coincidere',
+      code: 'SHORT_LEAVE_SAME_DAY_REQUIRED',
+    };
+  }
+
+  if (isWeekendIsoDate(params.startDate)) {
+    return {
+      error: 'Il permesso a ore è consentito solo nei giorni lavorativi',
+      code: 'SHORT_LEAVE_WEEKEND_NOT_ALLOWED',
+    };
+  }
+
+  const shortStartTime = params.shortStartTime?.trim() ?? '';
+  const shortEndTime = params.shortEndTime?.trim() ?? '';
+  if (!HHMM_RE.test(shortStartTime) || !HHMM_RE.test(shortEndTime)) {
+    return {
+      error: 'Formato ora non valido (HH:MM)',
+      code: 'INVALID_SHORT_LEAVE_TIME_FORMAT',
+    };
+  }
+
+  const durationHours = calculateShortLeaveDurationHours(shortStartTime, shortEndTime);
+  if (durationHours == null) {
+    return {
+      error: 'L\'ora di fine deve essere successiva all\'ora di inizio',
+      code: 'INVALID_SHORT_LEAVE_TIME_RANGE',
+    };
+  }
+
+  if (durationHours >= 24) {
+    return {
+      error: 'Il permesso a ore deve essere inferiore a 24 ore',
+      code: 'SHORT_LEAVE_TOO_LONG',
+    };
+  }
+
+  const requestedDays = Number((durationHours / 8).toFixed(2));
+  if (requestedDays <= 0) {
+    return {
+      error: 'Durata del permesso non valida',
+      code: 'SHORT_LEAVE_DURATION_INVALID',
+    };
+  }
+
+  return {
+    leaveDurationType,
+    shortStartTime,
+    shortEndTime,
+    requestedDays,
+    durationHours,
+  };
+}
+
+function computeRequestedLeaveDays(leave: {
+  start_date: string;
+  end_date: string;
+  leave_duration_type?: string | null;
+  short_start_time?: string | null;
+  short_end_time?: string | null;
+}): number {
+  if (
+    leave.leave_duration_type === 'short_leave' &&
+    leave.short_start_time &&
+    leave.short_end_time
+  ) {
+    const durationHours = calculateShortLeaveDurationHours(leave.short_start_time, leave.short_end_time);
+    if (durationHours != null && durationHours > 0 && durationHours < 24) {
+      return Number((durationHours / 8).toFixed(2));
+    }
+  }
+  return countWorkingDays(leave.start_date, leave.end_date);
 }
 
 /**
@@ -180,10 +324,13 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const { leave_type, start_date, end_date, notes } = req.body as {
+  const { leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time, notes } = req.body as {
     leave_type: LeaveType;
     start_date: string;
     end_date: string;
+    leave_duration_type?: LeaveDurationType;
+    short_start_time?: string;
+    short_end_time?: string;
     notes?: string;
   };
 
@@ -193,8 +340,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
-  if (!isoDateRe.test(start_date) || !isoDateRe.test(end_date)) {
+  if (!ISO_DATE_RE.test(start_date) || !ISO_DATE_RE.test(end_date)) {
     badRequest(res, 'Formato data non valido (YYYY-MM-DD)', 'INVALID_DATE_FORMAT');
     return;
   }
@@ -208,6 +354,21 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
     return;
   }
+
+  const normalizedDuration = normalizeLeaveDurationInput({
+    leaveType: leave_type,
+    startDate: start_date,
+    endDate: end_date,
+    leaveDurationType: leave_duration_type,
+    shortStartTime: short_start_time,
+    shortEndTime: short_end_time,
+  });
+  if ('error' in normalizedDuration) {
+    badRequest(res, normalizedDuration.error, normalizedDuration.code);
+    return;
+  }
+
+  const { leaveDurationType, shortStartTime, shortEndTime, requestedDays } = normalizedDuration;
 
   // Validate PDF magic bytes if a certificate is uploaded
   const file = (req as any).file as Express.Multer.File | undefined;
@@ -233,8 +394,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // --- Leave Balance Validation ---
-  const workingDays = countWorkingDays(start_date, end_date);
-  if (workingDays > 0) {
+  if (requestedDays > 0) {
     const year = new Date(start_date).getFullYear();
     const defaultTotal = leave_type === 'vacation' ? 25 : 10;
     
@@ -248,7 +408,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     const currentUsed = parseFloat(String(balance?.used_days ?? 0));
     const limit = parseFloat(String(balance?.total_days ?? defaultTotal));
 
-    if (currentUsed + workingDays > limit) {
+    if (currentUsed + requestedDays > limit) {
       res.status(400).json({
         success: false,
         error: "Your leaves are full, you will not able to request this leave.",
@@ -275,15 +435,31 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 
   const leaveRequest = await queryOne(
     `INSERT INTO leave_requests
-      (company_id, user_id, store_id, leave_type, start_date, end_date,
+      (company_id, user_id, store_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time,
        status, current_approver_role, notes,
        medical_certificate_name, medical_certificate_data, medical_certificate_type, skipped_approvers)
-     VALUES ($1,$2,$3,$4,$5,$6,'pending',$7,$8,$9,$10,$11,$12)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+               leave_duration_type, short_start_time, short_end_time,
                status, current_approver_role, notes, medical_certificate_name, 
                skipped_approvers, escalated, is_emergency_override, last_action_at, created_at, updated_at`,
-    [companyId, userId, storeId ?? null, leave_type, start_date, end_date,
-     firstApprover, notes ?? null, certificateName, certificateData, certificateMime, JSON.stringify(skippedApprovers)],
+    [
+      companyId,
+      userId,
+      storeId ?? null,
+      leave_type,
+      start_date,
+      end_date,
+      leaveDurationType,
+      shortStartTime,
+      shortEndTime,
+      firstApprover,
+      notes ?? null,
+      certificateName,
+      certificateData,
+      certificateMime,
+      JSON.stringify(skippedApprovers),
+    ],
   );
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
@@ -386,14 +562,34 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   const requests = await query(
     `SELECT
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
-       lr.start_date, lr.end_date, lr.status, lr.current_approver_role,
+       lr.start_date, lr.end_date,
+       lr.leave_duration_type,
+       TO_CHAR(lr.short_start_time, 'HH24:MI') AS short_start_time,
+       TO_CHAR(lr.short_end_time, 'HH24:MI') AS short_end_time,
+       lr.status, lr.current_approver_role,
        lr.notes, lr.created_at, lr.updated_at,
+       lr.last_action_at,
        lr.medical_certificate_name,
        lr.skipped_approvers, lr.escalated, lr.is_emergency_override,
+       la.action AS latest_action,
+       la.created_at AS latest_action_at,
        u.name AS user_name, u.surname AS user_surname,
-       u.avatar_filename AS user_avatar_filename
+       u.avatar_filename AS user_avatar_filename,
+       s.name AS store_name,
+       s.logo_filename AS store_logo_filename,
+       c.name AS company_name
      FROM leave_requests lr
      JOIN users u ON u.id = lr.user_id
+     LEFT JOIN stores s ON s.id = lr.store_id
+     LEFT JOIN companies c ON c.id = lr.company_id
+     LEFT JOIN LATERAL (
+       SELECT action, created_at
+       FROM leave_approvals la0
+       WHERE la0.leave_request_id = lr.id
+         AND la0.action IN ('approved', 'rejected')
+       ORDER BY la0.created_at DESC
+       LIMIT 1
+     ) la ON TRUE
      WHERE ${scopeWhere}${extraWhere}
      ORDER BY lr.created_at DESC
      LIMIT $${allParams.length + 1} OFFSET $${allParams.length + 2}`,
@@ -459,13 +655,33 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
   const requests = await query(
     `SELECT
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
-       lr.start_date, lr.end_date, lr.status, lr.current_approver_role,
+       lr.start_date, lr.end_date,
+       lr.leave_duration_type,
+       TO_CHAR(lr.short_start_time, 'HH24:MI') AS short_start_time,
+       TO_CHAR(lr.short_end_time, 'HH24:MI') AS short_end_time,
+       lr.status, lr.current_approver_role,
        lr.notes, lr.created_at,
        lr.medical_certificate_name,
+       lr.last_action_at,
+       la.action AS latest_action,
+       la.created_at AS latest_action_at,
        u.name AS user_name, u.surname AS user_surname,
-       u.avatar_filename AS user_avatar_filename
+       u.avatar_filename AS user_avatar_filename,
+       s.name AS store_name,
+       s.logo_filename AS store_logo_filename,
+       c.name AS company_name
      FROM leave_requests lr
      JOIN users u ON u.id = lr.user_id
+     LEFT JOIN stores s ON s.id = lr.store_id
+     LEFT JOIN companies c ON c.id = lr.company_id
+     LEFT JOIN LATERAL (
+       SELECT action, created_at
+       FROM leave_approvals la0
+       WHERE la0.leave_request_id = lr.id
+         AND la0.action IN ('approved', 'rejected')
+       ORDER BY la0.created_at DESC
+       LIMIT 1
+     ) la ON TRUE
      WHERE ${scopeWhere}
      ORDER BY lr.created_at ASC`,
     scopeParams,
@@ -504,11 +720,18 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     leave_type: LeaveType;
     start_date: string;
     end_date: string;
+    leave_duration_type: LeaveDurationType | null;
+    short_start_time: string | null;
+    short_end_time: string | null;
     store_id: number | null;
     skipped_approvers: string[] | null;
   }>(
     `SELECT id, company_id, user_id, status, current_approver_role,
-            leave_type, start_date, end_date, store_id, skipped_approvers
+            leave_type, start_date, end_date,
+            leave_duration_type,
+            TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+            TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
+            store_id, skipped_approvers
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -553,7 +776,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 
   // Final step: update balance only when fully approved
   if (!transition.nextApprover) {
-    const workingDays  = countWorkingDays(leaveRequest.start_date, leaveRequest.end_date);
+    const requestedDays = computeRequestedLeaveDays(leaveRequest);
     const year         = new Date(leaveRequest.start_date).getFullYear();
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
 
@@ -578,11 +801,11 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
       const totalDays = parseFloat(balance.total_days);
       const usedDays  = parseFloat(balance.used_days);
 
-      if (usedDays + workingDays > totalDays) {
+      if (usedDays + requestedDays > totalDays) {
         await client.query('ROLLBACK');
         res.status(422).json({
           success: false,
-          error: `Saldo insufficiente: rimangono ${totalDays - usedDays} giorni, richiesti ${workingDays}`,
+          error: `Saldo insufficiente: rimangono ${totalDays - usedDays} giorni, richiesti ${requestedDays}`,
           code: 'INSUFFICIENT_BALANCE',
         });
         return;
@@ -590,9 +813,12 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 
       const updated = await client.query(
         `UPDATE leave_requests
-         SET status=$1, current_approver_role=$2, updated_at=NOW(), is_emergency_override=$3
+         SET status=$1, current_approver_role=$2, updated_at=NOW(), last_action_at=NOW(), is_emergency_override=$3
          WHERE id=$4
          RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                   leave_duration_type,
+                   TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+                   TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
                    status, current_approver_role, notes, created_at, updated_at`,
         [transition.nextStatus, transition.nextApprover, isOverride, leaveId],
       );
@@ -607,7 +833,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
         `UPDATE leave_balances
          SET used_days = used_days + $1, updated_at = NOW()
          WHERE company_id=$2 AND user_id=$3 AND year=$4 AND leave_type=$5`,
-        [workingDays, leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type],
+        [requestedDays, leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type],
       );
       if (balanceUpdate.rowCount === 0) {
         await client.query(
@@ -615,7 +841,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
            VALUES ($1,$2,$3,$4,$5,$6)
            ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
            SET used_days = leave_balances.used_days + EXCLUDED.used_days, updated_at = NOW()`,
-          [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type, defaultTotal, workingDays],
+          [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type, defaultTotal, requestedDays],
         );
       }
 
@@ -665,6 +891,9 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
            skipped_approvers=$3
        WHERE id=$4
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 leave_duration_type,
+                 TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+                 TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
                  status, current_approver_role, notes, created_at, updated_at`,
       [finalNextStatus, finalNextRole, JSON.stringify(updatedSkipped), leaveId],
     );
@@ -749,9 +978,12 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
 
     const updatedResult = await client.query(
       `UPDATE leave_requests
-       SET status='rejected', current_approver_role=NULL, updated_at=NOW(), is_emergency_override=$1
+       SET status='rejected', current_approver_role=NULL, updated_at=NOW(), last_action_at=NOW(), is_emergency_override=$1
        WHERE id=$2
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 leave_duration_type,
+                 TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+                 TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
                  status, current_approver_role, notes, created_at, updated_at`,
       [isOverride, leaveId],
     );
@@ -907,11 +1139,14 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
 
 export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response) => {
   const { userId: adminId } = req.user!;
-  const { user_id, leave_type, start_date, end_date, notes } = req.body as {
+  const { user_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time, notes } = req.body as {
     user_id: number;
     leave_type: LeaveType;
     start_date: string;
     end_date: string;
+    leave_duration_type?: LeaveDurationType;
+    short_start_time?: string;
+    short_end_time?: string;
     notes?: string;
   };
 
@@ -921,8 +1156,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
-  const isoDateRe = /^\d{4}-\d{2}-\d{2}$/;
-  if (!isoDateRe.test(start_date) || !isoDateRe.test(end_date)) {
+  if (!ISO_DATE_RE.test(start_date) || !ISO_DATE_RE.test(end_date)) {
     badRequest(res, 'Formato data non valido (YYYY-MM-DD)', 'INVALID_DATE_FORMAT');
     return;
   }
@@ -930,6 +1164,21 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     badRequest(res, 'La data di inizio non può essere successiva alla data di fine', 'INVALID_DATE_RANGE');
     return;
   }
+
+  const normalizedDuration = normalizeLeaveDurationInput({
+    leaveType: leave_type,
+    startDate: start_date,
+    endDate: end_date,
+    leaveDurationType: leave_duration_type,
+    shortStartTime: short_start_time,
+    shortEndTime: short_end_time,
+  });
+  if ('error' in normalizedDuration) {
+    badRequest(res, normalizedDuration.error, normalizedDuration.code);
+    return;
+  }
+
+  const { leaveDurationType, shortStartTime, shortEndTime, requestedDays } = normalizedDuration;
 
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
@@ -958,7 +1207,6 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
-  const workingDays  = countWorkingDays(start_date, end_date);
   const year         = new Date(start_date).getFullYear();
   const defaultTotal = leave_type === 'vacation' ? 25 : 10;
 
@@ -979,11 +1227,11 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
       [effectiveCompanyId, user_id, year, leave_type],
     );
     const bal = balRes.rows[0];
-    if (parseFloat(bal.used_days) + workingDays > parseFloat(bal.total_days)) {
+    if (parseFloat(bal.used_days) + requestedDays > parseFloat(bal.total_days)) {
       await dbClient.query('ROLLBACK');
       res.status(422).json({
         success: false,
-        error: `Saldo insufficiente: rimangono ${parseFloat(bal.total_days) - parseFloat(bal.used_days)} giorni, richiesti ${workingDays}`,
+        error: `Saldo insufficiente: rimangono ${parseFloat(bal.total_days) - parseFloat(bal.used_days)} giorni, richiesti ${requestedDays}`,
         code: 'INSUFFICIENT_BALANCE',
       });
       return;
@@ -991,12 +1239,26 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
 
     const inserted = await dbClient.query(
       `INSERT INTO leave_requests
-         (company_id, user_id, store_id, leave_type, start_date, end_date,
+         (company_id, user_id, store_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time,
           status, current_approver_role, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,'hr_approved',NULL,$7)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'hr_approved',NULL,$10)
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
+                 leave_duration_type,
+                 TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+                 TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
                  status, current_approver_role, notes, created_at`,
-      [effectiveCompanyId, user_id, targetUser.store_id, leave_type, start_date, end_date, notes ?? null],
+      [
+        effectiveCompanyId,
+        user_id,
+        targetUser.store_id,
+        leave_type,
+        start_date,
+        end_date,
+        leaveDurationType,
+        shortStartTime,
+        shortEndTime,
+        notes ?? null,
+      ],
     );
 
     await dbClient.query(
@@ -1008,7 +1270,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     const adminBalanceUpdate = await dbClient.query(
       `UPDATE leave_balances SET used_days = used_days + $1, updated_at = NOW()
        WHERE company_id=$2 AND user_id=$3 AND year=$4 AND leave_type=$5`,
-      [workingDays, effectiveCompanyId, user_id, year, leave_type],
+      [requestedDays, effectiveCompanyId, user_id, year, leave_type],
     );
     if (adminBalanceUpdate.rowCount === 0) {
       await dbClient.query(
@@ -1016,7 +1278,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
          VALUES ($1,$2,$3,$4,$5,$6)
          ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
          SET used_days = leave_balances.used_days + EXCLUDED.used_days, updated_at = NOW()`,
-        [effectiveCompanyId, user_id, year, leave_type, defaultTotal, workingDays],
+        [effectiveCompanyId, user_id, year, leave_type, defaultTotal, requestedDays],
       );
     }
 
@@ -1124,8 +1386,14 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
   const existing = await queryOne<{
     id: number; company_id: number; status: string;
     user_id: number; leave_type: string; start_date: string; end_date: string;
+    leave_duration_type: LeaveDurationType | null;
+    short_start_time: string | null;
+    short_end_time: string | null;
   }>(
-    `SELECT id, company_id, status, user_id, leave_type, start_date, end_date
+    `SELECT id, company_id, status, user_id, leave_type, start_date, end_date,
+            leave_duration_type,
+            TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
+            TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -1137,13 +1405,13 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
 
     // Only hr_approved requests have had balance deducted — reverse those only
     if (existing.status === 'hr_approved') {
-      const workingDays = countWorkingDays(existing.start_date, existing.end_date);
+      const requestedDays = computeRequestedLeaveDays(existing);
       const year        = new Date(existing.start_date).getFullYear();
       await deleteClient.query(
         `UPDATE leave_balances
          SET used_days = GREATEST(0, used_days - $1), updated_at = NOW()
          WHERE company_id=$2 AND user_id=$3 AND year=$4 AND leave_type=$5`,
-        [workingDays, existing.company_id, existing.user_id, year, existing.leave_type],
+        [requestedDays, existing.company_id, existing.user_id, year, existing.leave_type],
       );
     }
 
