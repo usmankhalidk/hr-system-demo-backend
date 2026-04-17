@@ -354,6 +354,11 @@ function sendExternalDbError(res: Response, err: unknown): boolean {
   return false;
 }
 
+function isLocalRequest(req: Request): boolean {
+  const host = (req.hostname ?? '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
 async function hasShiftsIsOffDayColumn(): Promise<boolean> {
   if (shiftsIsOffDayColumnCache != null) {
     return shiftsIsOffDayColumnCache;
@@ -549,6 +554,8 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
   const externalConfig = getExternalDbConfigStatus();
   const externalStatus = await checkExternalConnection();
 
+  const allowLocalMetadata = process.env.NODE_ENV !== 'production' || isLocalRequest(req);
+
   let externalTableDetails: Array<{
     tableName: string;
     engine: string | null;
@@ -565,7 +572,7 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     }>;
   }> = [];
 
-  if (externalStatus.ok) {
+  if (allowLocalMetadata && externalStatus.ok) {
     try {
       const details = await fetchExternalTableDetails(500);
       externalTableDetails = details.map((table) => ({
@@ -588,8 +595,10 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const localTables = localTableDetails.map((table) => ({ tableName: table.tableName }));
-  const externalTables = externalTableDetails.map((table) => ({ tableName: table.tableName }));
+  const safeLocalTableDetails = allowLocalMetadata ? localTableDetails : [];
+  const safeExternalTableDetails = allowLocalMetadata ? externalTableDetails : [];
+  const localTables = safeLocalTableDetails.map((table) => ({ tableName: table.tableName }));
+  const externalTables = safeExternalTableDetails.map((table) => ({ tableName: table.tableName }));
 
   ok(res, {
     connections: {
@@ -601,14 +610,14 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
       internal: {
         engine: 'PostgreSQL',
         databaseName: internalStatus.database,
-        tableCount: localTableDetails.length,
+        tableCount: safeLocalTableDetails.length,
         connected: internalStatus.ok,
         checkedAt: internalStatus.checkedAt,
       },
       external: {
         engine: 'MySQL',
         databaseName: externalStatus.database ?? externalConfig.database,
-        tableCount: externalTableDetails.length,
+        tableCount: safeExternalTableDetails.length,
         connected: externalStatus.ok,
         configured: externalStatus.configured,
         checkedAt: externalStatus.checkedAt,
@@ -618,16 +627,16 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
       companies: Number(companyCountRow?.count ?? 0),
       stores: Number(storeCountRow?.count ?? 0),
       employees: Number(employeeCountRow?.count ?? 0),
-      localTables: Number(localTablesRow?.count ?? localTableDetails.length),
-      externalTables: externalTableDetails.length,
+      localTables: safeLocalTableDetails.length,
+      externalTables: safeExternalTableDetails.length,
     },
     companies,
     stores,
     employees,
     localTables,
     externalTables,
-    localTableDetails,
-    externalTableDetails,
+    localTableDetails: safeLocalTableDetails,
+    externalTableDetails: safeExternalTableDetails,
   });
 });
 

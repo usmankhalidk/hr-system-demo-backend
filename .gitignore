@@ -2,10 +2,13 @@ node_modules/
 dist/
 .env
 *.log
+
 uploads/*
 uploads/avatars/*
 uploads/company-logos/*
 uploads/company-banners/*
 uploads/store-logos/*
 !uploads/.gitkeep
+
 .claude-flow/
+src/modules/externalAffluence/local-only/
