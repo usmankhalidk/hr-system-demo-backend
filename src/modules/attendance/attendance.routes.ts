@@ -26,7 +26,7 @@ router.post(
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
-  requireModulePermission('presenze', 'write'),
+  // Functionality vs Visibility: marking attendance does not require the 'presenze' permission
   validate(checkinSchema),
   checkin,
 );
@@ -73,13 +73,13 @@ const syncSchema = z.object({
   )).min(1).max(500),
 });
 
-// POST /api/attendance/sync — store_terminal only
+// POST /api/attendance/sync — terminal and employee check-ins
 router.post(
   '/sync',
   authenticate,
-  requireRole('store_terminal'),
+  requireRole('store_terminal', 'employee'),
   enforceCompany,
-  requireModulePermission('presenze', 'write'),
+  // Functionality vs Visibility: marking attendance does not require the 'presenze' permission
   validate(syncSchema),
   syncEvents,
 );
