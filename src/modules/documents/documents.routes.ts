@@ -1378,7 +1378,8 @@ router.get(
     }
 
     const employeeId = req.query.employee_id ? parseInt(req.query.employee_id as string, 10) : undefined;
-    const docs = await getDeletedDocuments(user.companyId, employeeId);
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+    const docs = await getDeletedDocuments(allowedCompanyIds, employeeId);
     ok(res, docs);
 
   }),

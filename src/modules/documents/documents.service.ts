@@ -285,6 +285,7 @@ function mapDocumentRecord(row: {
   id: number;
   company_id: number;
   employee_id: number;
+  employee_company_id?: number | null;
   category_id: number | null;
   category_name: string | null;
   file_name: string;
@@ -308,7 +309,8 @@ function mapDocumentRecord(row: {
 } | any): DocumentRecord {
   return {
     id: row.id,
-    companyId: row.company_id,
+    // Prioritize the employee's company ID if the document is assigned to an employee
+    companyId: row.employee_company_id || row.company_id,
     employeeId: row.employee_id,
     categoryId: row.category_id,
     categoryName: row.category_name,
@@ -339,6 +341,7 @@ const DOC_SELECT = `
   SELECT d.id,
          d.company_id,
          d.employee_id,
+         e.company_id AS employee_company_id,
          CONCAT(e.name, ' ', e.surname) AS employee_name,
          d.category_id,
          c.name AS category_name,
@@ -702,10 +705,10 @@ export async function restoreDocument(id: number, companyId: number, restoredBy:
 }
 
 
-export async function getDeletedDocuments(companyId: number, employeeId?: number): Promise<DocumentRecord[]> {
+export async function getDeletedDocuments(companyIds: number[], employeeId?: number): Promise<DocumentRecord[]> {
   // 1. Fetch from employee_documents
-  let empWhere = 'd.company_id = $1 AND d.is_deleted = true';
-  const empParams: any[] = [companyId];
+  let empWhere = 'd.company_id = ANY($1) AND d.is_deleted = true';
+  const empParams: any[] = [companyIds];
   if (employeeId) {
     empWhere += ' AND d.employee_id = $2';
     empParams.push(employeeId);
@@ -720,15 +723,17 @@ export async function getDeletedDocuments(companyId: number, employeeId?: number
   const empDocs = empRows.map(mapDocumentRecord);
 
   // 2. Fetch from documents (generic)
-  let genWhere = 'd.company_id = $1 AND d.is_deleted = true';
-  const genParams: any[] = [companyId];
+  let genWhere = 'd.company_id = ANY($1) AND d.is_deleted = true';
+  const genParams: any[] = [companyIds];
   if (employeeId) {
     genWhere += ' AND d.employee_id = $2';
     genParams.push(employeeId);
   }
 
   const genRows = await query<any>(
-    `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name
+    `SELECT d.*, 
+            CONCAT(e.name, ' ', e.surname) AS employee_name,
+            e.company_id AS employee_company_id
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
       WHERE ${genWhere}
@@ -739,7 +744,7 @@ export async function getDeletedDocuments(companyId: number, employeeId?: number
   
   const genDocs: DocumentRecord[] = genRows.map((r: any) => ({
     id: r.id,
-    companyId: r.company_id,
+    companyId: r.employee_company_id || r.company_id,
     employeeId: r.employee_id, // Preserving null instead of using 0
     categoryId: null,
     categoryName: r.category,
@@ -991,25 +996,15 @@ export async function getGenericDocuments(options: {
     where = 'd.company_id = ANY($1) AND d.is_deleted = false';
     params.push(ids);
   } else if (options.role === 'hr') {
-    // HR: see all documents in their company
-    where = 'd.company_id = $1 AND d.is_deleted = false';
-    params.push(options.companyId);
-  } else if (options.role === 'area_manager' && options.employeeId) {
-    // Area Manager: 
-    // 1. Must pass visibility check (e.g. not "Only HR")
-    // 2. See documents of store employees in their area
-    where = `(
-      d.company_id = $3
-      AND ${visibilityFilter.replace('$roleIndex', '$2')}
-      AND (
-        d.employee_id = $1 -- Own docs
-        OR d.employee_id IS NULL -- Unassigned/Company-wide
-        OR e.supervisor_id = $1 -- Direct reports
-        OR e.store_id IN (SELECT DISTINCT store_id FROM users WHERE supervisor_id = $1 AND role = 'store_manager' AND status = 'active')
-      )
-      AND d.is_deleted = false
-    )`;
-    params.push(options.employeeId, options.role, options.companyId);
+    // HR: see all documents in allowed companies
+    const ids = options.allowedCompanyIds || [options.companyId];
+    where = 'd.company_id = ANY($1) AND d.is_deleted = false';
+    params.push(ids);
+  } else if (options.role === 'area_manager') {
+    // Area Manager: See all documents in allowed companies that are visible to their role (or everyone)
+    const ids = options.allowedCompanyIds || [options.companyId];
+    where = `d.company_id = ANY($1) AND ${visibilityFilter.replace('$roleIndex', '$2')} AND d.is_deleted = false`;
+    params.push(ids, options.role);
   } else if (options.role === 'store_manager' && options.storeId) {
     // Store Manager:
     // 1. Must pass visibility check
@@ -1017,7 +1012,7 @@ export async function getGenericDocuments(options: {
     where = `(
       d.company_id = $4
       AND ${visibilityFilter.replace('$roleIndex', '$3')}
-      AND (d.employee_id = $2 OR d.employee_id IS NULL OR e.store_id = $1)
+      AND (d.employee_id = $2 OR e.store_id = $1)
       AND d.is_deleted = false
     )`;
     params.push(options.storeId, options.employeeId, options.role, options.companyId);
@@ -1039,10 +1034,12 @@ export async function getGenericDocuments(options: {
 
   const rows = await query<{
     id: number;
+    company_id: number;
     title: string;
     file_url: string;
     category: string | null;
     employee_id: number | null;
+    employee_company_id: number | null;
     uploaded_by: number;
     requires_signature: boolean;
     expires_at: string | null;
@@ -1060,6 +1057,7 @@ export async function getGenericDocuments(options: {
     restored_by: number | null;
   }>(
     `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name,
+            e.company_id AS employee_company_id,
             COALESCE(d.signed_at, (SELECT max(ed.signed_at) FROM employee_documents ed WHERE ed.storage_path = d.file_url AND ed.employee_id = d.employee_id AND ed.is_deleted = false)) as signed_at_combined
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
@@ -1071,6 +1069,7 @@ export async function getGenericDocuments(options: {
 
   return rows.map((r) => ({
     id: r.id,
+    companyId: r.employee_company_id || r.company_id,
     title: r.title,
     fileUrl: r.file_url,
     category: r.category,
