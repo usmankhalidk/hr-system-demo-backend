@@ -6,6 +6,7 @@ import {
   deleteMapping,
   getAffluencePreview,
   getExternalCatalog,
+  getExternalTableData,
   getOverview,
   getIngressiData,
   listDepositi,
@@ -91,6 +92,14 @@ router.get(
   requireRole(...readRoles),
   requireModulePermission('turni', 'read'),
   getIngressiData,
+);
+
+router.get(
+  '/table-data',
+  authenticate,
+  requireRole(...readRoles),
+  requireModulePermission('turni', 'read'),
+  getExternalTableData,
 );
 
 router.get(
