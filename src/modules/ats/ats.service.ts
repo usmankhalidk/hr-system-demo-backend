@@ -318,12 +318,12 @@ export async function listJobs(
             creator.role::text AS created_by_role,
             creator.avatar_filename AS created_by_avatar_filename,
             creator_store.name AS created_by_store_name,
-            COALESCE(j.job_city, s.city, c.city) AS city,
-            COALESCE(j.job_state, s.state, c.state) AS state,
-            COALESCE(j.job_country, s.country, c.country) AS country,
+                 COALESCE(j.job_city, c.city) AS city,
+                 COALESCE(j.job_state, c.state) AS state,
+                 COALESCE(j.job_country, c.country) AS country,
             COALESCE(j.job_postal_code, s.cap) AS postal_code,
             COALESCE(j.job_address, s.address, c.address) AS address,
-            CONCAT_WS(', ', COALESCE(j.job_city, s.city, c.city), COALESCE(j.job_state, s.state, c.state), COALESCE(j.job_country, s.country, c.country)) AS location
+                 CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id
@@ -347,19 +347,19 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
               s.name AS store_name,
               s.address AS store_address,
               s.cap AS store_postal_code,
-              s.city AS store_city,
-              s.state AS store_state,
-              s.country AS store_country,
+              NULL::text AS store_city,
+              NULL::text AS store_state,
+              NULL::text AS store_country,
               c.city AS company_city,
               c.state AS company_state,
               c.country AS company_country,
               c.address AS company_address,
-              COALESCE(j.job_city, s.city, c.city) AS city,
-              COALESCE(j.job_state, s.state, c.state) AS state,
-              COALESCE(j.job_country, s.country, c.country) AS country,
+              COALESCE(j.job_city, c.city) AS city,
+              COALESCE(j.job_state, c.state) AS state,
+              COALESCE(j.job_country, c.country) AS country,
               COALESCE(j.job_postal_code, s.cap) AS postal_code,
               COALESCE(j.job_address, s.address, c.address) AS address,
-              CONCAT_WS(', ', COALESCE(j.job_city, s.city, c.city), COALESCE(j.job_state, s.state, c.state), COALESCE(j.job_country, s.country, c.country)) AS location
+              CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
        FROM job_postings j
        JOIN companies c ON c.id = j.company_id
        LEFT JOIN stores s ON s.id = j.store_id
@@ -404,19 +404,19 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
             s.name AS store_name,
             s.address AS store_address,
             s.cap AS store_postal_code,
-            s.city AS store_city,
-            s.state AS store_state,
-            s.country AS store_country,
+          NULL::text AS store_city,
+          NULL::text AS store_state,
+          NULL::text AS store_country,
             c.city AS company_city,
             c.state AS company_state,
             c.country AS company_country,
             c.address AS company_address,
-            COALESCE(j.job_city, s.city, c.city) AS city,
-            COALESCE(j.job_state, s.state, c.state) AS state,
-            COALESCE(j.job_country, s.country, c.country) AS country,
+          COALESCE(j.job_city, c.city) AS city,
+          COALESCE(j.job_state, c.state) AS state,
+          COALESCE(j.job_country, c.country) AS country,
             COALESCE(j.job_postal_code, s.cap) AS postal_code,
             COALESCE(j.job_address, s.address, c.address) AS address,
-            CONCAT_WS(', ', COALESCE(j.job_city, s.city, c.city), COALESCE(j.job_state, s.state, c.state), COALESCE(j.job_country, s.country, c.country)) AS location
+          CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id
@@ -441,12 +441,12 @@ export async function getJob(id: number, companyId: number): Promise<JobPosting 
             creator.role::text AS created_by_role,
             creator.avatar_filename AS created_by_avatar_filename,
             creator_store.name AS created_by_store_name,
-            COALESCE(j.job_city, s.city, c.city) AS city,
-            COALESCE(j.job_state, s.state, c.state) AS state,
-            COALESCE(j.job_country, s.country, c.country) AS country,
+                 COALESCE(j.job_city, c.city) AS city,
+                 COALESCE(j.job_state, c.state) AS state,
+                 COALESCE(j.job_country, c.country) AS country,
             COALESCE(j.job_postal_code, s.cap) AS postal_code,
             COALESCE(j.job_address, s.address, c.address) AS address,
-            CONCAT_WS(', ', COALESCE(j.job_city, s.city, c.city), COALESCE(j.job_state, s.state, c.state), COALESCE(j.job_country, s.country, c.country)) AS location
+                 CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id

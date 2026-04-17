@@ -10,9 +10,11 @@ import {
   buildTrafficSummary,
   checkExternalConnection,
   fetchExternalTableDetails,
+  fetchExternalTableSampleData,
   fetchDepositoByCode,
   fetchDepositiByStoreCodes,
   fetchDepositiRows,
+  fetchIngressiDetailedRows,
   fetchIngressiAvailabilityByStoreCodes,
   fetchIngressiDaily,
   getExternalDbConfigStatus,
@@ -126,6 +128,10 @@ interface ShiftCoverageRow {
   isOffDay: boolean;
 }
 
+interface ExistsRow {
+  exists: boolean;
+}
+
 interface CountRow {
   count: number | string;
 }
@@ -136,6 +142,8 @@ const STAFFING_SLOTS: Array<{ timeSlot: string; startMinutes: number; endMinutes
   { timeSlot: '15:00-18:00', startMinutes: 15 * 60, endMinutes: 18 * 60 },
   { timeSlot: '18:00-21:00', startMinutes: 18 * 60, endMinutes: 21 * 60 },
 ];
+
+let shiftsIsOffDayColumnCache: boolean | null = null;
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -313,7 +321,61 @@ function sendExternalDbError(res: Response, err: unknown): boolean {
     });
     return true;
   }
+
+  const anyErr = err as { code?: string; message?: string };
+  const code = String(anyErr?.code ?? '').toUpperCase();
+  const message = String(anyErr?.message ?? '').toLowerCase();
+  const isConnectionOrTimeoutError = [
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EHOSTUNREACH',
+    'ENOTFOUND',
+    'PROTOCOL_CONNECTION_LOST',
+    'PROTOCOL_SEQUENCE_TIMEOUT',
+    'PROTOCOL_ENQUEUE_AFTER_FATAL_ERROR',
+    'PROTOCOL_ENQUEUE_AFTER_QUIT',
+  ].includes(code)
+    || message.includes('etimedout')
+    || message.includes('read etimedout')
+    || message.includes('connect etimedout')
+    || message.includes('connection lost')
+    || message.includes('mysql server has gone away');
+
+  if (isConnectionOrTimeoutError) {
+    res.status(503).json({
+      success: false,
+      error: 'External database is currently unreachable or timed out. Please try again shortly.',
+      code: 'EXTERNAL_DB_TIMEOUT',
+    });
+    return true;
+  }
+
   return false;
+}
+
+function isLocalRequest(req: Request): boolean {
+  const host = (req.hostname ?? '').toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+async function hasShiftsIsOffDayColumn(): Promise<boolean> {
+  if (shiftsIsOffDayColumnCache != null) {
+    return shiftsIsOffDayColumnCache;
+  }
+
+  const exists = await queryOne<ExistsRow>(
+    `SELECT EXISTS (
+       SELECT 1
+       FROM information_schema.columns
+       WHERE table_schema = 'public'
+         AND table_name = 'shifts'
+         AND column_name = 'is_off_day'
+     ) AS exists`,
+  );
+
+  shiftsIsOffDayColumnCache = Boolean(exists?.exists);
+  return shiftsIsOffDayColumnCache;
 }
 
 export const getExternalCatalog = asyncHandler(async (_req: Request, res: Response) => {
@@ -492,6 +554,8 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
   const externalConfig = getExternalDbConfigStatus();
   const externalStatus = await checkExternalConnection();
 
+  const allowLocalMetadata = process.env.NODE_ENV !== 'production' || isLocalRequest(req);
+
   let externalTableDetails: Array<{
     tableName: string;
     engine: string | null;
@@ -508,7 +572,7 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     }>;
   }> = [];
 
-  if (externalStatus.ok) {
+  if (allowLocalMetadata && externalStatus.ok) {
     try {
       const details = await fetchExternalTableDetails(500);
       externalTableDetails = details.map((table) => ({
@@ -531,8 +595,10 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const localTables = localTableDetails.map((table) => ({ tableName: table.tableName }));
-  const externalTables = externalTableDetails.map((table) => ({ tableName: table.tableName }));
+  const safeLocalTableDetails = allowLocalMetadata ? localTableDetails : [];
+  const safeExternalTableDetails = allowLocalMetadata ? externalTableDetails : [];
+  const localTables = safeLocalTableDetails.map((table) => ({ tableName: table.tableName }));
+  const externalTables = safeExternalTableDetails.map((table) => ({ tableName: table.tableName }));
 
   ok(res, {
     connections: {
@@ -544,14 +610,14 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
       internal: {
         engine: 'PostgreSQL',
         databaseName: internalStatus.database,
-        tableCount: localTableDetails.length,
+        tableCount: safeLocalTableDetails.length,
         connected: internalStatus.ok,
         checkedAt: internalStatus.checkedAt,
       },
       external: {
         engine: 'MySQL',
         databaseName: externalStatus.database ?? externalConfig.database,
-        tableCount: externalTableDetails.length,
+        tableCount: safeExternalTableDetails.length,
         connected: externalStatus.ok,
         configured: externalStatus.configured,
         checkedAt: externalStatus.checkedAt,
@@ -561,16 +627,16 @@ export const getOverview = asyncHandler(async (req: Request, res: Response) => {
       companies: Number(companyCountRow?.count ?? 0),
       stores: Number(storeCountRow?.count ?? 0),
       employees: Number(employeeCountRow?.count ?? 0),
-      localTables: Number(localTablesRow?.count ?? localTableDetails.length),
-      externalTables: externalTableDetails.length,
+      localTables: safeLocalTableDetails.length,
+      externalTables: safeExternalTableDetails.length,
     },
     companies,
     stores,
     employees,
     localTables,
     externalTables,
-    localTableDetails,
-    externalTableDetails,
+    localTableDetails: safeLocalTableDetails,
+    externalTableDetails: safeExternalTableDetails,
   });
 });
 
@@ -933,12 +999,20 @@ export const getIngressiData = asyncHandler(async (req: Request, res: Response) 
   const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 5000) : 400;
 
   try {
-    const rows = await fetchIngressiDaily(
-      resolved.externalStoreCode,
-      range.fromDate,
-      range.toDate,
-      limit,
-    );
+    const [rows, detail] = await Promise.all([
+      fetchIngressiDaily(
+        resolved.externalStoreCode,
+        range.fromDate,
+        range.toDate,
+        limit,
+      ),
+      fetchIngressiDetailedRows(
+        resolved.externalStoreCode,
+        range.fromDate,
+        range.toDate,
+        Math.min(limit, 1200),
+      ),
+    ]);
 
     ok(res, {
       externalStoreCode: resolved.externalStoreCode,
@@ -948,6 +1022,44 @@ export const getIngressiData = asyncHandler(async (req: Request, res: Response) 
       toDate: range.toDate,
       rows,
       summary: buildTrafficSummary(rows),
+      detailColumns: detail.columns,
+      detailRows: detail.rows,
+    });
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+export const getExternalTableData = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveTargetCompanyId(req);
+  if (companyId == null) {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+
+  const tableNameRaw = String(req.query.table_name ?? '').trim();
+  if (!tableNameRaw) {
+    badRequest(res, 'table_name is required', 'TABLE_NAME_REQUIRED');
+    return;
+  }
+
+  const limitRaw = typeof req.query.limit === 'string' ? parseInt(req.query.limit, 10) : 60;
+  const limit = Number.isFinite(limitRaw) ? Math.min(Math.max(limitRaw, 1), 300) : 60;
+
+  try {
+    const tableDetails = await fetchExternalTableDetails(500);
+    const tableName = tableDetails.find((table) => table.tableName.toLowerCase() === tableNameRaw.toLowerCase())?.tableName;
+    if (!tableName) {
+      notFound(res, 'External table not found', 'EXTERNAL_TABLE_NOT_FOUND');
+      return;
+    }
+
+    const data = await fetchExternalTableSampleData(tableName, limit);
+    ok(res, {
+      tableName: data.tableName,
+      columns: data.columns,
+      rows: data.rows,
     });
   } catch (err) {
     if (sendExternalDbError(res, err)) return;
@@ -1070,6 +1182,11 @@ export const getAffluencePreview = asyncHandler(async (req: Request, res: Respon
       [companyId, storeId],
     );
 
+    const includeIsOffDay = await hasShiftsIsOffDayColumn();
+    const isOffDaySelect = includeIsOffDay
+      ? 'is_off_day AS "isOffDay"'
+      : 'false AS "isOffDay"';
+
     const shiftRows = await query<ShiftCoverageRow>(
       `SELECT
          TO_CHAR(date::date, 'YYYY-MM-DD') AS date,
@@ -1079,7 +1196,7 @@ export const getAffluencePreview = asyncHandler(async (req: Request, res: Respon
          CASE WHEN split_start2 IS NULL THEN NULL ELSE TO_CHAR(split_start2, 'HH24:MI') END AS "splitStart2",
          CASE WHEN split_end2 IS NULL THEN NULL ELSE TO_CHAR(split_end2, 'HH24:MI') END AS "splitEnd2",
          is_split AS "isSplit",
-         is_off_day AS "isOffDay"
+         ${isOffDaySelect}
        FROM shifts
        WHERE company_id = $1
          AND store_id = $2

@@ -3,6 +3,18 @@ import { createPool, Pool, RowDataPacket } from 'mysql2/promise';
 export type ExternalTableName = 'depositi' | 'ingressi';
 export type AffluenceLevel = 'low' | 'medium' | 'high';
 
+export type ExternalTableCellValue = string | number | boolean | null;
+
+export interface ExternalTableDataRow {
+  [column: string]: ExternalTableCellValue;
+}
+
+export interface ExternalTableDataResult {
+  tableName: string;
+  columns: string[];
+  rows: ExternalTableDataRow[];
+}
+
 export interface ExternalTableColumnDef {
   field: string;
   englishLabel: string;
@@ -268,6 +280,9 @@ function getExternalPool(): Pool {
     waitForConnections: true,
     connectionLimit: 8,
     queueLimit: 0,
+    connectTimeout: 15000,
+    enableKeepAlive: true,
+    keepAliveInitialDelay: 10000,
     dateStrings: true,
     decimalNumbers: true,
     charset: 'utf8mb4',
@@ -412,6 +427,160 @@ export async function fetchExternalTableDetails(limit = 200): Promise<ExternalTa
 
 function normalizeStoreCode(value: string | null | undefined): string {
   return (value ?? '').trim();
+}
+
+function quoteMysqlIdentifier(identifier: string): string {
+  const normalized = (identifier ?? '').trim();
+  if (!/^[A-Za-z0-9_]+$/.test(normalized)) {
+    throw new ExternalDbUnavailableError(
+      'Invalid external table identifier',
+      'INVALID_EXTERNAL_TABLE_IDENTIFIER',
+      400,
+    );
+  }
+  return `\`${normalized}\``;
+}
+
+function toExternalTableCellValue(value: unknown): ExternalTableCellValue {
+  if (value == null) return null;
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'bigint') return value.toString();
+
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+
+  if (Buffer.isBuffer(value)) {
+    return value.toString('utf8');
+  }
+
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function serializeTableRows(
+  rows: RowDataPacket[],
+  columns: string[],
+): ExternalTableDataRow[] {
+  return rows.map((row) => {
+    const output: ExternalTableDataRow = {};
+    for (const column of columns) {
+      output[column] = toExternalTableCellValue((row as Record<string, unknown>)[column]);
+    }
+    return output;
+  });
+}
+
+async function fetchTableColumnNames(tableName: string): Promise<string[]> {
+  const normalizedTableName = (tableName ?? '').trim();
+  if (!normalizedTableName) return [];
+
+  const pool = getExternalPool();
+  const [rows] = await pool.query<Array<RowDataPacket & { column_name: string }>>(
+    `SELECT column_name
+     FROM information_schema.columns
+     WHERE table_schema = DATABASE()
+       AND table_name = ?
+     ORDER BY ordinal_position`,
+    [normalizedTableName],
+  );
+
+  return rows
+    .map((row) => String(row.column_name ?? '').trim())
+    .filter((name) => name.length > 0);
+}
+
+export async function fetchExternalTableSampleData(
+  tableName: string,
+  limit = 50,
+): Promise<ExternalTableDataResult> {
+  const normalizedTableName = (tableName ?? '').trim();
+  if (!normalizedTableName) {
+    return {
+      tableName: normalizedTableName,
+      columns: [],
+      rows: [],
+    };
+  }
+
+  const safeLimit = clamp(limit, 1, 300);
+  const columns = await fetchTableColumnNames(normalizedTableName);
+  if (columns.length === 0) {
+    return {
+      tableName: normalizedTableName,
+      columns: [],
+      rows: [],
+    };
+  }
+
+  const pool = getExternalPool();
+  const escapedTable = quoteMysqlIdentifier(normalizedTableName);
+  const selectedColumns = columns.map((column) => quoteMysqlIdentifier(column)).join(', ');
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${selectedColumns}
+     FROM ${escapedTable}
+     LIMIT ?`,
+    [safeLimit],
+  );
+
+  return {
+    tableName: normalizedTableName,
+    columns,
+    rows: serializeTableRows(rows, columns),
+  };
+}
+
+export async function fetchIngressiDetailedRows(
+  externalStoreCode: string,
+  fromDate: string,
+  toDate: string,
+  limit = 600,
+): Promise<ExternalTableDataResult> {
+  const normalizedStoreCode = normalizeStoreCode(externalStoreCode);
+  if (!normalizedStoreCode) {
+    return {
+      tableName: 'ingressi',
+      columns: [],
+      rows: [],
+    };
+  }
+
+  const safeLimit = clamp(limit, 1, 2000);
+  const tableName = 'ingressi';
+  const columns = await fetchTableColumnNames(tableName);
+  if (columns.length === 0) {
+    return {
+      tableName,
+      columns: [],
+      rows: [],
+    };
+  }
+
+  const pool = getExternalPool();
+  const escapedTable = quoteMysqlIdentifier(tableName);
+  const selectedColumns = columns.map((column) => quoteMysqlIdentifier(column)).join(', ');
+
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT ${selectedColumns}
+     FROM ${escapedTable}
+     WHERE TRIM(deposito) = ?
+       AND DATE(data) BETWEEN ? AND ?
+     ORDER BY DATE(data) DESC
+     LIMIT ?`,
+    [normalizedStoreCode, fromDate, toDate, safeLimit],
+  );
+
+  return {
+    tableName,
+    columns,
+    rows: serializeTableRows(rows, columns),
+  };
 }
 
 function clamp(value: number, min: number, max: number): number {

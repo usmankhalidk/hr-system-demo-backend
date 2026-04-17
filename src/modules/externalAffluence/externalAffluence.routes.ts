@@ -6,6 +6,7 @@ import {
   deleteMapping,
   getAffluencePreview,
   getExternalCatalog,
+  getExternalTableData,
   getOverview,
   getIngressiData,
   listDepositi,
@@ -36,20 +37,91 @@ const syncAffluenceSchema = z.object({
   company_id: z.number().int().positive().optional(),
 });
 
+type AnyMiddleware = (...args: any[]) => any;
+type RegisterExternalAffluenceLocalDebugRoutes = (router: Router, deps: {
+  authenticate: AnyMiddleware;
+  requireRole: (...roles: string[]) => AnyMiddleware;
+  requireModulePermission: (moduleKey: string, action: string) => AnyMiddleware;
+  getExternalCatalog: AnyMiddleware;
+  getExternalTableData: AnyMiddleware;
+}) => void;
+
+function isLocalHostname(hostname: string): boolean {
+  const host = (hostname ?? '').trim().toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+}
+
+function registerBuiltInLocalDebugRoutes(targetRouter: Router): void {
+  const requireLocalDebugAccess: AnyMiddleware = (req: any, res: any, next: any) => {
+    const isNonProduction = process.env.NODE_ENV !== 'production';
+    if (isNonProduction || isLocalHostname(req?.hostname ?? '')) {
+      next();
+      return;
+    }
+
+    res.status(404).json({
+      success: false,
+      error: 'Not found',
+    });
+  };
+
+  targetRouter.get(
+    '/catalog',
+    authenticate,
+    requireRole(...readRoles),
+    requireModulePermission('turni', 'read'),
+    requireLocalDebugAccess,
+    getExternalCatalog,
+  );
+
+  targetRouter.get(
+    '/table-data',
+    authenticate,
+    requireRole(...readRoles),
+    requireModulePermission('turni', 'read'),
+    requireLocalDebugAccess,
+    getExternalTableData,
+  );
+}
+
+function registerLocalDebugRoutes(targetRouter: Router): void {
+  const moduleCandidates = [
+    './local-only/externalAffluence.debug.routes.local',
+    './local-only/externalAffluence.debug.routes.local.ts',
+    './local-only/externalAffluence.debug.routes.local.js',
+  ];
+
+  for (const modulePath of moduleCandidates) {
+    try {
+      const localModule = require(modulePath) as {
+        registerExternalAffluenceLocalDebugRoutes?: RegisterExternalAffluenceLocalDebugRoutes;
+      };
+
+      if (typeof localModule.registerExternalAffluenceLocalDebugRoutes === 'function') {
+        localModule.registerExternalAffluenceLocalDebugRoutes(targetRouter, {
+          authenticate,
+          requireRole: (...roles: string[]) => requireRole(...roles as any),
+          requireModulePermission: (moduleKey: string, action: string) => requireModulePermission(moduleKey as any, action as any),
+          getExternalCatalog,
+          getExternalTableData,
+        });
+        return;
+      }
+    } catch {
+      // Keep trying candidate module paths.
+    }
+  }
+
+  // Fallback keeps local behavior available when local-only module is absent.
+  registerBuiltInLocalDebugRoutes(targetRouter);
+}
+
 router.get(
   '/overview',
   authenticate,
   requireRole(...readRoles),
   requireModulePermission('turni', 'read'),
   getOverview,
-);
-
-router.get(
-  '/catalog',
-  authenticate,
-  requireRole(...readRoles),
-  requireModulePermission('turni', 'read'),
-  getExternalCatalog,
 );
 
 router.get(
@@ -109,5 +181,7 @@ router.post(
   validate(syncAffluenceSchema),
   syncAffluenceFromExternal,
 );
+
+registerLocalDebugRoutes(router);
 
 export default router;
