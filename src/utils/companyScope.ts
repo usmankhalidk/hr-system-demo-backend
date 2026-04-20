@@ -55,9 +55,9 @@ export async function resolveAllowedCompanyIds(user: JwtPayload): Promise<number
     );
     allowedIds = rows.map((r) => r.id);
   } else if (user.role === 'hr' || user.role === 'area_manager') {
-    // Cross-company for HR/Area Manager depends on group_role_visibility
-    const canCross = await resolveGroupRoleVisibility(groupId, user.role);
-    if (!canCross) {
+    // If part of a group, HR and Area Managers see all companies in that group.
+    // Otherwise, they are restricted to their own company.
+    if (groupId === null) {
       allowedIds = [user.companyId];
     } else {
       const rows = await query<{ id: number }>(

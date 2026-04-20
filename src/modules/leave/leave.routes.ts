@@ -19,6 +19,8 @@ import {
   importLeaveBalances,
   cancelLeave,
   executeEscalation,
+  getApprovalConfig,
+  updateApprovalConfig,
 } from './leave.controller';
 
 const router = Router();
@@ -252,6 +254,26 @@ router.put(
   authenticate,
   enforceCompany,
   cancelLeave,
+);
+
+// GET /api/leave/approval-config — get approval chain config
+router.get(
+  '/approval-config',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'read'),
+  getApprovalConfig,
+);
+
+// PUT /api/leave/approval-config — update approval chain config
+router.put(
+  '/approval-config',
+  authenticate,
+  enforceCompany,
+  requireRole('admin'),
+  requireModulePermission('permessi', 'write'),
+  updateApprovalConfig,
 );
 
 // POST /api/leave/escalate - usually triggered internally or by superadmin

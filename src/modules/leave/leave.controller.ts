@@ -204,23 +204,52 @@ function computeRequestedLeaveDays(leave: {
  * area_manager; if no area_manager exists for the company, or they are on leave, escalate to hr.
  */
 /**
- * Final authority chain for leave approvals.
+ * Default approval chain (used when no company config exists).
  */
-const APPROVAL_CHAIN = ['store_manager', 'area_manager', 'hr', 'admin'];
+const DEFAULT_APPROVAL_CHAIN = ['store_manager', 'area_manager', 'hr', 'admin'];
 
 /**
- * State machine transitions for the approval chain.
+ * Maps each role to the status name produced when that role approves.
  */
-const TRANSITIONS: Record<string, { nextStatus: string; nextApprover: string | null }> = {
-  store_manager: { nextStatus: 'supervisor_approved',   nextApprover: 'area_manager' },
-  area_manager:  { nextStatus: 'area_manager_approved', nextApprover: 'hr' },
-  hr:            { nextStatus: 'hr_approved',           nextApprover: 'admin' },
-  admin:         { nextStatus: 'admin_approved',        nextApprover: null }, 
+const ROLE_STATUS: Record<string, string> = {
+  store_manager: 'supervisor_approved',
+  area_manager:  'area_manager_approved',
+  hr:            'hr_approved',
+  admin:         'admin_approved',
 };
 
 function isPgCheckConstraintError(err: unknown): boolean {
   const anyErr = err as { code?: string };
   return anyErr?.code === '23514';
+}
+
+/**
+ * Load the enabled approval chain for a company from leave_approval_config.
+ * Falls back to DEFAULT_APPROVAL_CHAIN if no config rows exist.
+ */
+async function getApprovalChain(companyId: number): Promise<string[]> {
+  const rows = await query<{ role: string }>(
+    `SELECT role FROM leave_approval_config
+     WHERE company_id = $1 AND enabled = true
+     ORDER BY sort_order`,
+    [companyId],
+  );
+  return rows.length > 0 ? rows.map((r) => r.role) : DEFAULT_APPROVAL_CHAIN;
+}
+
+/**
+ * Build a transition map dynamically from an ordered approval chain.
+ * Each role maps to the status it produces and the next approver in line.
+ */
+function buildTransitions(chain: string[]): Record<string, { nextStatus: string; nextApprover: string | null }> {
+  const transitions: Record<string, { nextStatus: string; nextApprover: string | null }> = {};
+  for (let i = 0; i < chain.length; i++) {
+    transitions[chain[i]] = {
+      nextStatus: ROLE_STATUS[chain[i]] ?? `${chain[i]}_approved`,
+      nextApprover: i + 1 < chain.length ? chain[i + 1] : null,
+    };
+  }
+  return transitions;
 }
 
 /**
@@ -251,15 +280,17 @@ async function findNextActiveApprover(
   startDate: string,
   endDate: string,
   submitterId: number,
-  startRole: string | null
+  startRole: string | null,
+  chain?: string[]
 ): Promise<{ approver: string | null, skipped: string[] }> {
   const skipped: string[] = [];
-  
-  const startIndex = startRole ? APPROVAL_CHAIN.indexOf(startRole) : 0;
+  const approvalChain = chain ?? await getApprovalChain(companyId);
+
+  const startIndex = startRole ? approvalChain.indexOf(startRole) : 0;
   if (startIndex === -1) return { approver: 'hr', skipped }; // Fallback to HR
 
-  for (let i = startIndex; i < APPROVAL_CHAIN.length; i++) {
-    const role = APPROVAL_CHAIN[i];
+  for (let i = startIndex; i < approvalChain.length; i++) {
+    const role = approvalChain[i];
 
     // 1. Get potential approver ID
     let potentialApprover: { id: number } | null = null;
@@ -294,7 +325,7 @@ async function findNextActiveApprover(
  * Determine the first approver role for a given company/store combination.
  */
 async function determineFirstApprover(
-  companyId: number, 
+  companyId: number,
   storeId: number | null,
   startDate: string,
   endDate: string,
@@ -302,12 +333,13 @@ async function determineFirstApprover(
   submitterRole: string
 ): Promise<{ approver: string, skipped: string[] }> {
   const lowerRole = submitterRole?.toLowerCase();
-  
+  const chain = await getApprovalChain(companyId);
+
   if (lowerRole === 'admin') {
     return { approver: 'admin', skipped: [] };
   }
 
-  const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, null);
+  const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, null, chain);
   return { approver: approver || 'admin', skipped };
 }
 
@@ -759,6 +791,10 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
+  // Load the dynamic approval chain and build transitions for this company
+  const approvalChain = await getApprovalChain(leaveRequest.company_id);
+  const TRANSITIONS = buildTransitions(approvalChain);
+
   // If HR/Admin use emergency override OR are normal Admin, prioritize terminal transition
   let transitionKey = isSuperAdmin ? stageRole : effectiveRole;
   if (isOverride) {
@@ -766,7 +802,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   } else if (role === 'admin') {
     transitionKey = 'admin';
   }
-  
+
   // Custom transition for HR override to move directly to terminal
   const getTransition = (key: string) => {
     if (key === 'hr_override') return { nextStatus: 'admin_approved', nextApprover: null };
@@ -877,7 +913,8 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     leaveRequest.start_date,
     leaveRequest.end_date,
     leaveRequest.user_id,
-    transition.nextApprover
+    transition.nextApprover,
+    approvalChain
   );
 
   const finalNextRole = nextActiveRole;
@@ -1708,23 +1745,25 @@ export async function processEscalationLogic() {
   let escalatedCount = 0;
 
   for (const req of stalled) {
-    try {
-      const transition = TRANSITIONS[req.current_approver_role];
-      if (!transition) continue;
+    const chain = await getApprovalChain(req.company_id);
+    const transitions = buildTransitions(chain);
+    const transition = transitions[req.current_approver_role];
+    if (!transition) continue;
 
-      // Use findNextActiveApprover to skip anyone on leave during escalation
-      const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
-        req.company_id,
-        req.store_id,
-        req.start_date,
-        req.end_date,
-        req.user_id,
-        transition.nextApprover
-      );
+    // Use findNextActiveApprover to skip anyone on leave during escalation
+    const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
+      req.company_id,
+      req.store_id,
+      req.start_date,
+      req.end_date,
+      req.user_id,
+      transition.nextApprover,
+      chain
+    );
 
-      const finalNextRole = nextActiveRole;
-      const finalNextStatus = finalNextRole ? (TRANSITIONS[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
-      const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
+    const finalNextRole = nextActiveRole;
+    const finalNextStatus = finalNextRole ? (transitions[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
+    const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
 
       await query(
         `UPDATE leave_requests
@@ -1759,5 +1798,121 @@ export async function processEscalationLogic() {
 export const executeEscalation = asyncHandler(async (req: Request, res: Response) => {
   const count = await processEscalationLogic();
   res.json({ success: true, escalated: count });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/leave/approval-config — get approval chain config for a company
+// ---------------------------------------------------------------------------
+export const getApprovalConfig = asyncHandler(async (req: Request, res: Response) => {
+  const { role } = req.user!;
+  if (!['admin', 'hr', 'system_admin'].includes(role)) {
+    forbidden(res, 'Solo admin e HR possono visualizzare la configurazione approvazioni');
+    return;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const companyId = parseInt(req.query.company_id as string, 10) || allowedCompanyIds[0];
+
+  if (!allowedCompanyIds.includes(companyId)) {
+    forbidden(res, 'Non hai accesso a questa azienda');
+    return;
+  }
+
+  let rows = await query<{ id: number; role: string; enabled: boolean; sort_order: number }>(
+    `SELECT id, role, enabled, sort_order FROM leave_approval_config
+     WHERE company_id = $1 ORDER BY sort_order`,
+    [companyId],
+  );
+
+  // Auto-seed if no config exists for this company
+  if (rows.length === 0) {
+    await query(
+      `INSERT INTO leave_approval_config (company_id, role, enabled, sort_order)
+       VALUES ($1, 'store_manager', true, 1),
+              ($1, 'area_manager', true, 2),
+              ($1, 'hr', true, 3),
+              ($1, 'admin', true, 4)
+       ON CONFLICT (company_id, role) DO NOTHING`,
+      [companyId],
+    );
+    rows = await query(
+      `SELECT id, role, enabled, sort_order FROM leave_approval_config
+       WHERE company_id = $1 ORDER BY sort_order`,
+      [companyId],
+    );
+  }
+
+  ok(res, rows);
+});
+
+// ---------------------------------------------------------------------------
+// PUT /api/leave/approval-config — update approval chain config
+// body: { levels: Array<{ role: string, enabled: boolean, sort_order: number }> }
+// ---------------------------------------------------------------------------
+export const updateApprovalConfig = asyncHandler(async (req: Request, res: Response) => {
+  const { role } = req.user!;
+  if (!['admin', 'system_admin'].includes(role)) {
+    forbidden(res, 'Solo admin possono modificare la configurazione approvazioni');
+    return;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const { company_id, levels } = req.body as {
+    company_id: number;
+    levels: Array<{ role: string; enabled: boolean; sort_order: number }>;
+  };
+
+  if (!allowedCompanyIds.includes(company_id)) {
+    forbidden(res, 'Non hai accesso a questa azienda');
+    return;
+  }
+
+  const validRoles = new Set(['store_manager', 'area_manager', 'hr', 'admin']);
+  if (!Array.isArray(levels) || levels.length === 0) {
+    badRequest(res, 'Livelli di approvazione richiesti', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // At least one level must be enabled
+  const enabledCount = levels.filter((l) => l.enabled).length;
+  if (enabledCount === 0) {
+    badRequest(res, 'Almeno un livello di approvazione deve essere attivo', 'VALIDATION_ERROR');
+    return;
+  }
+
+  for (const level of levels) {
+    if (!validRoles.has(level.role)) {
+      badRequest(res, `Ruolo non valido: ${level.role}`, 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    for (const level of levels) {
+      await client.query(
+        `INSERT INTO leave_approval_config (company_id, role, enabled, sort_order)
+         VALUES ($1, $2, $3, $4)
+         ON CONFLICT (company_id, role)
+         DO UPDATE SET enabled = $3, sort_order = $4, updated_at = NOW()`,
+        [company_id, level.role, level.enabled, level.sort_order],
+      );
+    }
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
+
+  const updated = await query<{ id: number; role: string; enabled: boolean; sort_order: number }>(
+    `SELECT id, role, enabled, sort_order FROM leave_approval_config
+     WHERE company_id = $1 ORDER BY sort_order`,
+    [company_id],
+  );
+
+  ok(res, updated, 'Configurazione approvazioni aggiornata');
 });
 

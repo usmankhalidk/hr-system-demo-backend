@@ -105,5 +105,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'gestione_accessi' && role === 'admin') return true;
   if (moduleName === 'terminali' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'dipendenti' && role === 'employee') return true;
+  if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager')) return true;
   return false;
 }
