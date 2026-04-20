@@ -192,7 +192,7 @@ async function performAutoAssign(
     uploadedBy?: number;
     employeeId?: number | null;
   },
-): Promise<void> {
+): Promise<boolean> {
   // Fetch active employees for this company, including unique_id
   const employees = await query<{
     id: number;
@@ -312,8 +312,10 @@ async function performAutoAssign(
           options?.visibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee']
         ]
       );
+      return true;
     }
   }
+  return false;
 }
 
 
@@ -643,9 +645,13 @@ router.post(
       });
 
       // Rule based auto-assignment
-      await performAutoAssign(doc.id, originalname, req.user!.companyId!, options);
+      const matched = await performAutoAssign(doc.id, originalname, req.user!.companyId!, options);
 
-      ok(res, { success: true, message: 'Files uploaded successfully', document: doc });
+      ok(res, { 
+        matched,
+        documentId: doc.id,
+        fileName: originalname 
+      });
     }
 
   }),
@@ -1378,7 +1384,8 @@ router.get(
     }
 
     const employeeId = req.query.employee_id ? parseInt(req.query.employee_id as string, 10) : undefined;
-    const docs = await getDeletedDocuments(user.companyId, employeeId);
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+    const docs = await getDeletedDocuments(allowedCompanyIds, employeeId);
     ok(res, docs);
 
   }),
