@@ -136,6 +136,7 @@ const baseShiftObject = z.object({
   user_id:       z.number().int().positive(),
   store_id:      z.number().int().positive(),
   date:          z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Data non valida (YYYY-MM-DD)'),
+  timezone:      z.string().min(1).max(64).optional(),
   start_time:    z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
   end_time:      z.string().regex(/^\d{2}:\d{2}$/, 'Ora non valida (HH:MM)'),
   break_type:    z.enum(['fixed', 'flexible']).optional(),

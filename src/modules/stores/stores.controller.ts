@@ -4,6 +4,11 @@ import { pool, query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import {
+  DEFAULT_SHIFT_TIMEZONE,
+  normalizeShiftTimezone,
+  suggestTimezoneFromCountry,
+} from '../../utils/shiftTimezone';
 
 interface StoreRow {
   id: number;
@@ -16,6 +21,11 @@ interface StoreRow {
   code: string;
   address: string | null;
   cap: string | null;
+  city: string | null;
+  state: string | null;
+  country: string | null;
+  phone: string | null;
+  timezone: string | null;
   max_staff: number;
   is_active: boolean;
   created_at: string;
@@ -341,15 +351,24 @@ export const updateStoreOperatingHours = asyncHandler(async (req: Request, res: 
 // POST /api/stores — Admin/HR (within allowed companies)
 export const createStore = asyncHandler(async (req: Request, res: Response) => {
   const { companyId: callerCompanyId } = req.user!;
-  const { name, code, address, cap, max_staff, company_id, terminal } = req.body as {
+  const { name, code, address, cap, city, state, country, phone, timezone, max_staff, company_id, terminal } = req.body as {
     name: string;
     code: string;
     address?: string | null;
     cap?: string | null;
+    city?: string | null;
+    state?: string | null;
+    country?: string | null;
+    phone?: string | null;
+    timezone?: string | null;
     max_staff?: number;
     company_id?: number | null;
     terminal?: { email: string; password?: string };
   };
+
+  const normalizedCode = String(code ?? '').trim().toUpperCase();
+  const timezoneFallback = suggestTimezoneFromCountry(country, DEFAULT_SHIFT_TIMEZONE);
+  const normalizedTimezone = normalizeShiftTimezone(timezone, timezoneFallback);
 
   // Cross-company callers (grouped admin/hr) may specify a target company.
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
@@ -369,7 +388,7 @@ export const createStore = asyncHandler(async (req: Request, res: Response) => {
 
   const existing = await queryOne<{ id: number }>(
     `SELECT id FROM stores WHERE company_id = $1 AND code = $2`,
-    [targetCompanyId, code]
+    [targetCompanyId, normalizedCode]
   );
   if (existing) { conflict(res, 'Codice negozio già in uso', 'CODE_CONFLICT'); return; }
 
@@ -392,9 +411,34 @@ export const createStore = asyncHandler(async (req: Request, res: Response) => {
     await client.query('BEGIN');
 
     const storeRes = await client.query(
-      `INSERT INTO stores (company_id, name, code, address, cap, max_staff)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
-      [targetCompanyId, name, code, address || null, cap || null, max_staff || 0]
+      `INSERT INTO stores (
+         company_id,
+         name,
+         code,
+         address,
+         cap,
+         city,
+         state,
+         country,
+         phone,
+         timezone,
+         max_staff
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       RETURNING *`,
+      [
+        targetCompanyId,
+        name,
+        normalizedCode,
+        address || null,
+        cap || null,
+        city || null,
+        state || null,
+        country || null,
+        phone || null,
+        normalizedTimezone,
+        max_staff || 0,
+      ]
     );
     const store = storeRes.rows[0];
 
@@ -423,11 +467,12 @@ export const createStore = asyncHandler(async (req: Request, res: Response) => {
 export const updateStore = asyncHandler(async (req: Request, res: Response) => {
   const storeId = parseInt(req.params.id, 10);
   if (isNaN(storeId)) { notFound(res, 'Negozio non trovato'); return; }
-  const { name, code, address, cap, max_staff } = req.body;
+  const { name, code, address, cap, city, state, country, phone, timezone, max_staff } = req.body;
+  const normalizedCode = String(code ?? '').trim().toUpperCase();
 
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const storeRow = await queryOne<{ company_id: number }>(
-    `SELECT company_id FROM stores WHERE id = $1 AND company_id = ANY($2)`,
+  const storeRow = await queryOne<{ company_id: number; timezone: string | null; country: string | null }>(
+    `SELECT company_id, timezone, country FROM stores WHERE id = $1 AND company_id = ANY($2)`,
     [storeId, allowedCompanyIds],
   );
   const targetCompanyId = storeRow?.company_id ?? null;
@@ -437,17 +482,47 @@ export const updateStore = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const timezoneFallback = suggestTimezoneFromCountry(
+    country ?? storeRow?.country ?? null,
+    storeRow?.timezone ?? DEFAULT_SHIFT_TIMEZONE,
+  );
+  const normalizedTimezone = normalizeShiftTimezone(timezone, timezoneFallback);
+
   // Check code uniqueness (excluding current store)
   const codeConflict = await queryOne<{ id: number }>(
     `SELECT id FROM stores WHERE company_id = $1 AND code = $2 AND id != $3`,
-    [targetCompanyId, code, storeId]
+    [targetCompanyId, normalizedCode, storeId]
   );
   if (codeConflict) { conflict(res, 'Codice negozio già in uso', 'CODE_CONFLICT'); return; }
 
   const store = await queryOne<StoreRow>(
-    `UPDATE stores SET name = $1, code = $2, address = $3, cap = $4, max_staff = $5
-     WHERE id = $6 AND company_id = $7 RETURNING *`,
-    [name, code, address || null, cap || null, max_staff || 0, storeId, targetCompanyId]
+    `UPDATE stores
+     SET name = $1,
+         code = $2,
+         address = $3,
+         cap = $4,
+         city = $5,
+         state = $6,
+         country = $7,
+         phone = $8,
+         timezone = $9,
+         max_staff = $10
+     WHERE id = $11 AND company_id = $12
+     RETURNING *`,
+    [
+      name,
+      normalizedCode,
+      address || null,
+      cap || null,
+      city || null,
+      state || null,
+      country || null,
+      phone || null,
+      normalizedTimezone,
+      max_staff || 0,
+      storeId,
+      targetCompanyId,
+    ]
   );
   if (!store) { notFound(res, 'Negozio non trovato'); return; }
   ok(res, store, 'Negozio aggiornato');

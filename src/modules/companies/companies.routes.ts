@@ -37,7 +37,6 @@ const updateCompanySchema = z.object({
   city: z.string().max(100).nullable().optional(),
   state: z.string().max(100).nullable().optional(),
   address: z.string().max(500).nullable().optional(),
-  timezones: z.string().max(255).nullable().optional(),
   currency: z.string().max(50).nullable().optional(),
 });
 
@@ -52,7 +51,6 @@ const createCompanySchema = z.object({
   city: z.string().max(100).nullable().optional(),
   state: z.string().max(100).nullable().optional(),
   address: z.string().max(500).nullable().optional(),
-  timezones: z.string().max(255).nullable().optional(),
   currency: z.string().max(50).nullable().optional(),
 });
 

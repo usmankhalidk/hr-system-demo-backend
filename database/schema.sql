@@ -36,6 +36,11 @@ CREATE TABLE IF NOT EXISTS stores (
   code       VARCHAR(50) NOT NULL,
   address    TEXT,
   cap        VARCHAR(10),
+  city       VARCHAR(100),
+  state      VARCHAR(100),
+  country    VARCHAR(100),
+  phone      VARCHAR(255),
+  timezone   VARCHAR(64),
   max_staff  INTEGER DEFAULT 0,
   logo_filename VARCHAR(255),
   is_active  BOOLEAN DEFAULT true,
@@ -44,6 +49,7 @@ CREATE TABLE IF NOT EXISTS stores (
 );
 
 CREATE INDEX IF NOT EXISTS idx_stores_company ON stores(company_id);
+CREATE INDEX IF NOT EXISTS idx_stores_company_timezone ON stores(company_id, timezone);
 
 -- ---------------------------------------------------------------------------
 -- 4. users
@@ -119,6 +125,13 @@ ALTER TABLE users
   ADD CONSTRAINT users_off_days_not_empty_chk
   CHECK (cardinality(off_days) >= 1);
 
+ALTER TABLE stores
+  ADD COLUMN IF NOT EXISTS city VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS state VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS country VARCHAR(100),
+  ADD COLUMN IF NOT EXISTS phone VARCHAR(255),
+  ADD COLUMN IF NOT EXISTS timezone VARCHAR(64);
+
 ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS owner_user_id INTEGER,
   ADD COLUMN IF NOT EXISTS banner_filename VARCHAR(255),
@@ -130,8 +143,10 @@ ALTER TABLE companies
   ADD COLUMN IF NOT EXISTS city VARCHAR(100),
   ADD COLUMN IF NOT EXISTS state VARCHAR(100),
   ADD COLUMN IF NOT EXISTS address TEXT,
-  ADD COLUMN IF NOT EXISTS timezones VARCHAR(255),
   ADD COLUMN IF NOT EXISTS currency VARCHAR(50);
+
+ALTER TABLE companies
+  DROP COLUMN IF EXISTS timezones;
 
 DO $$
 BEGIN
@@ -387,15 +402,22 @@ CREATE TABLE IF NOT EXISTS shifts (
   assignment_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL,
   cancelled_by_transfer_id INTEGER REFERENCES temporary_store_assignments(id) ON DELETE SET NULL,
   date         DATE NOT NULL,
+  timezone     VARCHAR(64),
   start_time   TIME NOT NULL,
   end_time     TIME NOT NULL,
+  start_at_utc TIMESTAMPTZ,
+  end_at_utc   TIMESTAMPTZ,
   break_start  TIME,
   break_end    TIME,
+  break_start_at_utc TIMESTAMPTZ,
+  break_end_at_utc   TIMESTAMPTZ,
   break_type   VARCHAR(10) DEFAULT 'fixed' CHECK (break_type IN ('fixed', 'flexible')),
   break_minutes INTEGER,
   is_split     BOOLEAN DEFAULT false,
   split_start2 TIME,
   split_end2   TIME,
+  split_start2_at_utc TIMESTAMPTZ,
+  split_end2_at_utc   TIMESTAMPTZ,
   status       VARCHAR(20) DEFAULT 'scheduled'
                CHECK (status IN ('scheduled','confirmed','cancelled')),
   notes        TEXT,
@@ -407,8 +429,14 @@ CREATE TABLE IF NOT EXISTS shifts (
 CREATE INDEX IF NOT EXISTS idx_shifts_company_date ON shifts(company_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_user_date    ON shifts(user_id, date);
 CREATE INDEX IF NOT EXISTS idx_shifts_store_date   ON shifts(store_id, date);
+CREATE INDEX IF NOT EXISTS idx_shifts_company_start_utc ON shifts(company_id, start_at_utc);
+CREATE INDEX IF NOT EXISTS idx_shifts_user_start_utc ON shifts(user_id, start_at_utc);
+CREATE INDEX IF NOT EXISTS idx_shifts_store_start_utc ON shifts(store_id, start_at_utc);
 CREATE INDEX IF NOT EXISTS idx_shifts_assignment_id ON shifts(assignment_id);
 CREATE INDEX IF NOT EXISTS idx_shifts_cancelled_by_transfer_id ON shifts(cancelled_by_transfer_id);
+CREATE INDEX IF NOT EXISTS idx_shifts_attendance_window
+  ON shifts(company_id, user_id, store_id, start_at_utc, end_at_utc)
+  WHERE status != 'cancelled';
 
 -- ---------------------------------------------------------------------------
 -- 9. qr_tokens  (Phase 2 — replay prevention)

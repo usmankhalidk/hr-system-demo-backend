@@ -23,6 +23,11 @@ const storeSchema = z.object({
   code: z.string().min(1, 'Codice obbligatorio').max(50).toUpperCase(),
   address: z.string().optional(),
   cap: z.string().max(10).optional(),
+  city: z.string().max(100).optional(),
+  state: z.string().max(100).optional(),
+  country: z.string().max(100).optional(),
+  phone: z.string().max(255).optional(),
+  timezone: z.string().max(64).optional(),
   max_staff: z.number().int().min(0).optional(),
   company_id: z.number().int().nullable().optional(),
   terminal: z.object({

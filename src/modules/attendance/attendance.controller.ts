@@ -6,15 +6,10 @@ import { ok, created, badRequest, conflict, forbidden, notFound } from '../../ut
 import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
 
 // ---------------------------------------------------------------------------
-// Timezone-safe date helpers.
-// Shift times are stored as plain TIME (no timezone) representing Italian
-// local time.  The server MUST run with TZ=Europe/Rome (set in Dockerfile)
-// so that JS Date operations use the correct local timezone.
-// These helpers avoid toISOString() which always returns UTC and would
-// produce wrong dates between 00:00–02:00 Italian time (still previous day
-// in UTC).
+// Date helpers used where API contracts expect date-only values.
 // ---------------------------------------------------------------------------
 function localToday(): string {
   const now = new Date();
@@ -23,6 +18,11 @@ function localToday(): string {
   const d = String(now.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+const DEFAULT_SHIFT_TIMEZONE_SQL = DEFAULT_SHIFT_TIMEZONE.replace(/'/g, "''");
+const SHIFT_TIMEZONE_SQL = `COALESCE(NULLIF(BTRIM(s.timezone), ''), '${DEFAULT_SHIFT_TIMEZONE_SQL}')`;
+const SHIFT_START_UTC_SQL = coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone');
+const SHIFT_END_UTC_SQL = coalescedShiftPointUtcSql('s.end_at_utc', 's.date', 's.end_time', 's.timezone');
 
 function localDateStr(date: Date): string {
   const y = date.getFullYear();
@@ -188,14 +188,30 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  // 4. Find active shift for this user/day/store.
-  const today = localToday();
-  const currentShift = await queryOne<{ id: number; start_time: string; end_time: string }>(
-    `SELECT id, start_time::text, end_time::text FROM shifts
-     WHERE company_id = $1 AND user_id = $2 AND date = $3
-       AND store_id = $4 AND status != 'cancelled'
-     ORDER BY start_time LIMIT 1`,
-    [companyId, user_id, today, payload.storeId],
+  // 4. Find an active shift window in UTC for this user/store.
+  const currentShift = await queryOne<{
+    id: number;
+    shift_date: string;
+    shift_timezone: string;
+    start_at_utc: string;
+    end_at_utc: string;
+  }>(
+    `SELECT
+       s.id,
+       TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+       ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
+       ${SHIFT_START_UTC_SQL} AS start_at_utc,
+       ${SHIFT_END_UTC_SQL} AS end_at_utc
+     FROM shifts s
+     WHERE s.company_id = $1
+       AND s.user_id = $2
+       AND s.store_id = $3
+       AND s.status != 'cancelled'
+       AND NOW() >= ${SHIFT_START_UTC_SQL}
+       AND NOW() <= ${SHIFT_END_UTC_SQL}
+     ORDER BY ${SHIFT_START_UTC_SQL}
+     LIMIT 1`,
+    [companyId, user_id, payload.storeId],
   );
 
   // Shift and holiday rules:
@@ -215,24 +231,10 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
        AND start_date <= $3::date
        AND end_date >= $3::date
      LIMIT 1`,
-    [companyId, user_id, today],
+    [companyId, user_id, currentShift.shift_date],
   );
   if (approvedLeave) {
     forbidden(res, 'Non puoi registrare presenze durante ferie/permesso approvato', 'ON_HOLIDAY');
-    return;
-  }
-
-  const now = new Date();
-  const shiftStart = new Date(`${today}T${currentShift.start_time}`);
-  const shiftEnd = new Date(`${today}T${currentShift.end_time}`);
-
-  // Shift window restrictions for all attendance actions
-  if (now < shiftStart) {
-    forbidden(res, 'Azione non disponibile prima dell’inizio turno', 'BEFORE_SHIFT_START');
-    return;
-  }
-  if (now > shiftEnd) {
-    forbidden(res, 'Azione non disponibile dopo la fine turno', 'AFTER_SHIFT_END');
     return;
   }
 
@@ -242,10 +244,10 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
      FROM attendance_events
      WHERE company_id = $1
        AND user_id = $2
-       AND event_time >= $3::date
-       AND event_time < ($3::date + INTERVAL '1 day')
+       AND event_time >= (($3::DATE)::timestamp AT TIME ZONE $4)
+       AND event_time < ((($3::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $4)
      ORDER BY event_time ASC`,
-    [companyId, user_id, today],
+    [companyId, user_id, currentShift.shift_date, currentShift.shift_timezone],
   );
 
   const has = (type: 'checkin' | 'checkout' | 'break_start' | 'break_end') =>
@@ -384,14 +386,20 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  // Try to link to an existing shift for that user/store/date
-  const dateStr = localDateStr(ts);
+  // Try to link to an existing shift window for that user/store.
+  const eventIso = ts.toISOString();
   const linkedShift = await queryOne<{ id: number }>(
-    `SELECT id FROM shifts
-     WHERE company_id = $1 AND user_id = $2 AND date = $3
-       AND store_id = $4 AND status != 'cancelled'
-     ORDER BY start_time LIMIT 1`,
-    [effectiveCompanyId, user_id, dateStr, store_id],
+    `SELECT s.id
+     FROM shifts s
+     WHERE s.company_id = $1
+       AND s.user_id = $2
+       AND s.store_id = $3
+       AND s.status != 'cancelled'
+       AND ${SHIFT_START_UTC_SQL} <= $4::TIMESTAMPTZ
+       AND ${SHIFT_END_UTC_SQL} >= $4::TIMESTAMPTZ
+     ORDER BY ${SHIFT_START_UTC_SQL}
+     LIMIT 1`,
+    [effectiveCompanyId, user_id, store_id, eventIso],
   );
 
   const event = await queryOne(
@@ -399,7 +407,7 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
        (company_id, store_id, user_id, event_type, event_time, source, shift_id, notes)
      VALUES ($1, $2, $3, $4, $5, 'manual', $6, $7)
      RETURNING *`,
-    [effectiveCompanyId, store_id, user_id, event_type, ts.toISOString(), linkedShift?.id ?? null, notes ?? null],
+    [effectiveCompanyId, store_id, user_id, event_type, eventIso, linkedShift?.id ?? null, notes ?? null],
   );
 
   created(res, event, 'Evento creato manualmente');
@@ -412,7 +420,8 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
 export const listAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId, storeId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const { user_id, store_id, date_from, date_to, event_type, search } = req.query as Record<string, string>;
+  const { user_id, store_id, date_from, date_to, event_type, search, timezone } = req.query as Record<string, string>;
+  const displayTimezone = normalizeShiftTimezone(timezone, DEFAULT_SHIFT_TIMEZONE);
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const VALID_EVENT_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
@@ -474,14 +483,14 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
     idx++;
   }
   if (date_from) {
-    extraWhere += ` AND ae.event_time >= $${idx}::TIMESTAMPTZ`;
-    params.push(date_from);
-    idx++;
+    extraWhere += ` AND ae.event_time >= (($${idx}::DATE)::timestamp AT TIME ZONE $${idx + 1})`;
+    params.push(date_from, displayTimezone);
+    idx += 2;
   }
   if (date_to) {
-    extraWhere += ` AND ae.event_time < ($${idx}::DATE + INTERVAL '1 day')`;
-    params.push(date_to);
-    idx++;
+    extraWhere += ` AND ae.event_time < ((($${idx}::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $${idx + 1})`;
+    params.push(date_to, displayTimezone);
+    idx += 2;
   }
   if (event_type) {
     extraWhere += ` AND ae.event_type = $${idx}`;
@@ -742,13 +751,19 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }
 
     // Shift linking (optional helper for reporting)
-    const dateStr = localDateStr(ts);
+    const eventIso = ts.toISOString();
     const linkedShift = await queryOne<{ id: number }>(
-      `SELECT id FROM shifts
-       WHERE company_id = $1::int AND user_id = $2::int AND date = $3
-         AND store_id = $4::int AND status != 'cancelled'
-       ORDER BY start_time LIMIT 1`,
-      [companyId, resolvedUserId, dateStr, storeId],
+      `SELECT s.id
+       FROM shifts s
+       WHERE s.company_id = $1::int
+         AND s.user_id = $2::int
+         AND s.store_id = $3::int
+         AND s.status != 'cancelled'
+         AND ${SHIFT_START_UTC_SQL} <= $4::TIMESTAMPTZ
+         AND ${SHIFT_END_UTC_SQL} >= $4::TIMESTAMPTZ
+       ORDER BY ${SHIFT_START_UTC_SQL}
+       LIMIT 1`,
+      [companyId, resolvedUserId, storeId, eventIso],
     );
 
     try {
@@ -762,7 +777,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
           storeId,
           resolvedUserId,
           ev.event_type,
-          ts.toISOString(),
+          eventIso,
           qrTokenId != null ? 'qr' : 'sync',
           linkedShift?.id ?? null,
           ev.notes ?? null,
@@ -1170,7 +1185,8 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
   }
 
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  const { date_from, date_to, device_fingerprint } = req.query as Record<string, string>;
+  const { date_from, date_to, device_fingerprint, timezone } = req.query as Record<string, string>;
+  const displayTimezone = normalizeShiftTimezone(timezone, DEFAULT_SHIFT_TIMEZONE);
 
   if (!device_fingerprint || typeof device_fingerprint !== 'string') {
     forbidden(
@@ -1217,11 +1233,11 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
      LEFT JOIN stores st ON st.id = ae.store_id
      WHERE ae.company_id = $1
        AND ae.user_id = $2
-       AND ae.event_time >= $3::DATE
-       AND ae.event_time < ($4::DATE + INTERVAL '1 day')
+       AND ae.event_time >= (($3::DATE)::timestamp AT TIME ZONE $5)
+       AND ae.event_time < ((($4::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $5)
      ORDER BY ae.event_time DESC
      LIMIT 200`,
-    [companyId, userId, from, to],
+    [companyId, userId, from, to, displayTimezone],
   );
 
   ok(res, { events: events || [], total: (events || []).length });

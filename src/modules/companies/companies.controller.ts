@@ -25,7 +25,6 @@ interface CompanyRow {
   city: string | null;
   state: string | null;
   address: string | null;
-  timezones: string | null;
   currency: string | null;
   store_count: number;
   employee_count: number;
@@ -41,7 +40,6 @@ type CompanyProfileInput = {
   city?: string | null;
   state?: string | null;
   address?: string | null;
-  timezones?: string | null;
   currency?: string | null;
 };
 
@@ -62,7 +60,6 @@ function extractCompanyProfileInput(payload: Record<string, unknown>): CompanyPr
     city: normalizeOptionalString(payload.city),
     state: normalizeOptionalString(payload.state),
     address: normalizeOptionalString(payload.address),
-    timezones: normalizeOptionalString(payload.timezones),
     currency: normalizeOptionalString(payload.currency),
   };
 }
@@ -86,7 +83,6 @@ const COMPANY_LIST_SELECT = `
     c.city,
     c.state,
     c.address,
-    c.timezones,
     c.currency,
     (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
     (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
@@ -224,7 +220,6 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
     ['city', profile.city],
     ['state', profile.state],
     ['address', profile.address],
-    ['timezones', profile.timezones],
     ['currency', profile.currency],
   ];
 
@@ -318,10 +313,9 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
        city,
        state,
        address,
-       timezones,
        currency
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      RETURNING id`,
     [
       name,
@@ -336,7 +330,6 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
       profile.city ?? null,
       profile.state ?? null,
       profile.address ?? null,
-      profile.timezones ?? null,
       profile.currency ?? null,
     ]
   );
@@ -387,7 +380,7 @@ export const deactivateCompany = asyncHandler(async (req: Request, res: Response
   if (isNaN(targetCompanyId)) { notFound(res, 'Azienda non trovata'); return; }
 
   const updated = await queryOne(
-    `UPDATE companies SET is_active = false WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, banner_filename, group_id, owner_user_id, registration_number, company_email, company_phone_numbers, offices_locations, country, city, state, address, timezones, currency, created_at`,
+    `UPDATE companies SET is_active = false WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, banner_filename, group_id, owner_user_id, registration_number, company_email, company_phone_numbers, offices_locations, country, city, state, address, currency, created_at`,
     [targetCompanyId]
   );
   if (!updated) { notFound(res, 'Azienda non trovata'); return; }
@@ -402,7 +395,7 @@ export const activateCompany = asyncHandler(async (req: Request, res: Response) 
   if (isNaN(targetCompanyId)) { notFound(res, 'Azienda non trovata'); return; }
 
   const updated = await queryOne(
-    `UPDATE companies SET is_active = true WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, banner_filename, group_id, owner_user_id, registration_number, company_email, company_phone_numbers, offices_locations, country, city, state, address, timezones, currency, created_at`,
+    `UPDATE companies SET is_active = true WHERE id = $1 RETURNING id, name, slug, is_active, logo_filename, banner_filename, group_id, owner_user_id, registration_number, company_email, company_phone_numbers, offices_locations, country, city, state, address, currency, created_at`,
     [targetCompanyId]
   );
   if (!updated) { notFound(res, 'Azienda non trovata'); return; }
