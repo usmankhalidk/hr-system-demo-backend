@@ -8,6 +8,30 @@ import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 // ---------------------------------------------------------------------------
+// Timezone-safe date helpers.
+// Shift times are stored as plain TIME (no timezone) representing Italian
+// local time.  The server MUST run with TZ=Europe/Rome (set in Dockerfile)
+// so that JS Date operations use the correct local timezone.
+// These helpers avoid toISOString() which always returns UTC and would
+// produce wrong dates between 00:00–02:00 Italian time (still previous day
+// in UTC).
+// ---------------------------------------------------------------------------
+function localToday(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function localDateStr(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+// ---------------------------------------------------------------------------
 // GET /api/qr/generate?store_id=N
 // Returns a signed JWT (the "QR token") + the nonce stored for replay prevention
 // ---------------------------------------------------------------------------
@@ -165,7 +189,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // 4. Find active shift for this user/day/store.
-  const today = new Date().toISOString().split('T')[0];
+  const today = localToday();
   const currentShift = await queryOne<{ id: number; start_time: string; end_time: string }>(
     `SELECT id, start_time::text, end_time::text FROM shifts
      WHERE company_id = $1 AND user_id = $2 AND date = $3
@@ -361,7 +385,7 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
   }
 
   // Try to link to an existing shift for that user/store/date
-  const dateStr = ts.toISOString().split('T')[0];
+  const dateStr = localDateStr(ts);
   const linkedShift = await queryOne<{ id: number }>(
     `SELECT id FROM shifts
      WHERE company_id = $1 AND user_id = $2 AND date = $3
@@ -718,7 +742,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     }
 
     // Shift linking (optional helper for reporting)
-    const dateStr = ts.toISOString().split('T')[0];
+    const dateStr = localDateStr(ts);
     const linkedShift = await queryOne<{ id: number }>(
       `SELECT id FROM shifts
        WHERE company_id = $1::int AND user_id = $2::int AND date = $3
@@ -782,7 +806,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     filterUserId = uid;
   }
 
-  const today = new Date().toISOString().split('T')[0];
+  const today = localToday();
   const from = date_from || today;
   const to   = date_to   || today;
 
@@ -895,7 +919,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date; checkin_source?: string };
   const eventMap = new Map<string, EventGroup>();
   for (const e of events) {
-    const date = new Date(e.event_time).toISOString().split('T')[0];
+    const date = localDateStr(new Date(e.event_time));
     const key = `${e.user_id}:${date}`;
     if (!eventMap.has(key)) eventMap.set(key, {});
     const group = eventMap.get(key)!;
@@ -909,12 +933,13 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const LATE_MS       = 15 * 60 * 1000;
   const EARLY_EXIT_MS = 15 * 60 * 1000;
   const LONG_BREAK_MS = 60 * 60 * 1000;
+  const OVERTIME_MS   = 15 * 60 * 1000;
 
   const anomalies: Array<{
     shift_id: number; user_id: number; user_name: string; user_surname: string;
     user_avatar_filename: string | null;
     store_name: string; date: string;
-    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit';
+    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime';
     severity: 'low' | 'medium' | 'high';
     details: string;
     details_key: string;
@@ -995,6 +1020,45 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
           details: `Pausa di ${breakMin} min (limite: 60 min)`,
           details_key: 'attendance.detail_long_break',
           details_params: { minutes: breakMin },
+          checkin_source: evGroup.checkin_source ?? null,
+        });
+      }
+    }
+
+    // Overtime: employee worked more hours than scheduled
+    if (checkout) {
+      const actualWorkMs = checkout.getTime() - checkin.getTime();
+      const actualBreakMs = (bStart && bEnd) ? bEnd.getTime() - bStart.getTime() : 0;
+      const actualNetMs = actualWorkMs - Math.max(actualBreakMs, 0);
+
+      const scheduledWorkMs = shiftEnd.getTime() - shiftStart.getTime();
+      const scheduledBreakStart = shift.break_start ? new Date(`${shift.date}T${shift.break_start}`) : null;
+      const scheduledBreakEnd = shift.break_end ? new Date(`${shift.date}T${shift.break_end}`) : null;
+      const scheduledBreakMs = (scheduledBreakStart && scheduledBreakEnd)
+        ? scheduledBreakEnd.getTime() - scheduledBreakStart.getTime()
+        : 0;
+      const scheduledNetMs = scheduledWorkMs - Math.max(scheduledBreakMs, 0);
+
+      const overtimeMs = actualNetMs - scheduledNetMs;
+      if (overtimeMs > OVERTIME_MS) {
+        const overtimeMin = Math.round(overtimeMs / 60000);
+        const actualHrs = Math.floor(actualNetMs / 3600000);
+        const actualMin = Math.round((actualNetMs % 3600000) / 60000);
+        const scheduledHrs = Math.floor(scheduledNetMs / 3600000);
+        const scheduledMin = Math.round((scheduledNetMs % 3600000) / 60000);
+        anomalies.push({
+          shift_id: shift.id, user_id: shift.user_id,
+          user_name: shift.user_name, user_surname: shift.user_surname,
+          user_avatar_filename: shift.user_avatar_filename,
+          store_name: shift.store_name, date: shift.date,
+          anomaly_type: 'overtime', severity: overtimeMin > 60 ? 'high' : 'medium',
+          details: `Straordinario di ${overtimeMin} min. Lavorato: ${actualHrs}h${actualMin}m, Previsto: ${scheduledHrs}h${scheduledMin}m`,
+          details_key: 'attendance.detail_overtime',
+          details_params: {
+            minutes: overtimeMin,
+            actual: `${actualHrs}h${String(actualMin).padStart(2, '0')}m`,
+            scheduled: `${scheduledHrs}h${String(scheduledMin).padStart(2, '0')}m`,
+          },
           checkin_source: evGroup.checkin_source ?? null,
         });
       }
@@ -1140,8 +1204,8 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
     badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
   }
 
-  const today = new Date().toISOString().split('T')[0];
-  const defaultFrom = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString().split('T')[0];
+  const today = localToday();
+  const defaultFrom = localDateStr(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const from = date_from || defaultFrom;
   const to   = date_to   || today;
 
