@@ -169,6 +169,87 @@ describe('POST /api/shifts', () => {
   });
 });
 
+describe('Date-level off-day enforcement', () => {
+  const saturdayDate = '2026-03-21';
+  const explicitOffDate = '2026-03-22';
+
+  afterAll(async () => {
+    await testPool.query(
+      `DELETE FROM shifts
+       WHERE company_id = $1
+         AND user_id = $2
+         AND date IN ($3::date, $4::date)`,
+      [seeds.acmeId, seeds.employee1Id, saturdayDate, explicitOffDate],
+    );
+  });
+
+  it('allows creating a Saturday shift when no explicit off-day marker exists', async () => {
+    const token = await login('admin@acme-test.com');
+    await testPool.query(
+      `DELETE FROM shifts
+       WHERE company_id = $1
+         AND user_id = $2
+         AND date = $3::date`,
+      [seeds.acmeId, seeds.employee1Id, saturdayDate],
+    );
+
+    const res = await request
+      .post('/api/shifts')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id: seeds.employee1Id,
+        store_id: seeds.romaStoreId,
+        date: saturdayDate,
+        start_time: '08:00',
+        end_time: '16:00',
+      });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+  });
+
+  it('blocks creating a working shift when the date is explicitly marked as off-day', async () => {
+    const token = await login('admin@acme-test.com');
+    await testPool.query(
+      `DELETE FROM shifts
+       WHERE company_id = $1
+         AND user_id = $2
+         AND date = $3::date`,
+      [seeds.acmeId, seeds.employee1Id, explicitOffDate],
+    );
+
+    const offDayRes = await request
+      .post('/api/shifts')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id: seeds.employee1Id,
+        store_id: seeds.romaStoreId,
+        date: explicitOffDate,
+        start_time: '00:00',
+        end_time: '00:01',
+        is_off_day: true,
+        status: 'cancelled',
+      });
+
+    expect(offDayRes.status).toBe(201);
+    expect(offDayRes.body.success).toBe(true);
+
+    const blockedRes = await request
+      .post('/api/shifts')
+      .set('Authorization', `Bearer ${token}`)
+      .send({
+        user_id: seeds.employee1Id,
+        store_id: seeds.romaStoreId,
+        date: explicitOffDate,
+        start_time: '09:00',
+        end_time: '17:00',
+      });
+
+    expect(blockedRes.status).toBe(400);
+    expect(blockedRes.body.code).toBe('OFF_DAY_SHIFT_BLOCKED');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Overlap detection
 // ---------------------------------------------------------------------------
