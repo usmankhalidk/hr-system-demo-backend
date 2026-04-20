@@ -212,10 +212,10 @@ const DEFAULT_APPROVAL_CHAIN = ['store_manager', 'area_manager', 'hr', 'admin'];
  * Maps each role to the status name produced when that role approves.
  */
 const ROLE_STATUS: Record<string, string> = {
-  store_manager: 'supervisor_approved',
-  area_manager:  'area_manager_approved',
-  hr:            'hr_approved',
-  admin:         'admin_approved',
+  store_manager: 'store manager approved',
+  area_manager:  'area manager approved',
+  hr:            'HR approved',
+  admin:         'approved',
 };
 
 function isPgCheckConstraintError(err: unknown): boolean {
@@ -261,7 +261,7 @@ async function isUserOnLeave(userId: number, startDate: string, endDate: string)
   const leave = await queryOne(
     `SELECT id FROM leave_requests 
      WHERE user_id = $1 
-       AND status IN ('pending', 'supervisor_approved', 'area_manager_approved', 'hr_approved', 'admin_approved')
+       AND status IN ('pending', 'store manager approved', 'area manager approved', 'HR approved', 'approved')
        AND (
          (start_date <= $2 AND end_date >= $3) OR -- Overlaps with requested leave dates
          (start_date <= $4 AND end_date >= $4)    -- Overlaps with TODAY
@@ -656,7 +656,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
   let scopeParams: any[];
 
   if (isSuperAdmin) {
-    scopeWhere  = `lr.company_id = ANY($1) AND lr.status IN ('pending','supervisor_approved','area_manager_approved')`;
+    scopeWhere  = `lr.company_id = ANY($1) AND lr.status IN ('pending','store manager approved','area manager approved')`;
     scopeParams = [allowedCompanyIds];
   } else {
     switch (role) {
@@ -918,7 +918,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   );
 
   const finalNextRole = nextActiveRole;
-  const finalNextStatus = finalNextRole ? TRANSITIONS[finalNextRole]?.nextStatus || transition.nextStatus : 'admin_approved';
+  const finalNextStatus = transition.nextStatus;
 
   const client = await pool.connect();
   try {
