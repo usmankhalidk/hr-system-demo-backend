@@ -333,7 +333,8 @@ router.get(
       return;
     }
 
-    const doc = await getDocumentById(id, user.companyId!, user);
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+    const doc = await getDocumentById(id, allowedCompanyIds, user);
 
     if (!doc) {
       notFound(res, 'Documento non trovato o non autorizzato', 'NOT_FOUND');

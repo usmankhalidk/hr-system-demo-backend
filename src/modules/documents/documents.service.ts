@@ -422,7 +422,7 @@ async function checkDocumentAccess(
 
 export async function getEmployeeDocumentById(
   id: number, 
-  companyId: number,
+  companyIds: number[],
   user: JwtPayload
 ): Promise<DocumentRecord | null> {
   const doc = await queryOne<{
@@ -448,8 +448,8 @@ export async function getEmployeeDocumentById(
     updated_at: string;
   }>(
     `${DOC_SELECT}
-      WHERE d.id = $1 AND d.company_id = $2 AND d.is_deleted = false`,
-    [id, companyId],
+      WHERE d.id = $1 AND d.company_id = ANY($2) AND d.is_deleted = false`,
+    [id, companyIds],
   );
 
   if (!doc) return null;
@@ -466,7 +466,7 @@ export async function getEmployeeDocumentById(
 
 export async function getGenericDocumentById(
   id: number,
-  companyId: number,
+  companyIds: number[],
   user: JwtPayload
 ): Promise<DocumentRecord | null> {
   const doc = await queryOne<{
@@ -501,7 +501,7 @@ export async function getGenericDocumentById(
 
   // Verify company access
   const docCompanyId = (doc as any).e_company_id || (doc as any).u_up_company_id;
-  if (docCompanyId !== companyId) return null;
+  if (!companyIds.includes(docCompanyId)) return null;
 
   // Verify role visibility
   if (!(await checkDocumentAccess(doc.is_visible_to_roles, doc.employee_id, user))) {
@@ -542,15 +542,15 @@ export async function getGenericDocumentById(
  */
 export async function getDocumentById(
   id: number,
-  companyId: number,
+  companyIds: number[],
   user: JwtPayload
 ): Promise<DocumentRecord | null> {
   // Try employee_documents first
-  const empDoc = await getEmployeeDocumentById(id, companyId, user);
+  const empDoc = await getEmployeeDocumentById(id, companyIds, user);
   if (empDoc) return empDoc;
 
   // Then try generic documents
-  return getGenericDocumentById(id, companyId, user);
+  return getGenericDocumentById(id, companyIds, user);
 }
 
 export async function getEmployeeDocuments(
