@@ -20,6 +20,7 @@ RUN mkdir -p /uploads/avatars
 
 ENV NODE_ENV=production
 ENV UPLOADS_DIR=/uploads/avatars
+ENV TZ=Europe/Rome
 
 COPY backend/package*.json ./
 RUN npm install --omit=dev
