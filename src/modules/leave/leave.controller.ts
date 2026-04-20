@@ -1745,6 +1745,7 @@ export async function processEscalationLogic() {
   let escalatedCount = 0;
 
   for (const req of stalled) {
+    try {
     const chain = await getApprovalChain(req.company_id);
     const transitions = buildTransitions(chain);
     const transition = transitions[req.current_approver_role];
