@@ -802,6 +802,58 @@ export async function seed() {
       console.log('✓ Today\'s shifts seeded (dynamic date)');
     }
 
+    await client.query(`
+      UPDATE shifts
+      SET
+        timezone = COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'),
+        start_at_utc = COALESCE(
+          start_at_utc,
+          ((date::timestamp + start_time) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+        ),
+        end_at_utc = COALESCE(
+          end_at_utc,
+          ((date::timestamp + end_time) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+        ),
+        break_start_at_utc = CASE
+          WHEN break_start IS NULL THEN NULL
+          ELSE COALESCE(
+            break_start_at_utc,
+            ((date::timestamp + break_start) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+          )
+        END,
+        break_end_at_utc = CASE
+          WHEN break_end IS NULL THEN NULL
+          ELSE COALESCE(
+            break_end_at_utc,
+            ((date::timestamp + break_end) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+          )
+        END,
+        split_start2_at_utc = CASE
+          WHEN split_start2 IS NULL THEN NULL
+          ELSE COALESCE(
+            split_start2_at_utc,
+            ((date::timestamp + split_start2) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+          )
+        END,
+        split_end2_at_utc = CASE
+          WHEN split_end2 IS NULL THEN NULL
+          ELSE COALESCE(
+            split_end2_at_utc,
+            ((date::timestamp + split_end2) AT TIME ZONE COALESCE(NULLIF(BTRIM(timezone), ''), 'Europe/Rome'))
+          )
+        END
+      WHERE
+        start_at_utc IS NULL
+        OR end_at_utc IS NULL
+        OR (break_start IS NOT NULL AND break_start_at_utc IS NULL)
+        OR (break_end IS NOT NULL AND break_end_at_utc IS NULL)
+        OR (split_start2 IS NOT NULL AND split_start2_at_utc IS NULL)
+        OR (split_end2 IS NOT NULL AND split_end2_at_utc IS NULL)
+        OR timezone IS NULL
+        OR BTRIM(timezone) = ''
+    `);
+    console.log('✓ Shift UTC timestamps seeded');
+
     // Today's attendance events for Roma store — Sofia checked in + break, Roberto in+out
     await client.query(`
       INSERT INTO attendance_events (company_id, store_id, user_id, event_type, event_time, source)

@@ -4,6 +4,7 @@ import { query, queryOne, pool } from '../../config/database';
 import { ok, created, notFound, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import { DEFAULT_SHIFT_TIMEZONE } from '../../utils/shiftTimezone';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -15,6 +16,41 @@ type LeaveDurationType = 'full_day' | 'short_leave';
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const HHMM_RE = /^\d{2}:\d{2}$/;
+
+function formatDateInTimezone(date: Date, timezone: string): string {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: timezone,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+
+  if (!year || !month || !day) {
+    const fallback = new Date(date);
+    return `${fallback.getFullYear()}-${String(fallback.getMonth() + 1).padStart(2, '0')}-${String(fallback.getDate()).padStart(2, '0')}`;
+  }
+
+  return `${year}-${month}-${day}`;
+}
+
+function todayInDefaultLeaveTimezone(): string {
+  return formatDateInTimezone(new Date(), DEFAULT_SHIFT_TIMEZONE);
+}
+
+function currentYearInDefaultLeaveTimezone(): number {
+  return parseInt(todayInDefaultLeaveTimezone().slice(0, 4), 10);
+}
+
+function yearFromIsoDate(isoDate: string): number {
+  const match = (isoDate ?? '').match(/^(\d{4})-/);
+  if (!match) return currentYearInDefaultLeaveTimezone();
+  const parsed = parseInt(match[1], 10);
+  return Number.isInteger(parsed) ? parsed : currentYearInDefaultLeaveTimezone();
+}
 
 /**
  * Roles that are completely barred from all leave-management endpoints.
@@ -257,7 +293,7 @@ function buildTransitions(chain: string[]): Record<string, { nextStatus: string;
  * OR is currently away TODAY (which means they can't approve immediately).
  */
 async function isUserOnLeave(userId: number, startDate: string, endDate: string) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInDefaultLeaveTimezone();
   const leave = await queryOne(
     `SELECT id FROM leave_requests 
      WHERE user_id = $1 
@@ -382,7 +418,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayInDefaultLeaveTimezone();
   if (start_date < today) {
     badRequest(res, 'Non è possibile richiedere ferie per date passate', 'PAST_DATE_NOT_ALLOWED');
     return;
@@ -432,7 +468,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 
   // --- Leave Balance Validation ---
   if (requestedDays > 0) {
-    const year = new Date(start_date).getFullYear();
+    const year = yearFromIsoDate(start_date);
     const defaultTotal = leave_type === 'vacation' ? 25 : 10;
     
     // Attempt to select the balance
@@ -818,7 +854,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   // Final step: update balance only when fully approved
   if (!transition.nextApprover) {
     const requestedDays = computeRequestedLeaveDays(leaveRequest);
-    const year         = new Date(leaveRequest.start_date).getFullYear();
+    const year         = yearFromIsoDate(leaveRequest.start_date);
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
 
     const client = await pool.connect();
@@ -1109,7 +1145,7 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
     if (setting && setting.show_leave_balance_to_employee === false) {
       ok(res, {
         balances: [],
-        year: year ? parseInt(year, 10) : new Date().getFullYear(),
+        year: year ? parseInt(year, 10) : currentYearInDefaultLeaveTimezone(),
         user_id: userId,
         balance_visible: false,
       });
@@ -1148,7 +1184,7 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
     targetUserId = requestedId;
   }
 
-  const targetYear = year ? parseInt(year, 10) : new Date().getFullYear();
+  const targetYear = year ? parseInt(year, 10) : currentYearInDefaultLeaveTimezone();
 
   const effectiveCompanyRow = await queryOne<{ company_id: number }>(
     `SELECT company_id FROM users
@@ -1249,7 +1285,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
-  const year         = new Date(start_date).getFullYear();
+  const year         = yearFromIsoDate(start_date);
   const defaultTotal = leave_type === 'vacation' ? 25 : 10;
 
   const dbClient = await pool.connect();
@@ -1361,7 +1397,7 @@ export const setBalance = asyncHandler(async (req: Request, res: Response) => {
     badRequest(res, 'Tipo di permesso non valido (vacation | sick)', 'INVALID_LEAVE_TYPE');
     return;
   }
-  const currentYear = new Date().getFullYear();
+  const currentYear = currentYearInDefaultLeaveTimezone();
   if (!Number.isInteger(year) || year < currentYear - 10 || year > currentYear + 5) {
     badRequest(res, `Anno non valido (${currentYear - 10}–${currentYear + 5})`, 'INVALID_YEAR');
     return;
@@ -1448,7 +1484,7 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
     // Only hr_approved requests have had balance deducted — reverse those only
     if (existing.status === 'hr_approved') {
       const requestedDays = computeRequestedLeaveDays(existing);
-      const year        = new Date(existing.start_date).getFullYear();
+      const year        = yearFromIsoDate(existing.start_date);
       await deleteClient.query(
         `UPDATE leave_balances
          SET used_days = GREATEST(0, used_days - $1), updated_at = NOW()
@@ -1535,7 +1571,7 @@ export const exportLeaveBalances = asyncHandler(async (req: Request, res: Respon
     }
     targetYear = parsed;
   } else {
-    targetYear = new Date().getFullYear();
+    targetYear = currentYearInDefaultLeaveTimezone();
   }
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   
