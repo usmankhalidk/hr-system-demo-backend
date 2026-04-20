@@ -218,6 +218,11 @@ const ROLE_STATUS: Record<string, string> = {
   admin:         'approved',
 };
 
+function isPgCheckConstraintError(err: unknown): boolean {
+  const anyErr = err as { code?: string };
+  return anyErr?.code === '23514';
+}
+
 /**
  * Load the enabled approval chain for a company from leave_approval_config.
  * Falls back to DEFAULT_APPROVAL_CHAIN if no config rows exist.
@@ -1740,6 +1745,7 @@ export async function processEscalationLogic() {
   let escalatedCount = 0;
 
   for (const req of stalled) {
+    try {
     const chain = await getApprovalChain(req.company_id);
     const transitions = buildTransitions(chain);
     const transition = transitions[req.current_approver_role];
@@ -1760,22 +1766,31 @@ export async function processEscalationLogic() {
     const finalNextStatus = finalNextRole ? (transitions[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
     const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
 
-    await query(
-      `UPDATE leave_requests
-       SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
-           skipped_approvers = $3
-       WHERE id = $4`,
-      [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
-    );
+      await query(
+        `UPDATE leave_requests
+         SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
+             skipped_approvers = $3
+         WHERE id = $4`,
+        [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
+      );
 
-    // Record the escalation
-    await query(
-      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
-       VALUES ($1, NULL, 'system', 'escalated', $2)`,
-      [req.id, `System auto-approved at ${req.current_approver_role} stage and escalated to ${finalNextRole || 'final'} due to inactivity.`]
-    );
+      // Record the escalation
+      await query(
+        `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+         VALUES ($1, NULL, 'system', 'escalated', $2)`,
+        [req.id, `System auto-approved at ${req.current_approver_role} stage and escalated to ${finalNextRole || 'final'} due to inactivity.`]
+      );
 
-    escalatedCount++;
+      escalatedCount++;
+    } catch (err) {
+      // Avoid crashing the whole background task because of one broken row/constraint.
+      if (isPgCheckConstraintError(err)) {
+        console.warn(`[leave-escalation] skipped request ${req.id} due to status check constraint`, err);
+        continue;
+      }
+      console.error(`[leave-escalation] unexpected error on request ${req.id}`, err);
+      continue;
+    }
   }
 
   return escalatedCount;

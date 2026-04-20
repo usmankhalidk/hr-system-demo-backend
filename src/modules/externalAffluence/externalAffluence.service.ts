@@ -875,17 +875,15 @@ export function buildAffluenceRecommendations(rows: ExternalIngressiDailyRow[]):
 
   const visitorsPerStaff = parseVisitorsPerStaff();
   const summary = buildTrafficSummary(rows);
-  const fallbackAvg = summary.avgVisitors;
-
   const weekdayAvgMap = new Map<number, number>();
   for (const row of summary.weekdayAverages) {
-    weekdayAvgMap.set(row.dayOfWeek, row.days > 0 ? row.avgVisitors : fallbackAvg);
+    weekdayAvgMap.set(row.dayOfWeek, row.days > 0 ? row.avgVisitors : 0);
   }
 
   const output: ExternalAffluenceRecommendationRow[] = [];
 
   for (let dayOfWeek = 1; dayOfWeek <= 7; dayOfWeek += 1) {
-    const dayAvgVisitors = weekdayAvgMap.get(dayOfWeek) ?? fallbackAvg;
+    const dayAvgVisitors = weekdayAvgMap.get(dayOfWeek) ?? 0;
     for (const slot of SLOT_DISTRIBUTION) {
       const estimatedVisitors = Number((dayAvgVisitors * slot.weight).toFixed(2));
       const requiredStaff = estimatedVisitors <= 0

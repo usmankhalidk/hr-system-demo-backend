@@ -3,15 +3,18 @@ import { z } from 'zod';
 import { authenticate, requireModulePermission, requireRole } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import {
+  getAffluenceConfiguration,
   deleteMapping,
   getAffluencePreview,
   getExternalCatalog,
   getExternalTableData,
+  getWeekAffluenceLive,
   getOverview,
   getIngressiData,
   listDepositi,
   listMappings,
   syncAffluenceFromExternal,
+  updateAffluenceConfiguration,
   upsertMapping,
 } from './externalAffluence.controller';
 
@@ -33,6 +36,20 @@ const syncAffluenceSchema = z.object({
   from_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   to_date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   overwrite_default: z.boolean().optional(),
+  target_company_id: z.number().int().positive().optional(),
+  company_id: z.number().int().positive().optional(),
+});
+
+const updateAffluenceConfigurationSchema = z.object({
+  store_id: z.number().int().positive(),
+  visitors_per_staff: z.number().positive().max(10000).optional(),
+  low_max_staff: z.number().int().min(0).max(100000).optional(),
+  medium_max_staff: z.number().int().min(0).max(100000).optional(),
+  coverage_tolerance: z.number().min(0).max(10).optional(),
+  slot_weights: z.array(z.object({
+    time_slot: z.enum(['09:00-12:00', '12:00-15:00', '15:00-18:00', '18:00-21:00']),
+    weight: z.number().min(0).max(1),
+  })).optional(),
   target_company_id: z.number().int().positive().optional(),
   company_id: z.number().int().positive().optional(),
 });
@@ -171,6 +188,31 @@ router.get(
   requireRole(...readRoles),
   requireModulePermission('turni', 'read'),
   getAffluencePreview,
+);
+
+router.get(
+  '/week-affluence',
+  authenticate,
+  requireRole(...readRoles),
+  requireModulePermission('turni', 'read'),
+  getWeekAffluenceLive,
+);
+
+router.get(
+  '/configuration',
+  authenticate,
+  requireRole(...readRoles),
+  requireModulePermission('turni', 'read'),
+  getAffluenceConfiguration,
+);
+
+router.patch(
+  '/configuration',
+  authenticate,
+  requireRole(...mappingWriteRoles),
+  requireModulePermission('turni', 'write'),
+  validate(updateAffluenceConfigurationSchema),
+  updateAffluenceConfiguration,
 );
 
 router.post(
