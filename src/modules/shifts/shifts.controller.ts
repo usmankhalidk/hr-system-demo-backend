@@ -249,14 +249,39 @@ async function buildShiftScope(
       }
       const placeholders = storeIds.map((_, i) => `$${i + 2}`).join(',');
       return {
-        where: `${base} AND s.store_id IN (${placeholders})`,
+        where: `${base} AND (
+          s.store_id IN (${placeholders})
+          OR (
+            s.assignment_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM temporary_store_assignments tsa
+              WHERE tsa.id = s.assignment_id
+                AND (
+                  tsa.origin_store_id IN (${placeholders})
+                  OR tsa.target_store_id IN (${placeholders})
+                )
+            )
+          )
+        )`,
         params: [allowedCompanyIds, ...storeIds],
       };
     }
 
     case 'store_manager':
       return {
-        where: `${base} AND s.store_id = $2`,
+        where: `${base} AND (
+          s.store_id = $2
+          OR (
+            s.assignment_id IS NOT NULL
+            AND EXISTS (
+              SELECT 1
+              FROM temporary_store_assignments tsa
+              WHERE tsa.id = s.assignment_id
+                AND (tsa.origin_store_id = $2 OR tsa.target_store_id = $2)
+            )
+          )
+        )`,
         params: [allowedCompanyIds, storeId],
       };
 
@@ -313,22 +338,18 @@ export const listShifts = asyncHandler(async (req: Request, res: Response) => {
     if (store_id) {
       const storeIdNum = parseInt(store_id, 10);
       if (isNaN(storeIdNum)) { badRequest(res, 'store_id non valido'); return; }
-      if (role === 'store_manager') {
-        extraWhere += ` AND s.store_id = $${idx}`;
-      } else {
-        extraWhere += ` AND (
-          s.store_id = $${idx}
-          OR (
-            s.assignment_id IS NOT NULL
-            AND EXISTS (
-              SELECT 1
-              FROM temporary_store_assignments tsa
-              WHERE tsa.id = s.assignment_id
-                AND (tsa.origin_store_id = $${idx} OR tsa.target_store_id = $${idx})
-            )
+      extraWhere += ` AND (
+        s.store_id = $${idx}
+        OR (
+          s.assignment_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM temporary_store_assignments tsa
+            WHERE tsa.id = s.assignment_id
+              AND (tsa.origin_store_id = $${idx} OR tsa.target_store_id = $${idx})
           )
-        )`;
-      }
+        )
+      )`;
       extra.push(storeIdNum);
       idx++;
     }
