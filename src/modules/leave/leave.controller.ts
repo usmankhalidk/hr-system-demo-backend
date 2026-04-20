@@ -218,6 +218,11 @@ const TRANSITIONS: Record<string, { nextStatus: string; nextApprover: string | n
   admin:         { nextStatus: 'admin_approved',        nextApprover: null }, 
 };
 
+function isPgCheckConstraintError(err: unknown): boolean {
+  const anyErr = err as { code?: string };
+  return anyErr?.code === '23514';
+}
+
 /**
  * Helper to check if a specific user is on leave (Approved or Pending) during the requested dates
  * OR is currently away TODAY (which means they can't approve immediately).
@@ -1703,39 +1708,49 @@ export async function processEscalationLogic() {
   let escalatedCount = 0;
 
   for (const req of stalled) {
-    const transition = TRANSITIONS[req.current_approver_role];
-    if (!transition) continue;
+    try {
+      const transition = TRANSITIONS[req.current_approver_role];
+      if (!transition) continue;
 
-    // Use findNextActiveApprover to skip anyone on leave during escalation
-    const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
-      req.company_id,
-      req.store_id,
-      req.start_date,
-      req.end_date,
-      req.user_id,
-      transition.nextApprover
-    );
+      // Use findNextActiveApprover to skip anyone on leave during escalation
+      const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
+        req.company_id,
+        req.store_id,
+        req.start_date,
+        req.end_date,
+        req.user_id,
+        transition.nextApprover
+      );
 
-    const finalNextRole = nextActiveRole;
-    const finalNextStatus = finalNextRole ? (TRANSITIONS[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
-    const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
+      const finalNextRole = nextActiveRole;
+      const finalNextStatus = finalNextRole ? (TRANSITIONS[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
+      const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
 
-    await query(
-      `UPDATE leave_requests
-       SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
-           skipped_approvers = $3
-       WHERE id = $4`,
-      [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
-    );
+      await query(
+        `UPDATE leave_requests
+         SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
+             skipped_approvers = $3
+         WHERE id = $4`,
+        [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
+      );
 
-    // Record the escalation
-    await query(
-      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
-       VALUES ($1, NULL, 'system', 'escalated', $2)`,
-      [req.id, `System auto-approved at ${req.current_approver_role} stage and escalated to ${finalNextRole || 'final'} due to inactivity.`]
-    );
+      // Record the escalation
+      await query(
+        `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+         VALUES ($1, NULL, 'system', 'escalated', $2)`,
+        [req.id, `System auto-approved at ${req.current_approver_role} stage and escalated to ${finalNextRole || 'final'} due to inactivity.`]
+      );
 
-    escalatedCount++;
+      escalatedCount++;
+    } catch (err) {
+      // Avoid crashing the whole background task because of one broken row/constraint.
+      if (isPgCheckConstraintError(err)) {
+        console.warn(`[leave-escalation] skipped request ${req.id} due to status check constraint`, err);
+        continue;
+      }
+      console.error(`[leave-escalation] unexpected error on request ${req.id}`, err);
+      continue;
+    }
   }
 
   return escalatedCount;

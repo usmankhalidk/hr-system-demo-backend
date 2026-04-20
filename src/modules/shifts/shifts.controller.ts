@@ -109,18 +109,6 @@ function shiftHoursExpr(): string {
   `;
 }
 
-const DEFAULT_OFF_DAYS = [5, 6]; // Mon=0 ... Sun=6
-
-function normalizeOffDays(raw: unknown): number[] {
-  if (!Array.isArray(raw)) return [...DEFAULT_OFF_DAYS];
-  const normalized = Array.from(new Set(
-    raw
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value >= 0 && value <= 6),
-  )).sort((a, b) => a - b);
-  return normalized.length > 0 ? normalized : [...DEFAULT_OFF_DAYS];
-}
-
 function parseDateOnly(value: unknown): string | null {
   if (value instanceof Date) {
     const y = value.getFullYear();
@@ -133,16 +121,63 @@ function parseDateOnly(value: unknown): string | null {
   return match ? match[1] : null;
 }
 
-function monBasedDayFromIsoDate(dateStr: string): number | null {
-  const parsed = new Date(`${dateStr}T12:00:00`);
-  if (Number.isNaN(parsed.getTime())) return null;
-  return (parsed.getDay() + 6) % 7;
+async function hasExplicitOffDayShift(params: {
+  companyId: number;
+  userId: number;
+  date: string;
+  excludeShiftId?: number;
+}): Promise<boolean> {
+  const hasExclude = typeof params.excludeShiftId === 'number';
+  const offDayShift = await queryOne<{ id: number }>(
+    hasExclude
+      ? `SELECT id
+         FROM shifts
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND COALESCE(is_off_day, false) = true
+           AND id <> $4
+         LIMIT 1`
+      : `SELECT id
+         FROM shifts
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND COALESCE(is_off_day, false) = true
+         LIMIT 1`,
+    hasExclude
+      ? [params.companyId, params.userId, params.date, params.excludeShiftId]
+      : [params.companyId, params.userId, params.date],
+  );
+  return Boolean(offDayShift);
 }
 
-function isDateOnOffDay(dateStr: string, offDays: number[]): boolean {
-  const monBasedDay = monBasedDayFromIsoDate(dateStr);
-  if (monBasedDay == null) return false;
-  return offDays.includes(monBasedDay);
+async function cancelWorkingShiftsForOffDay(params: {
+  companyId: number;
+  userId: number;
+  date: string;
+  excludeShiftId?: number;
+}) {
+  const hasExclude = typeof params.excludeShiftId === 'number';
+  await query(
+    hasExclude
+      ? `UPDATE shifts
+         SET status = 'cancelled', updated_at = NOW()
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND status != 'cancelled'
+           AND id <> $4`
+      : `UPDATE shifts
+         SET status = 'cancelled', updated_at = NOW()
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND status != 'cancelled'`,
+    hasExclude
+      ? [params.companyId, params.userId, params.date, params.excludeShiftId]
+      : [params.companyId, params.userId, params.date],
+  );
 }
 
 const SHIFT_FIELDS = `
@@ -151,6 +186,7 @@ const SHIFT_FIELDS = `
   s.start_time, s.end_time, s.break_start, s.break_end,
   s.break_type, s.break_minutes,
   s.is_split, s.split_start2, s.split_end2,
+  s.is_off_day,
   s.status, s.notes, s.created_by, s.created_at, s.updated_at,
   st.name AS store_name,
   u.name AS user_name, u.surname AS user_surname,
@@ -385,24 +421,13 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Resolve target employee (must belong to one of the allowed companies)
-  const targetUser = await queryOne<{ id: number; company_id: number; store_id: number | null; off_days: number[] | null }>(
+  const targetUser = await queryOne<{ id: number; company_id: number; store_id: number | null }>(
     `SELECT id, company_id, store_id
-            , COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
      FROM users
      WHERE id = $1 AND status = 'active' AND company_id = ANY($2)`,
     [body.user_id, allowedCompanyIds]
   );
   if (!targetUser) { notFound(res, 'Dipendente non trovato'); return; }
-
-  const targetOffDays = normalizeOffDays(targetUser.off_days);
-  if (isDateOnOffDay(body.date, targetOffDays)) {
-    badRequest(
-      res,
-      'Il dipendente non può ricevere turni nel giorno di riposo configurato',
-      'OFF_DAY_SHIFT_BLOCKED',
-    );
-    return;
-  }
 
   const effectiveCompanyId = targetUser.company_id;
 
@@ -447,45 +472,13 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  // Overlap detection: check new main block AND new split block (if any)
-  // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
-  const overlapMain = await queryOne<{ id: number }>(
-    `SELECT id FROM shifts
-     WHERE company_id = $1
-       AND user_id = $2
-       AND date = $3
-       AND status != 'cancelled'
-       AND (
-         (start_time <= $4::TIME AND end_time   >= $5::TIME)
-         OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-             AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
-       )`,
-    [effectiveCompanyId, body.user_id, body.date, body.end_time, body.start_time],
-  );
-
-  let overlapSplit = null;
-  if (body.is_split && body.split_start2 && body.split_end2) {
-    overlapSplit = await queryOne<{ id: number }>(
-      `SELECT id FROM shifts
-       WHERE company_id = $1
-         AND user_id = $2
-         AND date = $3
-         AND status != 'cancelled'
-         AND (
-           (start_time <= $4::TIME AND end_time   >= $5::TIME)
-           OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
-               AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
-         )`,
-      [effectiveCompanyId, body.user_id, body.date, body.split_end2, body.split_start2],
-    );
-  }
-
-  if (overlapMain || overlapSplit) {
-    conflict(res, 'Turno sovrapposto per questo dipendente in questa data', 'OVERLAP_CONFLICT');
-    return;
-  }
+  const targetIsOffDay = body.is_off_day === true;
 
   let insertStatus: string = body.status ?? 'scheduled';
+  if (targetIsOffDay) {
+    insertStatus = 'cancelled';
+  }
+
   if (role === 'store_manager') {
     if (insertStatus === 'confirmed') {
       forbidden(res, 'Il responsabile di negozio non può confermare i turni');
@@ -496,6 +489,70 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
+  if (!targetIsOffDay && insertStatus !== 'cancelled') {
+    const hasDateOffDay = await hasExplicitOffDayShift({
+      companyId: effectiveCompanyId,
+      userId: body.user_id,
+      date: body.date,
+    });
+    if (hasDateOffDay) {
+      badRequest(
+        res,
+        'Il dipendente non può ricevere turni nella data marcata come giorno off',
+        'OFF_DAY_SHIFT_BLOCKED',
+      );
+      return;
+    }
+  }
+
+  if (targetIsOffDay) {
+    await cancelWorkingShiftsForOffDay({
+      companyId: effectiveCompanyId,
+      userId: body.user_id,
+      date: body.date,
+    });
+  }
+
+  if (!targetIsOffDay && insertStatus !== 'cancelled') {
+    // Overlap detection: check new main block AND new split block (if any)
+    // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
+    const overlapMain = await queryOne<{ id: number }>(
+      `SELECT id FROM shifts
+       WHERE company_id = $1
+         AND user_id = $2
+         AND date = $3
+         AND status != 'cancelled'
+         AND (
+           (start_time <= $4::TIME AND end_time   >= $5::TIME)
+           OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
+               AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
+         )`,
+      [effectiveCompanyId, body.user_id, body.date, body.end_time, body.start_time],
+    );
+
+    let overlapSplit = null;
+    if (body.is_split && body.split_start2 && body.split_end2) {
+      overlapSplit = await queryOne<{ id: number }>(
+        `SELECT id FROM shifts
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND status != 'cancelled'
+           AND (
+             (start_time <= $4::TIME AND end_time   >= $5::TIME)
+             OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
+                 AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
+           )`,
+        [effectiveCompanyId, body.user_id, body.date, body.split_end2, body.split_start2],
+      );
+    }
+
+    if (overlapMain || overlapSplit) {
+      conflict(res, 'Turno sovrapposto per questo dipendente in questa data', 'OVERLAP_CONFLICT');
+      return;
+    }
+  }
+
   const isFlexible = body.break_type === 'flexible';
   const createdShift = await queryOne<{ id: number }>(
     `INSERT INTO shifts (
@@ -503,8 +560,9 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
        assignment_id,
        break_start, break_end, break_type, break_minutes,
        is_split, split_start2, split_end2,
+       is_off_day,
        notes, status, created_by
-     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+     ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
      RETURNING id`,
     [
       effectiveCompanyId,
@@ -521,6 +579,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       body.is_split ?? false,
       body.split_start2 ?? null,
       body.split_end2 ?? null,
+      targetIsOffDay,
       body.notes ?? null,
       insertStatus,
       callerId,
@@ -558,11 +617,13 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     break_start: string | null; break_end: string | null;
     break_type: string | null; break_minutes: number | null;
     is_split: boolean; split_start2: string | null; split_end2: string | null;
+    is_off_day: boolean;
     status: 'scheduled' | 'confirmed' | 'cancelled';
   }>(
     `SELECT id, company_id, store_id, user_id, assignment_id, date,
             start_time, end_time, break_start, break_end,
             break_type, break_minutes, is_split, split_start2, split_end2,
+            is_off_day,
             status
      FROM shifts WHERE id = $1 AND company_id = ANY($2)`,
     [shiftId, allowedCompanyIds],
@@ -603,9 +664,8 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 
   const effectiveCompanyId = existing.company_id;
 
-  const targetUser = await queryOne<{ id: number; store_id: number | null; off_days: number[] | null }>(
+  const targetUser = await queryOne<{ id: number; store_id: number | null }>(
     `SELECT id, store_id
-            , COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
      FROM users
      WHERE id = $1 AND company_id = $2`,
     [targetUserId, effectiveCompanyId],
@@ -615,28 +675,35 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  const targetOffDays = normalizeOffDays(targetUser.off_days);
-  const targetDateOnOffDay = isDateOnOffDay(targetDate, targetOffDays);
-  const existingDateOnOffDay = isDateOnOffDay(existing.date, targetOffDays);
-  const statusChangeRequested = Object.prototype.hasOwnProperty.call(body, 'status') && body.status !== existing.status;
-  const targetStatus = (body.status ?? existing.status) as 'scheduled' | 'confirmed' | 'cancelled';
+  const targetIsOffDay = body.is_off_day ?? existing.is_off_day;
+  const targetStatus = (targetIsOffDay
+    ? 'cancelled'
+    : (body.status ?? existing.status)) as 'scheduled' | 'confirmed' | 'cancelled';
 
-  if (targetDateOnOffDay && statusChangeRequested) {
-    badRequest(
-      res,
-      'Nei giorni di riposo è consentita solo l\'eliminazione del turno',
-      'OFF_DAY_STATUS_LOCKED',
-    );
-    return;
+  if (!targetIsOffDay && targetStatus !== 'cancelled') {
+    const hasDateOffDay = await hasExplicitOffDayShift({
+      companyId: effectiveCompanyId,
+      userId: targetUserId,
+      date: targetDate,
+      excludeShiftId: shiftId,
+    });
+    if (hasDateOffDay) {
+      badRequest(
+        res,
+        'Il dipendente non può ricevere turni nella data marcata come giorno off',
+        'OFF_DAY_SHIFT_BLOCKED',
+      );
+      return;
+    }
   }
 
-  if (targetDateOnOffDay && !existingDateOnOffDay && targetStatus !== 'cancelled') {
-    badRequest(
-      res,
-      'Il dipendente non può ricevere turni nel giorno di riposo configurato',
-      'OFF_DAY_SHIFT_BLOCKED',
-    );
-    return;
+  if (targetIsOffDay) {
+    await cancelWorkingShiftsForOffDay({
+      companyId: effectiveCompanyId,
+      userId: targetUserId,
+      date: targetDate,
+      excludeShiftId: shiftId,
+    });
   }
 
   const assignmentResolution = await resolveShiftAssignmentForDate({
@@ -660,7 +727,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
   const targetEnd    = body.end_time;
 
   // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
-  if (targetStart && targetEnd) {
+  if (!targetIsOffDay && targetStatus !== 'cancelled' && targetStart && targetEnd) {
     const overlapMain = await queryOne<{ id: number }>(
       `SELECT id FROM shifts
        WHERE company_id = $1
@@ -720,7 +787,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  if (role === 'store_manager' && body.status === 'confirmed') {
+  if (role === 'store_manager' && body.status === 'confirmed' && !targetIsOffDay) {
     forbidden(res, 'Il responsabile di negozio non può confermare i turni');
     return;
   }
@@ -742,9 +809,10 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
        split_end2    = $12,
        notes         = $13,
        assignment_id = $14,
-       status        = COALESCE($15, status),
+       is_off_day    = COALESCE($15, is_off_day),
+       status        = COALESCE($16, status),
        updated_at    = NOW()
-     WHERE id = $16 AND company_id = $17
+     WHERE id = $17 AND company_id = $18
      RETURNING id`,
     [
       body.store_id ?? null,
@@ -761,7 +829,8 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
       body.split_end2 ?? null,
       body.notes ?? null,
       assignmentResolution.assignmentId,
-      body.status ?? null,
+      body.is_off_day ?? null,
+      targetStatus,
       shiftId,
       effectiveCompanyId,
     ],
@@ -924,13 +993,9 @@ export const approveWeekForEmployee = asyncHandler(async (req: Request, res: Res
      WHERE s.company_id = $1
        AND s.user_id = $2
        AND s.status = 'scheduled'
+       AND COALESCE(s.is_off_day, false) = false
        AND s.date >= DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW'))
        AND s.date <  DATE_TRUNC('week', TO_DATE($3, 'IYYY-IW')) + INTERVAL '7 days'
-       AND NOT (
-         ((EXTRACT(ISODOW FROM s.date)::int + 6) % 7)::smallint = ANY(
-           COALESCE((SELECT u.off_days FROM users u WHERE u.id = s.user_id), ARRAY[5,6]::SMALLINT[])
-         )
-       )
        ${extraWhere}
      RETURNING s.id`,
     params,
@@ -968,9 +1033,8 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
 
   // Fetch all non-cancelled shifts from source week
   const sourceShifts = await query<Record<string, any>>(
-    `SELECT s.*, COALESCE(u.off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
+    `SELECT s.*
      FROM shifts s
-     JOIN users u ON u.id = s.user_id
      WHERE s.company_id = ANY($1)
        AND s.store_id = $2
        AND s.status != 'cancelled'
@@ -1017,9 +1081,18 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
     const targetDateObj = new Date(targetMondayDate);
     targetDateObj.setDate(targetDateObj.getDate() + dayOffset);
     const targetDate = parseDateOnly(targetDateObj);
-    const userOffDays = normalizeOffDays(s.off_days);
 
-    if (targetDate && isDateOnOffDay(targetDate, userOffDays)) {
+    if (!targetDate) {
+      skippedOffDay += 1;
+      continue;
+    }
+
+    const hasDateOffDay = await hasExplicitOffDayShift({
+      companyId: s.company_id,
+      userId: s.user_id,
+      date: targetDate,
+    });
+    if (hasDateOffDay) {
       skippedOffDay += 1;
       continue;
     }
@@ -1359,6 +1432,11 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
+  if (companyId == null) {
+    forbidden(res, 'Accesso negato');
+    return;
+  }
+
   let wb: XLSX.WorkBook;
   try {
     wb = XLSX.read(file.buffer, { type: 'buffer', cellDates: true });
@@ -1437,8 +1515,8 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
       }
 
       // Multi-tenant + store_manager scope check — look up by unique_id and store code
-      const targetUser = await queryOne<{ id: number; off_days: number[] | null }>(
-        `SELECT id, COALESCE(off_days, ARRAY[5,6]::SMALLINT[]) AS off_days
+      const targetUser = await queryOne<{ id: number }>(
+        `SELECT id
          FROM users
          WHERE unique_id = $1 AND company_id = $2 AND status = 'active'`,
         [uniqueIdVal, companyId],
@@ -1448,8 +1526,12 @@ export const importShifts = asyncHandler(async (req: Request, res: Response) => 
       }
       const userId = targetUser.id;
 
-      const userOffDays = normalizeOffDays(targetUser.off_days);
-      if (isDateOnOffDay(dateVal, userOffDays)) {
+      const hasDateOffDay = await hasExplicitOffDayShift({
+        companyId,
+        userId,
+        date: dateVal,
+      });
+      if (hasDateOffDay) {
         skipped++;
         continue;
       }

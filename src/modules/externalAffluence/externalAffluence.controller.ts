@@ -6,6 +6,7 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import {
   ExternalAffluenceRecommendationRow,
   ExternalDbUnavailableError,
+  ExternalIngressiDailyRow,
   buildAffluenceRecommendations,
   buildTrafficSummary,
   checkExternalConnection,
@@ -50,6 +51,15 @@ interface MappingViewRow {
 interface StoreScopeRow {
   id: number;
   companyId: number;
+}
+
+interface StoreWithCompanyRow {
+  id: number;
+  companyId: number;
+  companyName: string;
+  storeName: string;
+  storeCode: string;
+  storeLogoFilename: string | null;
 }
 
 interface StoreMappingRow {
@@ -136,6 +146,39 @@ interface CountRow {
   count: number | string;
 }
 
+interface CompanyAffluenceSettingsRow {
+  companyId: number;
+  visitorsPerStaff: number | string;
+  slotWeight09001200: number | string;
+  slotWeight12001500: number | string;
+  slotWeight15001800: number | string;
+  slotWeight18002100: number | string;
+  lowMaxStaff: number | string;
+  mediumMaxStaff: number | string;
+  coverageTolerance: number | string;
+}
+
+interface LiveAffluenceSlotWeight {
+  timeSlot: string;
+  weight: number;
+}
+
+interface LiveAffluenceSettings {
+  visitorsPerStaff: number;
+  slotWeights: LiveAffluenceSlotWeight[];
+  lowMaxStaff: number;
+  mediumMaxStaff: number;
+  coverageTolerance: number;
+}
+
+interface AffluenceSettingsUpdateInput {
+  visitorsPerStaff?: number;
+  lowMaxStaff?: number;
+  mediumMaxStaff?: number;
+  coverageTolerance?: number;
+  slotWeights?: Array<{ timeSlot: string; weight: number }>;
+}
+
 const STAFFING_SLOTS: Array<{ timeSlot: string; startMinutes: number; endMinutes: number }> = [
   { timeSlot: '09:00-12:00', startMinutes: 9 * 60, endMinutes: 12 * 60 },
   { timeSlot: '12:00-15:00', startMinutes: 12 * 60, endMinutes: 15 * 60 },
@@ -143,7 +186,158 @@ const STAFFING_SLOTS: Array<{ timeSlot: string; startMinutes: number; endMinutes
   { timeSlot: '18:00-21:00', startMinutes: 18 * 60, endMinutes: 21 * 60 },
 ];
 
+const DEFAULT_VISITORS_PER_STAFF = 10;
+const DEFAULT_LOW_MAX_STAFF = 10;
+const DEFAULT_MEDIUM_MAX_STAFF = 20;
+const DEFAULT_COVERAGE_TOLERANCE = 0.4;
+const DEFAULT_SLOT_WEIGHTS: LiveAffluenceSlotWeight[] = [
+  { timeSlot: '09:00-12:00', weight: 0.25 },
+  { timeSlot: '12:00-15:00', weight: 0.25 },
+  { timeSlot: '15:00-18:00', weight: 0.25 },
+  { timeSlot: '18:00-21:00', weight: 0.25 },
+];
+
 let shiftsIsOffDayColumnCache: boolean | null = null;
+
+function normalizeBoundedNumber(value: unknown, fallback: number, min: number, max: number): number {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.max(min, Math.min(max, numeric));
+}
+
+function getDefaultLiveAffluenceSettings(): LiveAffluenceSettings {
+  return {
+    visitorsPerStaff: DEFAULT_VISITORS_PER_STAFF,
+    lowMaxStaff: DEFAULT_LOW_MAX_STAFF,
+    mediumMaxStaff: DEFAULT_MEDIUM_MAX_STAFF,
+    coverageTolerance: DEFAULT_COVERAGE_TOLERANCE,
+    slotWeights: DEFAULT_SLOT_WEIGHTS.map((slot) => ({ ...slot })),
+  };
+}
+
+function normalizeLiveAffluenceSettings(
+  row: CompanyAffluenceSettingsRow | null,
+): LiveAffluenceSettings {
+  const defaults = getDefaultLiveAffluenceSettings();
+  if (!row) {
+    return defaults;
+  }
+
+  const lowMaxStaff = Math.round(normalizeBoundedNumber(row.lowMaxStaff, defaults.lowMaxStaff, 0, 100000));
+  const mediumMaxCandidate = Math.round(normalizeBoundedNumber(row.mediumMaxStaff, defaults.mediumMaxStaff, lowMaxStaff, 100000));
+
+  return {
+    visitorsPerStaff: normalizeBoundedNumber(row.visitorsPerStaff, defaults.visitorsPerStaff, 0.1, 10000),
+    lowMaxStaff,
+    mediumMaxStaff: Math.max(lowMaxStaff, mediumMaxCandidate),
+    coverageTolerance: normalizeBoundedNumber(row.coverageTolerance, defaults.coverageTolerance, 0, 10),
+    slotWeights: [
+      {
+        timeSlot: '09:00-12:00',
+        weight: normalizeBoundedNumber(row.slotWeight09001200, defaults.slotWeights[0].weight, 0, 1),
+      },
+      {
+        timeSlot: '12:00-15:00',
+        weight: normalizeBoundedNumber(row.slotWeight12001500, defaults.slotWeights[1].weight, 0, 1),
+      },
+      {
+        timeSlot: '15:00-18:00',
+        weight: normalizeBoundedNumber(row.slotWeight15001800, defaults.slotWeights[2].weight, 0, 1),
+      },
+      {
+        timeSlot: '18:00-21:00',
+        weight: normalizeBoundedNumber(row.slotWeight18002100, defaults.slotWeights[3].weight, 0, 1),
+      },
+    ],
+  };
+}
+
+function normalizeSettingsPatch(
+  current: LiveAffluenceSettings,
+  patch: AffluenceSettingsUpdateInput,
+): LiveAffluenceSettings {
+  const next: LiveAffluenceSettings = {
+    visitorsPerStaff: patch.visitorsPerStaff != null
+      ? normalizeBoundedNumber(patch.visitorsPerStaff, current.visitorsPerStaff, 0.1, 10000)
+      : current.visitorsPerStaff,
+    lowMaxStaff: patch.lowMaxStaff != null
+      ? Math.round(normalizeBoundedNumber(patch.lowMaxStaff, current.lowMaxStaff, 0, 100000))
+      : current.lowMaxStaff,
+    mediumMaxStaff: patch.mediumMaxStaff != null
+      ? Math.round(normalizeBoundedNumber(patch.mediumMaxStaff, current.mediumMaxStaff, 0, 100000))
+      : current.mediumMaxStaff,
+    coverageTolerance: patch.coverageTolerance != null
+      ? normalizeBoundedNumber(patch.coverageTolerance, current.coverageTolerance, 0, 10)
+      : current.coverageTolerance,
+    slotWeights: current.slotWeights.map((slot) => ({ ...slot })),
+  };
+
+  if (patch.slotWeights && patch.slotWeights.length > 0) {
+    const bySlot = new Map(patch.slotWeights.map((slot) => [slot.timeSlot, slot.weight]));
+    next.slotWeights = next.slotWeights.map((slot) => {
+      const updated = bySlot.get(slot.timeSlot);
+      return {
+        ...slot,
+        weight: updated != null
+          ? normalizeBoundedNumber(updated, slot.weight, 0, 1)
+          : slot.weight,
+      };
+    });
+  }
+
+  if (next.mediumMaxStaff < next.lowMaxStaff) {
+    next.mediumMaxStaff = next.lowMaxStaff;
+  }
+
+  return next;
+}
+
+function detectLevelFromEstimatedVisitors(
+  estimatedVisitors: number,
+  settings: LiveAffluenceSettings,
+): 'low' | 'medium' | 'high' {
+  if (estimatedVisitors <= settings.lowMaxStaff) return 'low';
+  if (estimatedVisitors <= settings.mediumMaxStaff) return 'medium';
+  return 'high';
+}
+
+function buildAffluenceRecommendationsWithSettings(
+  rows: ExternalIngressiDailyRow[],
+  settings: LiveAffluenceSettings,
+): ExternalAffluenceRecommendationRow[] {
+  if (rows.length === 0) {
+    return [];
+  }
+
+  const summary = buildTrafficSummary(rows);
+
+  const weekdayAvgMap = new Map<number, number>();
+  for (const row of summary.weekdayAverages) {
+    weekdayAvgMap.set(row.dayOfWeek, row.days > 0 ? row.avgVisitors : 0);
+  }
+
+  const output: ExternalAffluenceRecommendationRow[] = [];
+
+  for (let dayOfWeek = 1; dayOfWeek <= 7; dayOfWeek += 1) {
+    const dayAvgVisitors = weekdayAvgMap.get(dayOfWeek) ?? 0;
+    for (const slot of settings.slotWeights) {
+      const estimatedVisitors = Number((dayAvgVisitors * slot.weight).toFixed(2));
+      const requiredStaff = estimatedVisitors <= 0
+        ? 0
+        : Math.max(1, Math.ceil(estimatedVisitors / settings.visitorsPerStaff));
+
+      output.push({
+        dayOfWeek,
+        timeSlot: slot.timeSlot,
+        estimatedVisitors,
+        level: detectLevelFromEstimatedVisitors(estimatedVisitors, settings),
+        requiredStaff,
+      });
+    }
+  }
+
+  return output;
+}
 
 function formatBytes(bytes: number): string {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -278,6 +472,44 @@ function normalizeDateRange(fromRaw: unknown, toRaw: unknown): { fromDate: strin
   return { fromDate, toDate };
 }
 
+function normalizeIsoWeekToken(weekRaw: unknown): { year: number; week: number; weekToken: string } | null {
+  if (typeof weekRaw !== 'string') return null;
+  const trimmed = weekRaw.trim();
+  const match = trimmed.match(/^(\d{4})-W(\d{1,2})$/);
+  if (!match) return null;
+
+  const year = Number(match[1]);
+  const week = Number(match[2]);
+  if (!Number.isInteger(year) || !Number.isInteger(week) || week < 1 || week > 53) {
+    return null;
+  }
+
+  return {
+    year,
+    week,
+    weekToken: `${year}-W${String(week).padStart(2, '0')}`,
+  };
+}
+
+function dateRangeFromIsoWeek(weekRaw: unknown): { weekToken: string; fromDate: string; toDate: string } | null {
+  const parsed = normalizeIsoWeekToken(weekRaw);
+  if (!parsed) return null;
+
+  const jan4 = new Date(Date.UTC(parsed.year, 0, 4));
+  const jan4IsoDay = jan4.getUTCDay() === 0 ? 7 : jan4.getUTCDay();
+  const monday = new Date(jan4);
+  monday.setUTCDate(jan4.getUTCDate() - (jan4IsoDay - 1) + ((parsed.week - 1) * 7));
+
+  const sunday = new Date(monday);
+  sunday.setUTCDate(monday.getUTCDate() + 6);
+
+  return {
+    weekToken: parsed.weekToken,
+    fromDate: formatDateOnly(monday),
+    toDate: formatDateOnly(sunday),
+  };
+}
+
 async function resolveTargetCompanyId(req: Request): Promise<number | null> {
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const explicit = req.query?.target_company_id
@@ -310,6 +542,66 @@ async function resolveScopedStore(storeId: number, req: Request): Promise<StoreS
     [storeId, allowedCompanyIds],
   );
   return row;
+}
+
+async function getScopedStoreWithCompany(
+  storeId: number,
+  companyId: number,
+): Promise<StoreWithCompanyRow | null> {
+  return queryOne<StoreWithCompanyRow>(
+    `SELECT
+       s.id,
+       s.company_id AS "companyId",
+       c.name AS "companyName",
+       s.name AS "storeName",
+       s.code AS "storeCode",
+       s.logo_filename AS "storeLogoFilename"
+     FROM stores s
+     JOIN companies c ON c.id = s.company_id
+     WHERE s.id = $1
+       AND s.company_id = $2`,
+    [storeId, companyId],
+  );
+}
+
+function parseRequestedCompanyId(req: Request): number | null | 'INVALID' {
+  const explicit = req.query?.target_company_id
+    ?? req.query?.company_id
+    ?? req.body?.target_company_id
+    ?? req.body?.company_id;
+
+  if (explicit == null) return null;
+
+  const parsed = parseInt(String(explicit), 10);
+  if (!Number.isFinite(parsed)) {
+    return 'INVALID';
+  }
+
+  return parsed;
+}
+
+async function resolveScopedStoreWithDetails(
+  req: Request,
+  storeId: number,
+): Promise<StoreWithCompanyRow | null | 'COMPANY_MISMATCH' | 'INVALID_COMPANY_ID'> {
+  const requestedCompanyId = parseRequestedCompanyId(req);
+  if (requestedCompanyId === 'INVALID') {
+    return 'INVALID_COMPANY_ID';
+  }
+
+  if (requestedCompanyId != null) {
+    const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+    if (!allowedCompanyIds.includes(requestedCompanyId)) {
+      return 'COMPANY_MISMATCH';
+    }
+  }
+
+  const scopedStore = await resolveScopedStore(storeId, req);
+  if (!scopedStore) {
+    return null;
+  }
+
+  return getScopedStoreWithCompany(scopedStore.id, scopedStore.companyId);
 }
 
 function sendExternalDbError(res: Response, err: unknown): boolean {
@@ -376,6 +668,94 @@ async function hasShiftsIsOffDayColumn(): Promise<boolean> {
 
   shiftsIsOffDayColumnCache = Boolean(exists?.exists);
   return shiftsIsOffDayColumnCache;
+}
+
+async function loadCompanyLiveAffluenceSettings(companyId: number): Promise<LiveAffluenceSettings> {
+  try {
+    const row = await queryOne<CompanyAffluenceSettingsRow>(
+      `SELECT
+         company_id AS "companyId",
+         visitors_per_staff AS "visitorsPerStaff",
+         slot_weight_0900_1200 AS "slotWeight09001200",
+         slot_weight_1200_1500 AS "slotWeight12001500",
+         slot_weight_1500_1800 AS "slotWeight15001800",
+         slot_weight_1800_2100 AS "slotWeight18002100",
+         low_max_staff AS "lowMaxStaff",
+         medium_max_staff AS "mediumMaxStaff",
+         coverage_tolerance AS "coverageTolerance"
+       FROM company_external_affluence_settings
+       WHERE company_id = $1`,
+      [companyId],
+    );
+
+    return normalizeLiveAffluenceSettings(row ?? null);
+  } catch (err) {
+    // Keep API usable even when migration has not been applied yet.
+    const anyErr = err as { code?: string };
+    if (anyErr?.code === '42P01') {
+      return getDefaultLiveAffluenceSettings();
+    }
+    throw err;
+  }
+}
+
+async function saveCompanyLiveAffluenceSettings(
+  companyId: number,
+  settings: LiveAffluenceSettings,
+  actorUserId: number | null,
+): Promise<LiveAffluenceSettings> {
+  try {
+    await query(
+      `INSERT INTO company_external_affluence_settings (
+         company_id,
+         visitors_per_staff,
+         slot_weight_0900_1200,
+         slot_weight_1200_1500,
+         slot_weight_1500_1800,
+         slot_weight_1800_2100,
+         low_max_staff,
+         medium_max_staff,
+         coverage_tolerance,
+         updated_by,
+         created_at,
+         updated_at
+       ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,NOW(),NOW())
+       ON CONFLICT (company_id)
+       DO UPDATE SET
+         visitors_per_staff = EXCLUDED.visitors_per_staff,
+         slot_weight_0900_1200 = EXCLUDED.slot_weight_0900_1200,
+         slot_weight_1200_1500 = EXCLUDED.slot_weight_1200_1500,
+         slot_weight_1500_1800 = EXCLUDED.slot_weight_1500_1800,
+         slot_weight_1800_2100 = EXCLUDED.slot_weight_1800_2100,
+         low_max_staff = EXCLUDED.low_max_staff,
+         medium_max_staff = EXCLUDED.medium_max_staff,
+         coverage_tolerance = EXCLUDED.coverage_tolerance,
+         updated_by = EXCLUDED.updated_by,
+         updated_at = NOW()`,
+      [
+        companyId,
+        settings.visitorsPerStaff,
+        settings.slotWeights[0].weight,
+        settings.slotWeights[1].weight,
+        settings.slotWeights[2].weight,
+        settings.slotWeights[3].weight,
+        settings.lowMaxStaff,
+        settings.mediumMaxStaff,
+        settings.coverageTolerance,
+        actorUserId,
+      ],
+    );
+  } catch (err) {
+    const anyErr = err as { code?: string };
+    if (anyErr?.code === '42P01') {
+      const missingSchemaError = new Error('Live affluence settings table is missing. Run database migrations.') as Error & { code?: string };
+      missingSchemaError.code = 'AFFLUENCE_SETTINGS_SCHEMA_MISSING';
+      throw missingSchemaError;
+    }
+    throw err;
+  }
+
+  return loadCompanyLiveAffluenceSettings(companyId);
 }
 
 export const getExternalCatalog = asyncHandler(async (_req: Request, res: Response) => {
@@ -1071,6 +1451,7 @@ function mergeWithCurrentAffluence(
   recommendations: ExternalAffluenceRecommendationRow[],
   currentRows: CurrentAffluenceRow[],
   scheduledStaffBaseline: Map<string, number>,
+  coverageTolerance = DEFAULT_COVERAGE_TOLERANCE,
 ): Array<ExternalAffluenceRecommendationRow & {
   currentLevel: 'low' | 'medium' | 'high' | null;
   currentRequiredStaff: number | null;
@@ -1095,9 +1476,9 @@ function mergeWithCurrentAffluence(
     const deltaToScheduledStaff = Number((row.requiredStaff - currentScheduledStaff).toFixed(2));
 
     let coverageStatus: 'under' | 'balanced' | 'over' = 'balanced';
-    if (deltaToScheduledStaff > 0.4) {
+    if (deltaToScheduledStaff > coverageTolerance) {
       coverageStatus = 'under';
-    } else if (deltaToScheduledStaff < -0.4) {
+    } else if (deltaToScheduledStaff < -coverageTolerance) {
       coverageStatus = 'over';
     }
 
@@ -1189,19 +1570,30 @@ export const getAffluencePreview = asyncHandler(async (req: Request, res: Respon
 
     const shiftRows = await query<ShiftCoverageRow>(
       `SELECT
-         TO_CHAR(date::date, 'YYYY-MM-DD') AS date,
-         user_id AS "userId",
-         TO_CHAR(start_time, 'HH24:MI') AS "startTime",
-         TO_CHAR(end_time, 'HH24:MI') AS "endTime",
-         CASE WHEN split_start2 IS NULL THEN NULL ELSE TO_CHAR(split_start2, 'HH24:MI') END AS "splitStart2",
-         CASE WHEN split_end2 IS NULL THEN NULL ELSE TO_CHAR(split_end2, 'HH24:MI') END AS "splitEnd2",
-         is_split AS "isSplit",
+         TO_CHAR(s.date::date, 'YYYY-MM-DD') AS date,
+         s.user_id AS "userId",
+         TO_CHAR(s.start_time, 'HH24:MI') AS "startTime",
+         TO_CHAR(s.end_time, 'HH24:MI') AS "endTime",
+         CASE WHEN s.split_start2 IS NULL THEN NULL ELSE TO_CHAR(s.split_start2, 'HH24:MI') END AS "splitStart2",
+         CASE WHEN s.split_end2 IS NULL THEN NULL ELSE TO_CHAR(s.split_end2, 'HH24:MI') END AS "splitEnd2",
+         s.is_split AS "isSplit",
          ${isOffDaySelect}
-       FROM shifts
-       WHERE company_id = $1
-         AND store_id = $2
-         AND date BETWEEN $3::date AND $4::date
-         AND status IN ('scheduled', 'confirmed')`,
+       FROM shifts s
+       WHERE s.company_id = $1
+         AND (
+           s.store_id = $2
+           OR (
+             s.assignment_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM temporary_store_assignments tsa
+               WHERE tsa.id = s.assignment_id
+                 AND (tsa.origin_store_id = $2 OR tsa.target_store_id = $2)
+             )
+           )
+         )
+         AND s.date BETWEEN $3::date AND $4::date
+         AND s.status = 'confirmed'`,
       [companyId, storeId, range.fromDate, range.toDate],
     );
 
@@ -1223,6 +1615,299 @@ export const getAffluencePreview = asyncHandler(async (req: Request, res: Respon
     });
   } catch (err) {
     if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+export const getWeekAffluenceLive = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.query.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID') {
+    badRequest(res, 'Invalid company id', 'INVALID_COMPANY_ID');
+    return;
+  }
+  if (storeResolution === 'COMPANY_MISMATCH') {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+  if (!storeResolution) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const store = storeResolution;
+  const companyId = store.companyId;
+
+  const mapping = await queryOne<StoreMappingRow>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName"
+     FROM external_store_mappings
+     WHERE company_id = $1
+       AND local_store_id = $2
+       AND is_active = true
+     LIMIT 1`,
+    [companyId, storeId],
+  );
+
+  if (!mapping) {
+    badRequest(res, 'Store has no external mapping yet', 'STORE_MAPPING_REQUIRED');
+    return;
+  }
+
+  const weekRange = req.query.week != null ? dateRangeFromIsoWeek(req.query.week) : null;
+  if (req.query.week != null && !weekRange) {
+    badRequest(res, 'Invalid ISO week format. Use YYYY-WNN', 'INVALID_WEEK');
+    return;
+  }
+
+  const dateRange = weekRange ?? normalizeDateRange(req.query.from_date, req.query.to_date);
+  if (!dateRange) {
+    badRequest(res, 'Invalid date range', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  try {
+    const settings = await loadCompanyLiveAffluenceSettings(companyId);
+
+    const rows = await fetchIngressiDaily(
+      String(mapping.externalStoreCode).trim(),
+      dateRange.fromDate,
+      dateRange.toDate,
+      1200,
+    );
+
+    const recommendations = buildAffluenceRecommendationsWithSettings(rows, settings);
+
+    const currentRows = await query<CurrentAffluenceRow>(
+      `SELECT
+         day_of_week AS "dayOfWeek",
+         time_slot AS "timeSlot",
+         level,
+         required_staff AS "requiredStaff"
+       FROM store_affluence
+       WHERE company_id = $1
+         AND store_id = $2
+         AND iso_week IS NULL
+       ORDER BY day_of_week, time_slot, id DESC`,
+      [companyId, storeId],
+    );
+
+    const includeIsOffDay = await hasShiftsIsOffDayColumn();
+    const isOffDaySelect = includeIsOffDay
+      ? 'is_off_day AS "isOffDay"'
+      : 'false AS "isOffDay"';
+
+    const shiftRows = await query<ShiftCoverageRow>(
+      `SELECT
+         TO_CHAR(s.date::date, 'YYYY-MM-DD') AS date,
+         s.user_id AS "userId",
+         TO_CHAR(s.start_time, 'HH24:MI') AS "startTime",
+         TO_CHAR(s.end_time, 'HH24:MI') AS "endTime",
+         CASE WHEN s.split_start2 IS NULL THEN NULL ELSE TO_CHAR(s.split_start2, 'HH24:MI') END AS "splitStart2",
+         CASE WHEN s.split_end2 IS NULL THEN NULL ELSE TO_CHAR(s.split_end2, 'HH24:MI') END AS "splitEnd2",
+         s.is_split AS "isSplit",
+         ${isOffDaySelect}
+       FROM shifts s
+       WHERE s.company_id = $1
+         AND (
+           s.store_id = $2
+           OR (
+             s.assignment_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM temporary_store_assignments tsa
+               WHERE tsa.id = s.assignment_id
+                 AND (tsa.origin_store_id = $2 OR tsa.target_store_id = $2)
+             )
+           )
+         )
+         AND s.date BETWEEN $3::date AND $4::date
+         AND s.status = 'confirmed'`,
+      [companyId, storeId, dateRange.fromDate, dateRange.toDate],
+    );
+
+    const scheduledStaffBaseline = buildScheduledStaffBaseline(
+      shiftRows,
+      dateRange.fromDate,
+      dateRange.toDate,
+    );
+
+    ok(res, {
+      storeId,
+      companyId: store.companyId,
+      companyName: store.companyName,
+      localStoreName: store.storeName,
+      localStoreCode: store.storeCode,
+      externalStoreCode: String(mapping.externalStoreCode).trim(),
+      externalStoreName: mapping.externalStoreName,
+      week: weekRange?.weekToken ?? null,
+      fromDate: dateRange.fromDate,
+      toDate: dateRange.toDate,
+      settings,
+      sourceSummary: buildTrafficSummary(rows),
+      recommendations: mergeWithCurrentAffluence(
+        recommendations,
+        currentRows,
+        scheduledStaffBaseline,
+        settings.coverageTolerance,
+      ),
+    });
+  } catch (err) {
+    if (sendExternalDbError(res, err)) return;
+    throw err;
+  }
+});
+
+export const getAffluenceConfiguration = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.query.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID') {
+    badRequest(res, 'Invalid company id', 'INVALID_COMPANY_ID');
+    return;
+  }
+  if (storeResolution === 'COMPANY_MISMATCH') {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+  if (!storeResolution) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const store = storeResolution;
+  const companyId = store.companyId;
+
+  const mapping = await queryOne<{
+    externalStoreCode: string;
+    externalStoreName: string | null;
+    notes: string | null;
+    isActive: boolean;
+    mappedByUserId: number | null;
+    mappedByName: string | null;
+    mappedBySurname: string | null;
+    mappedByAvatarFilename: string | null;
+    mappedAt: string | null;
+  }>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName",
+       notes,
+       is_active AS "isActive",
+       COALESCE(m.updated_by, m.created_by) AS "mappedByUserId",
+       COALESCE(ub.name, cb.name) AS "mappedByName",
+       COALESCE(ub.surname, cb.surname) AS "mappedBySurname",
+       COALESCE(ub.avatar_filename, cb.avatar_filename) AS "mappedByAvatarFilename",
+       COALESCE(m.updated_at, m.created_at) AS "mappedAt"
+     FROM external_store_mappings m
+     LEFT JOIN users ub ON ub.id = m.updated_by
+     LEFT JOIN users cb ON cb.id = m.created_by
+     WHERE m.company_id = $1
+       AND m.local_store_id = $2
+     ORDER BY m.id DESC
+     LIMIT 1`,
+    [companyId, storeId],
+  );
+
+  const settings = await loadCompanyLiveAffluenceSettings(companyId);
+
+  ok(res, {
+    storeId,
+    companyId: store.companyId,
+    companyName: store.companyName,
+    localStoreName: store.storeName,
+    localStoreCode: store.storeCode,
+    localStoreLogoFilename: store.storeLogoFilename ?? null,
+    integration: {
+      mapped: Boolean(mapping?.isActive && mapping?.externalStoreCode),
+      externalStoreCode: mapping?.externalStoreCode ?? null,
+      externalStoreName: mapping?.externalStoreName ?? null,
+      notes: mapping?.notes ?? null,
+      isActive: mapping?.isActive ?? false,
+      mappedByUserId: mapping?.mappedByUserId ?? null,
+      mappedByName: mapping?.mappedByName ?? null,
+      mappedBySurname: mapping?.mappedBySurname ?? null,
+      mappedByAvatarFilename: mapping?.mappedByAvatarFilename ?? null,
+      mappedAt: mapping?.mappedAt ?? null,
+    },
+    settings,
+  });
+});
+
+export const updateAffluenceConfiguration = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.body?.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID') {
+    badRequest(res, 'Invalid company id', 'INVALID_COMPANY_ID');
+    return;
+  }
+  if (storeResolution === 'COMPANY_MISMATCH') {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+  if (!storeResolution) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const store = storeResolution;
+  const companyId = store.companyId;
+
+  const patch: AffluenceSettingsUpdateInput = {
+    visitorsPerStaff: typeof req.body?.visitors_per_staff === 'number' ? req.body.visitors_per_staff : undefined,
+    lowMaxStaff: typeof req.body?.low_max_staff === 'number' ? req.body.low_max_staff : undefined,
+    mediumMaxStaff: typeof req.body?.medium_max_staff === 'number' ? req.body.medium_max_staff : undefined,
+    coverageTolerance: typeof req.body?.coverage_tolerance === 'number' ? req.body.coverage_tolerance : undefined,
+    slotWeights: Array.isArray(req.body?.slot_weights)
+      ? req.body.slot_weights
+          .map((slot: unknown) => {
+            if (!slot || typeof slot !== 'object') return null;
+            const maybe = slot as { time_slot?: unknown; weight?: unknown };
+            if (typeof maybe.time_slot !== 'string' || typeof maybe.weight !== 'number') return null;
+            return { timeSlot: maybe.time_slot, weight: maybe.weight };
+          })
+          .filter((slot: { timeSlot: string; weight: number } | null): slot is { timeSlot: string; weight: number } => slot != null)
+      : undefined,
+  };
+
+  const current = await loadCompanyLiveAffluenceSettings(companyId);
+  const next = normalizeSettingsPatch(current, patch);
+
+  try {
+    const saved = await saveCompanyLiveAffluenceSettings(companyId, next, req.user?.userId ?? null);
+    ok(res, {
+      storeId,
+      companyId: store.companyId,
+      companyName: store.companyName,
+      localStoreName: store.storeName,
+      localStoreCode: store.storeCode,
+      settings: saved,
+    }, 'Affluence configuration updated');
+  } catch (err) {
+    const anyErr = err as { code?: string; message?: string };
+    if (anyErr?.code === 'AFFLUENCE_SETTINGS_SCHEMA_MISSING') {
+      res.status(503).json({
+        success: false,
+        error: anyErr.message ?? 'Live affluence settings schema is missing',
+        code: anyErr.code,
+      });
+      return;
+    }
     throw err;
   }
 });
