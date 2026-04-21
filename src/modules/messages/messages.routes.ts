@@ -11,6 +11,8 @@ const sendMessageSchema = z.object({
   // but some integrations/tests may still send recipientId.
   recipientId: z.number().int().positive().optional(),
   recipient_id: z.number().int().positive().optional(),
+  company_id: z.number().int().positive().optional(),
+  target_company_id: z.number().int().positive().optional(),
   subject: z.string().max(255).optional(),
   body: z.string().min(1, 'Corpo obbligatorio'),
 }).refine(
