@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { query, queryOne } from '../../config/database';
+import { pool, query, queryOne } from '../../config/database';
 import { ok, created, notFound, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds, resolveCompanyGroupId } from '../../utils/companyScope';
@@ -85,7 +85,7 @@ const COMPANY_LIST_SELECT = `
     c.address,
     c.currency,
     (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
-    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active')::int AS employee_count
+    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
   FROM companies c
   LEFT JOIN company_groups cg ON cg.id = c.group_id
   LEFT JOIN users owner ON owner.id = c.owner_user_id
@@ -409,13 +409,48 @@ export const deleteCompany = asyncHandler(async (req: Request, res: Response) =>
   const targetCompanyId = parseInt(id, 10);
   if (isNaN(targetCompanyId)) { notFound(res, 'Azienda non trovata'); return; }
 
-  const deleted = await queryOne<{ id: number }>(
-    `DELETE FROM companies WHERE id = $1 RETURNING id`,
-    [targetCompanyId]
-  );
-  if (!deleted) { notFound(res, 'Azienda non trovata'); return; }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
 
-  ok(res, { id: deleted.id }, 'Azienda eliminata');
+    // Manually delete related data from tables missing ON DELETE CASCADE to avoid 500 error
+    await client.query('DELETE FROM notification_failures WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM employee_trainings WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM employee_medical_checks WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM attendance_events WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM qr_tokens WHERE company_id = $1', [targetCompanyId]);
+
+    // Leave approvals and configs
+    await client.query('DELETE FROM leave_approvals WHERE leave_request_id IN (SELECT id FROM leave_requests WHERE company_id = $1)', [targetCompanyId]);
+    await client.query('DELETE FROM leave_requests WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM leave_balances WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM leave_approval_config WHERE company_id = $1', [targetCompanyId]);
+
+    // Shifts & Affluence
+    await client.query('DELETE FROM shift_templates WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM store_affluence WHERE company_id = $1', [targetCompanyId]);
+    await client.query('DELETE FROM shifts WHERE company_id = $1', [targetCompanyId]);
+
+    // Finally delete the company itself (cascades to users, stores, documents, permissions, etc.)
+    const result = await client.query(
+      'DELETE FROM companies WHERE id = $1 RETURNING id',
+      [targetCompanyId]
+    );
+
+    if (result.rowCount === 0) {
+      await client.query('ROLLBACK');
+      notFound(res, 'Azienda non trovata');
+      return;
+    }
+
+    await client.query('COMMIT');
+    ok(res, { id: targetCompanyId }, 'Azienda eliminata');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 export const transferCompanyOwnership = asyncHandler(async (req: Request, res: Response) => {
