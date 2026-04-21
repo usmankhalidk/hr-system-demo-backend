@@ -2,16 +2,54 @@ import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
 import { ok, created, forbidden, notFound, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+
+async function resolveMessageCompanyId(req: Request, res: Response): Promise<number | null> {
+  if (!req.user) {
+    forbidden(res, 'Accesso negato: azienda non valida', 'COMPANY_MISMATCH');
+    return null;
+  }
+
+  const explicit =
+    req.body?.company_id ??
+    req.body?.target_company_id ??
+    req.query?.company_id ??
+    req.query?.target_company_id ??
+    req.params?.company_id;
+
+  const fallbackCompanyId = req.user.companyId;
+  const targetCompanyId = explicit != null ? parseInt(String(explicit), 10) : fallbackCompanyId;
+
+  if (targetCompanyId == null || Number.isNaN(targetCompanyId)) {
+    forbidden(res, 'Accesso negato: azienda non valida', 'COMPANY_MISMATCH');
+    return null;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user);
+  if (!allowedCompanyIds.includes(targetCompanyId)) {
+    forbidden(res, 'Accesso negato: azienda non valida', 'COMPANY_MISMATCH');
+    return null;
+  }
+
+  return targetCompanyId;
+}
 
 // POST /api/messages — send a message to an employee
 export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, role, companyId } = req.user!;
+  const { userId, role } = req.user!;
   const { recipientId, recipient_id, subject, body } = req.body as {
     recipientId?: number;
     recipient_id?: number;
+    company_id?: number;
+    target_company_id?: number;
     subject?: string;
     body: string;
   };
+
+  const companyId = await resolveMessageCompanyId(req, res);
+  if (companyId == null) {
+    return;
+  }
 
   const rawRecipient = recipientId ?? recipient_id;
   const numRecipientId = typeof rawRecipient === 'number'
@@ -92,7 +130,10 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
 
 // GET /api/messages/hr — returns the HR contact for current company
 export const getHrRecipient = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
+  const companyId = await resolveMessageCompanyId(req, res);
+  if (companyId == null) {
+    return;
+  }
 
   const hr = await queryOne<{ id: number; name: string; surname: string | null }>(
     `SELECT id, name, surname
@@ -111,7 +152,11 @@ export const getHrRecipient = asyncHandler(async (req: Request, res: Response) =
 
 // GET /api/messages — inbox + sent for current user
 export const listMessages = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, companyId } = req.user!;
+  const { userId } = req.user!;
+  const companyId = await resolveMessageCompanyId(req, res);
+  if (companyId == null) {
+    return;
+  }
 
   const messages = await query(
     `SELECT m.id, m.subject, m.body,
@@ -119,16 +164,16 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
             CASE WHEN m.recipient_id = $1 THEN m.is_read ELSE true END AS is_read,
             m.created_at,
             m.sender_id, m.recipient_id,
-            CONCAT(s.name, ' ', s.surname) AS sender_name,
+            COALESCE(NULLIF(BTRIM(CONCAT(COALESCE(s.name, ''), ' ', COALESCE(s.surname, ''))), ''), CONCAT('User #', m.sender_id::TEXT)) AS sender_name,
             s.role AS sender_role,
                  s.avatar_filename AS sender_avatar_filename,
-            CONCAT(r.name, ' ', r.surname) AS recipient_name,
+            COALESCE(NULLIF(BTRIM(CONCAT(COALESCE(r.name, ''), ' ', COALESCE(r.surname, ''))), ''), CONCAT('User #', m.recipient_id::TEXT)) AS recipient_name,
             r.role AS recipient_role,
                  r.avatar_filename AS recipient_avatar_filename,
             CASE WHEN m.recipient_id = $1 THEN 'received' ELSE 'sent' END AS direction
      FROM messages m
-     JOIN users s ON s.id = m.sender_id
-     JOIN users r ON r.id = m.recipient_id
+     LEFT JOIN users s ON s.id = m.sender_id
+     LEFT JOIN users r ON r.id = m.recipient_id
      WHERE (m.recipient_id = $1 OR m.sender_id = $1) AND m.company_id = $2
      ORDER BY m.created_at DESC
      LIMIT 100`,
@@ -140,7 +185,12 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 
 // GET /api/messages/unread-count
 export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, companyId } = req.user!;
+  const { userId } = req.user!;
+  const companyId = await resolveMessageCompanyId(req, res);
+  if (companyId == null) {
+    return;
+  }
+
   const row = await queryOne<{ count: number }>(
     `SELECT COUNT(*)::int AS count FROM messages WHERE recipient_id = $1 AND company_id = $2 AND is_read = FALSE`,
     [userId, companyId],
@@ -150,7 +200,12 @@ export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
 
 // PATCH /api/messages/:id/read
 export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
-  const { userId, companyId } = req.user!;
+  const { userId } = req.user!;
+  const companyId = await resolveMessageCompanyId(req, res);
+  if (companyId == null) {
+    return;
+  }
+
   const msgId = parseInt(req.params.id, 10);
   if (isNaN(msgId)) { notFound(res, 'Messaggio non trovato'); return; }
 
