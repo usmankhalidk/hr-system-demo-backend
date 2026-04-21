@@ -182,6 +182,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     status: statusFilter,
     role: roleFilter,
     exclude_admins,
+    include_store_terminals,
     target_company_id,
     page = '1',
     limit = '20',
@@ -249,8 +250,10 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     params = scope.params;
   }
 
-  // Globally exclude store_terminal from the Employee module list
-  where += " AND u.role <> 'store_terminal'";
+  // The Employee module excludes store terminals by default, but message pickers can opt in.
+  if (include_store_terminals !== 'true' && include_store_terminals !== '1') {
+    where += " AND u.role <> 'store_terminal'";
+  }
 
   if (exclude_admins === 'true' || exclude_admins === '1') {
     where += " AND u.role <> 'admin'";
