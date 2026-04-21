@@ -129,7 +129,7 @@ export async function updateCategory(
         const targetCompanyId = updates.companyId !== undefined ? updates.companyId : current.company_id;
 
         // 3. Propagation Logic
-        
+
         // CASE A: Deactivation (Active -> Inactive)
         if (current.is_active && !newActive) {
           // Nullify references in employee_documents
@@ -149,7 +149,7 @@ export async function updateCategory(
             [current.name, currentCompanyId]
           );
         }
-        
+
         // CASE B: Reactivation (Inactive -> Active)
         else if (!current.is_active && newActive) {
           // Propagate to all employee_documents for this company
@@ -389,7 +389,7 @@ async function checkDocumentAccess(
   if (user.role === 'area_manager') {
     // Assigned to them, supervised by them, or unassigned (company-wide)
     if (assignedEmployeeId === user.userId || assignedEmployeeId === null) return true;
-    
+
     // Check if the assigned employee is supervised by this area manager
     const supervision = await queryOne(`
       SELECT id FROM users 
@@ -405,7 +405,7 @@ async function checkDocumentAccess(
   if (user.role === 'store_manager' && user.storeId) {
     // Assigned to them, in their store, or unassigned (company-wide)
     if (assignedEmployeeId === user.userId || assignedEmployeeId === null) return true;
-    
+
     // Check if the assigned employee is in the same store
     const sameStore = await queryOne(`
       SELECT id FROM users WHERE id = $1 AND store_id = $2
@@ -421,7 +421,7 @@ async function checkDocumentAccess(
 }
 
 export async function getEmployeeDocumentById(
-  id: number, 
+  id: number,
   companyIds: number[],
   user: JwtPayload
 ): Promise<DocumentRecord | null> {
@@ -539,13 +539,22 @@ export async function getGenericDocumentById(
 
 /**
  * Unified lookup that checks both employee_documents and documents tables.
+ * If source is provided, it strictly checks only that table.
  */
 export async function getDocumentById(
   id: number,
   companyIds: number[],
-  user: JwtPayload
+  user: JwtPayload,
+  source?: 'documents' | 'employee_documents'
 ): Promise<DocumentRecord | null> {
-  // Try employee_documents first
+  if (source === 'employee_documents') {
+    return getEmployeeDocumentById(id, companyIds, user);
+  }
+  if (source === 'documents') {
+    return getGenericDocumentById(id, companyIds, user);
+  }
+
+  // Fallback: try employee_documents first (legacy behavior for old links)
   const empDoc = await getEmployeeDocumentById(id, companyIds, user);
   if (empDoc) return empDoc;
 
@@ -570,7 +579,7 @@ export async function getEmployeeDocuments(
     // Strictly filter by visibility (e.g. not "Only HR")
     where += " AND ($3 = ANY(d.is_visible_to_roles) OR d.is_visible_to_roles IS NULL)";
     params.push(user.role);
-    
+
     // The "See their employees" part is handled by the initial employeeId filter 
     // IF the caller (route) verified the relationship.
   } else if (user.role === 'employee') {
@@ -622,10 +631,10 @@ export async function softDeleteDocument(
   const db = client || { query: (text: string, params: any[]) => query(text, params) };
   const table = sourceTable === 'documents' ? 'documents' : 'employee_documents';
   const idCol = 'id';
-  
+
   // Refined check: for generic documents, we check if uploader company matches OR if it's assigned to an employee in that company.
-  const authFilter = table === 'employee_documents' 
-    ? 'company_id = $2' 
+  const authFilter = table === 'employee_documents'
+    ? 'company_id = $2'
     : '(uploaded_by IN (SELECT id FROM users WHERE company_id = $2) OR employee_id IN (SELECT id FROM users WHERE company_id = $2))';
 
   const queryText = `
@@ -741,7 +750,7 @@ export async function getDeletedDocuments(companyIds: number[], employeeId?: num
     genParams
   );
 
-  
+
   const genDocs: DocumentRecord[] = genRows.map((r: any) => ({
     id: r.id,
     companyId: r.employee_company_id || r.company_id,
@@ -772,7 +781,7 @@ export async function getDeletedDocuments(companyIds: number[], employeeId?: num
 
   // 3. Deduplicate by storage path, PRIORITIZING records that have an employee assigned
   const combined = [...empDocs, ...genDocs];
-  
+
   // Sort combined array so that records with employeeId and employeeName come first
   combined.sort((a, b) => {
     const aHasEmp = (a.employeeId && a.employeeName) ? 1 : 0;
@@ -790,7 +799,7 @@ export async function getDeletedDocuments(companyIds: number[], employeeId?: num
     }
   }
 
-  return uniqueDocs.sort((a, b) => 
+  return uniqueDocs.sort((a, b) =>
     new Date(b.deletedAt!).getTime() - new Date(a.deletedAt!).getTime()
   );
 }
@@ -946,14 +955,14 @@ export async function createGenericDocument(data: {
      RETURNING id, company_id, title, file_url, category, employee_id, uploaded_by, requires_signature, expires_at, is_visible_to_roles, created_at`,
     [
       data.companyId,
-      data.title, 
-      data.fileUrl, 
-      data.category || null, 
-      data.employeeId || null, 
+      data.title,
+      data.fileUrl,
+      data.category || null,
+      data.employeeId || null,
       data.uploadedBy,
       data.requiresSignature || false,
       data.expiresAt || null,
-      data.isVisibleToRoles || ['admin','hr','area_manager','store_manager','employee']
+      data.isVisibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee']
     ],
   );
 
@@ -1208,7 +1217,7 @@ export async function deleteDocumentUnified(id: number, allowedCompanyIds: numbe
 
     // 2. Perform soft-delete in BOTH tables by storage path to ensure unified removal
     // We update is_deleted, deleted_at and updated_at
-    
+
     // Table: documents
     await client.query(`
       UPDATE documents 

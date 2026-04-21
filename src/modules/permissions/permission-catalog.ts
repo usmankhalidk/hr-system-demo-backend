@@ -55,6 +55,8 @@ export const SYSTEM_MODULES = [
   'impostazioni',
   'gestione_accessi',
   'terminali',
+  'ats',
+  'onboarding',
 ] as const;
 
 export type SystemModuleName = typeof SYSTEM_MODULES[number];
@@ -84,8 +86,8 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   messaggi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   impostazioni: ['admin', 'hr', 'area_manager'],
   documenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
-  ats: ['admin', 'hr', 'area_manager', 'store_manager'],
-  onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
+  ats: ['admin', 'hr', 'area_manager'],
+  onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
   report: [],
   gestione_accessi: ['admin', 'hr', 'area_manager'],
   terminali: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
@@ -106,5 +108,7 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'terminali' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'dipendenti' && role === 'employee') return true;
   if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager')) return true;
+  if (moduleName === 'ats' && role === 'admin') return true;
+  if (moduleName === 'onboarding') return true;
   return false;
 }

@@ -82,7 +82,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
         c.name AS company_name,
         cg.name AS group_name,
         c.logo_filename AS company_logo_filename,
-        (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+        (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id
       LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -98,7 +98,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
           c.name AS company_name,
           cg.name AS group_name,
           c.logo_filename AS company_logo_filename,
-          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
         LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -111,7 +111,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
           c.name AS company_name,
           cg.name AS group_name,
           c.logo_filename AS company_logo_filename,
-          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
         FROM stores s
         JOIN companies c ON c.id = s.company_id
         LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -126,7 +126,7 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
         c.name AS company_name,
         cg.name AS group_name,
         c.logo_filename AS company_logo_filename,
-        (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+        (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
       FROM stores s
       JOIN companies c ON c.id = s.company_id
       LEFT JOIN company_groups cg ON cg.id = c.group_id
@@ -149,7 +149,7 @@ export const getStore = asyncHandler(async (req: Request, res: Response) => {
 
   const store = await queryOne<StoreRow>(
     `SELECT s.*, c.name AS company_name, cg.name AS group_name, c.logo_filename AS company_logo_filename,
-            (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+            (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
      FROM stores s
      JOIN companies c ON c.id = s.company_id
      LEFT JOIN company_groups cg ON cg.id = c.group_id

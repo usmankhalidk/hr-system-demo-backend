@@ -226,10 +226,10 @@ async function performAutoAssign(
     }
 
     // Level 2: Full Name (Surname_Name or Name_Surname tokens anywhere)
-    if (fullLowerName.includes(`${name} ${surname}`) || 
-        fullLowerName.includes(`${surname} ${name}`) ||
-        fullLowerName.includes(`${name}_${surname}`) ||
-        fullLowerName.includes(`${surname}_${name}`)) {
+    if (fullLowerName.includes(`${name} ${surname}`) ||
+      fullLowerName.includes(`${surname} ${name}`) ||
+      fullLowerName.includes(`${name}_${surname}`) ||
+      fullLowerName.includes(`${surname}_${name}`)) {
       matchesLevel2.push(emp.id);
       continue;
     }
@@ -241,7 +241,7 @@ async function performAutoAssign(
   }
 
   let matchedEmpId: number | null = options?.employeeId !== undefined ? options.employeeId : null;
-  
+
   if (matchedEmpId === null) {
     if (matchesLevel1.length === 1) {
       matchedEmpId = matchesLevel1[0];
@@ -334,7 +334,8 @@ router.get(
     }
 
     const allowedCompanyIds = await resolveAllowedCompanyIds(user);
-    const doc = await getDocumentById(id, allowedCompanyIds, user);
+    const source = req.query.source as 'documents' | 'employee_documents' | undefined;
+    const doc = await getDocumentById(id, allowedCompanyIds, user, source);
 
     if (!doc) {
       notFound(res, 'Documento non trovato o non autorizzato', 'NOT_FOUND');
@@ -408,7 +409,7 @@ router.put(
           `SELECT company_id, role FROM users WHERE id = $1`,
           [employee_id]
         );
-        
+
         if (emp && emp.role === 'admin') {
           badRequest(res, 'I documenti non possono essere assegnati agli amministratori', 'FORBIDDEN_ASSIGNMENT');
           return;
@@ -564,7 +565,7 @@ router.post(
 
     // Detect ZIP by extension or mimetype
     const isZip = originalname.toLowerCase().endsWith('.zip') ||
-                  ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
+      ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
 
     const { requires_signature, expires_at, visible_to_roles, employee_id } = req.body;
 
@@ -648,10 +649,10 @@ router.post(
       // Rule based auto-assignment
       const matched = await performAutoAssign(doc.id, originalname, req.user!.companyId!, options);
 
-      ok(res, { 
+      ok(res, {
         matched,
         documentId: doc.id,
-        fileName: originalname 
+        fileName: originalname
       });
     }
 
@@ -695,7 +696,7 @@ router.post(
   enforceCompany,
   asyncHandler(async (req: Request, res: Response) => {
     const { name, company_id } = req.body as { name?: string; company_id?: number };
-    
+
     // enforceCompany already ensures req.body.company_id is valid and accessible,
     // or falls back to req.user.companyId if not provided.
     const targetCompanyId = company_id || req.user!.companyId;
@@ -721,7 +722,7 @@ router.post(
       }
 
       const category = await createCategory(targetCompanyId, name.trim());
-      
+
       // Retroactive assignment:
       // 1. Update employee_documents
       await query(
@@ -808,14 +809,14 @@ router.patch(
       }
 
       if (name !== undefined) {
-         await query(
-           `UPDATE documents d
+        await query(
+          `UPDATE documents d
                SET category = $1 
               FROM users u
              WHERE d.employee_id = u.id
                AND u.company_id = $2`,
-           [updated.name, updated.companyId]
-         );
+          [updated.name, updated.companyId]
+        );
       }
 
       ok(res, updated, 'Categoria aggiornata con successo');
@@ -1512,7 +1513,7 @@ router.patch(
 // POST /api/documents/:id/sign — e-signature
 // ---------------------------------------------------------------------------
 
-    router.post(
+router.post(
   '/:id/sign',
   authenticate,
   asyncHandler(async (req: Request, res: Response) => {
@@ -1616,278 +1617,278 @@ router.patch(
         };
       }
 
-    if (!docData) {
-      notFound(res, 'Documento non trovato', 'NOT_FOUND');
-      return;
-    }
-
-    if (!docData.requires_signature) {
-      badRequest(res, 'Questo documento non richiede firma', 'SIGNATURE_NOT_REQUIRED');
-      return;
-    }
-
-    if (docData.signed_at !== null) {
-      conflict(res, 'Documento già firmato', 'ALREADY_SIGNED');
-      return;
-    }
-
-    // New Expiry Check: Reject if document is expired
-    if (docData.expires_at && new Date(docData.expires_at) < new Date()) {
-      const isIt = (req.headers['x-lang'] || 'it') === 'it';
-      badRequest(
-        res, 
-        isIt ? 'Impossibile firmare: il documento è scaduto' : 'Cannot sign: the document has expired', 
-        'DOCUMENT_EXPIRED'
-      );
-      return;
-    }
-
-    // Role-agnostic Authorization: owner (assigned user) or admin/hr
-    const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
-    if (!isAdminOrHr && user.userId !== docData.employee_id) {
-      forbidden(res, 'Non sei autorizzato a firmare questo documento');
-      return;
-    }
-
-    // Signer info gathering
-    const signerInfo = await queryOne<{ name: string; surname: string; role: string; email: string }>(
-      `SELECT name, surname, role, email FROM users WHERE id = $1`,
-      [user.userId],
-    );
-
-    const signerName = signerInfo?.name ?? '';
-    const signerSurname = signerInfo?.surname ?? '';
-    const signerRole = signerInfo?.role ?? user.role;
-    const signerEmail = signerInfo?.email ?? user.email ?? '';
-
-    // IP Normalization
-    const forwardedFor = req.headers['x-forwarded-for'];
-    let signedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : req.ip ?? '0.0.0.0');
-    if (signedIp.startsWith('::ffff:')) signedIp = signedIp.substring(7);
-    else if (signedIp === '::1') signedIp = '127.0.0.1';
-
-    // Timestamp handling - handle both camelCase and snake_case from frontend
-    const body = req.body as any;
-    const rawSignedAt = body.signedAt || body.signed_at;
-    const rawSignedAtDisplay = body.signedAtDisplay || body.signed_at_display;
-    
-    // Diagnostic log update
-    console.log('[DEBUG_SIGN] Derived values - rawSignedAt:', rawSignedAt, 'rawSignedAtDisplay:', rawSignedAtDisplay);
-    
-    const now = rawSignedAt ? new Date(rawSignedAt) : new Date();
-    const finalDate = isNaN(now.getTime()) ? new Date() : now;
-
-    const signatureMeta: Record<string, unknown> = {
-      signerName,
-      signerSurname,
-      signerRole,
-      signerEmail,
-      timestamp: finalDate.toISOString(),
-      signedAtDisplay: rawSignedAtDisplay || null,
-      ip: signedIp,
-      userAgent: req.headers['user-agent'] ?? '',
-    };
-
-    let newStoragePath: string | undefined;
-
-    // PDF modification
-    if (docData.mime_type === 'application/pdf' || docData.storage_path.toLowerCase().endsWith('.pdf')) {
-      try {
-        const fullPath = path.resolve(docData.storage_path);
-        if (!fs.existsSync(fullPath)) throw new Error(`File not found at ${fullPath}`);
-        
-        const pdfBytes = fs.readFileSync(fullPath);
-        const pdfDoc = await PDFDocument.load(pdfBytes);
-        const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-        const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
-
-        const page = pdfDoc.addPage();
-        const { height } = page.getSize();
-        const fontSize = 12;
-        const lineHeight = fontSize * 1.8;
-        const margin = 60;
-
-        const lang = (req.headers['accept-language'] || req.headers['x-lang'] || 'it').toString().toLowerCase();
-        const isIt = lang.startsWith('it');
-        
-        const labels = isIt ? {
-          title: 'Dettagli Firma Elettronica (Verify V3)',
-          signedBy: 'Firmato da',
-          role: 'Ruolo',
-          email: 'Email',
-          date: 'Data e Ora',
-          ip: 'Indirizzo IP',
-          browser: 'Browser',
-          disclaimer: 'Questo documento è stato firmato elettronicamente con consenso legale.'
-        } : {
-          title: 'E-Signature Audit Trail (Verify V3)',
-          signedBy: 'Signed by',
-          role: 'Role',
-          email: 'Email',
-          date: 'Date and Time',
-          ip: 'IP Address',
-          browser: 'Browser',
-          disclaimer: 'This document has been electronically signed with legal consent.'
-        };
-
-        const roleMap: Record<string, string> = isIt ? {
-          admin: 'Amministratore',
-          hr: 'Risorse Umane',
-          area_manager: 'Area Manager',
-          store_manager: 'Store Manager',
-          employee: 'Dipendente',
-          store_terminal: 'Terminale Negozio'
-        } : {
-          admin: 'Administrator',
-          hr: 'Human Resources',
-          area_manager: 'Area Manager',
-          store_manager: 'Store Manager',
-          employee: 'Employee',
-          store_terminal: 'Store Terminal'
-        };
-
-        const displayRole = roleMap[signerRole] || signerRole;
-        
-        // Priority: 
-        // 1. Explicit display string from client
-        // 2. Format the ISO date from client using server locale as backup
-        // 3. Current server time as ultimate fallback
-        const dateStr = rawSignedAtDisplay || finalDate.toLocaleString(isIt ? 'it-IT' : 'en-US', { 
-          dateStyle: 'medium', 
-          timeStyle: 'medium',
-          hour12: false 
-        });
-        
-        console.log('[DEBUG_SIGN] Final dateStr for PDF:', dateStr);
-
-        let y = height - margin;
-        page.drawText(labels.title, { x: margin, y, size: 16, font: fontBold });
-        y -= lineHeight * 1.5;
-
-        const drawField = (label: string, value: string) => {
-          page.drawText(`${label}:`, { x: margin, y, size: fontSize, font: fontBold });
-          page.drawText(value, { x: margin + 100, y, size: fontSize, font });
-          y -= lineHeight;
-        };
-
-        drawField(labels.signedBy, `${signerName} ${signerSurname}`);
-        drawField(labels.role, displayRole);
-        drawField(labels.email, signerEmail);
-        drawField(labels.date, dateStr);
-        drawField(labels.ip, signedIp);
-        
-        const browser = req.headers['user-agent'] || 'Unknown';
-        page.drawText(`${labels.browser}:`, { x: margin, y, size: fontSize, font: fontBold });
-        page.drawText(browser.length > 60 ? browser.substring(0, 57) + '...' : browser, { x: margin + 100, y, size: fontSize, font });
-        y -= lineHeight * 2;
-
-        page.drawText(labels.disclaimer, { x: margin, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
-
-        const modifiedPdfBytes = await pdfDoc.save();
-        
-        // Generate a new unique filename for the signed version
-        const dir = path.dirname(fullPath);
-        const ext = path.extname(fullPath);
-        const baseName = path.basename(fullPath, ext);
-        const newFileName = `signed_${user.userId}_${Date.now()}_${baseName}${ext}`;
-        const newFullPath = path.join(dir, newFileName);
-        
-        fs.writeFileSync(newFullPath, modifiedPdfBytes);
-        
-        // The path we store in the database (relative or absolute as per convention)
-        // Here we use the same directory structure but the new file name
-        newStoragePath = path.join(path.dirname(docData.storage_path), newFileName);
-      } catch (pdfErr: any) {
-        signatureMeta['pdfSignatureError'] = pdfErr?.message ?? 'Errore PDF';
+      if (!docData) {
+        notFound(res, 'Documento non trovato', 'NOT_FOUND');
+        return;
       }
-    }
 
-    // Update the correct table
-    let updated: any = null;
-    if (docData.sourceTable === 'employee_documents') {
-      updated = await signDocument(id, {
-        signedByUserId: user.userId,
-        signedIp,
-        signatureMeta,
-        newStoragePath, // Use the new signed file path
-        signedAt: finalDate.toISOString(),
-      });
+      if (!docData.requires_signature) {
+        badRequest(res, 'Questo documento non richiede firma', 'SIGNATURE_NOT_REQUIRED');
+        return;
+      }
 
-      // SYNC: Update corresponding record in 'documents' table if exists
-      if (updated) {
-        await query(
-          `UPDATE documents 
+      if (docData.signed_at !== null) {
+        conflict(res, 'Documento già firmato', 'ALREADY_SIGNED');
+        return;
+      }
+
+      // New Expiry Check: Reject if document is expired
+      if (docData.expires_at && new Date(docData.expires_at) < new Date()) {
+        const isIt = (req.headers['x-lang'] || 'it') === 'it';
+        badRequest(
+          res,
+          isIt ? 'Impossibile firmare: il documento è scaduto' : 'Cannot sign: the document has expired',
+          'DOCUMENT_EXPIRED'
+        );
+        return;
+      }
+
+      // Role-agnostic Authorization: owner (assigned user) or admin/hr
+      const isAdminOrHr = ['admin', 'hr'].includes(user.role) || user.is_super_admin === true;
+      if (!isAdminOrHr && user.userId !== docData.employee_id) {
+        forbidden(res, 'Non sei autorizzato a firmare questo documento');
+        return;
+      }
+
+      // Signer info gathering
+      const signerInfo = await queryOne<{ name: string; surname: string; role: string; email: string }>(
+        `SELECT name, surname, role, email FROM users WHERE id = $1`,
+        [user.userId],
+      );
+
+      const signerName = signerInfo?.name ?? '';
+      const signerSurname = signerInfo?.surname ?? '';
+      const signerRole = signerInfo?.role ?? user.role;
+      const signerEmail = signerInfo?.email ?? user.email ?? '';
+
+      // IP Normalization
+      const forwardedFor = req.headers['x-forwarded-for'];
+      let signedIp = Array.isArray(forwardedFor) ? forwardedFor[0] : (typeof forwardedFor === 'string' ? forwardedFor.split(',')[0].trim() : req.ip ?? '0.0.0.0');
+      if (signedIp.startsWith('::ffff:')) signedIp = signedIp.substring(7);
+      else if (signedIp === '::1') signedIp = '127.0.0.1';
+
+      // Timestamp handling - handle both camelCase and snake_case from frontend
+      const body = req.body as any;
+      const rawSignedAt = body.signedAt || body.signed_at;
+      const rawSignedAtDisplay = body.signedAtDisplay || body.signed_at_display;
+
+      // Diagnostic log update
+      console.log('[DEBUG_SIGN] Derived values - rawSignedAt:', rawSignedAt, 'rawSignedAtDisplay:', rawSignedAtDisplay);
+
+      const now = rawSignedAt ? new Date(rawSignedAt) : new Date();
+      const finalDate = isNaN(now.getTime()) ? new Date() : now;
+
+      const signatureMeta: Record<string, unknown> = {
+        signerName,
+        signerSurname,
+        signerRole,
+        signerEmail,
+        timestamp: finalDate.toISOString(),
+        signedAtDisplay: rawSignedAtDisplay || null,
+        ip: signedIp,
+        userAgent: req.headers['user-agent'] ?? '',
+      };
+
+      let newStoragePath: string | undefined;
+
+      // PDF modification
+      if (docData.mime_type === 'application/pdf' || docData.storage_path.toLowerCase().endsWith('.pdf')) {
+        try {
+          const fullPath = path.resolve(docData.storage_path);
+          if (!fs.existsSync(fullPath)) throw new Error(`File not found at ${fullPath}`);
+
+          const pdfBytes = fs.readFileSync(fullPath);
+          const pdfDoc = await PDFDocument.load(pdfBytes);
+          const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+          const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+
+          const page = pdfDoc.addPage();
+          const { height } = page.getSize();
+          const fontSize = 12;
+          const lineHeight = fontSize * 1.8;
+          const margin = 60;
+
+          const lang = (req.headers['accept-language'] || req.headers['x-lang'] || 'it').toString().toLowerCase();
+          const isIt = lang.startsWith('it');
+
+          const labels = isIt ? {
+            title: 'Dettagli Firma Elettronica (Verify V3)',
+            signedBy: 'Firmato da',
+            role: 'Ruolo',
+            email: 'Email',
+            date: 'Data e Ora',
+            ip: 'Indirizzo IP',
+            browser: 'Browser',
+            disclaimer: 'Questo documento è stato firmato elettronicamente con consenso legale.'
+          } : {
+            title: 'E-Signature Audit Trail (Verify V3)',
+            signedBy: 'Signed by',
+            role: 'Role',
+            email: 'Email',
+            date: 'Date and Time',
+            ip: 'IP Address',
+            browser: 'Browser',
+            disclaimer: 'This document has been electronically signed with legal consent.'
+          };
+
+          const roleMap: Record<string, string> = isIt ? {
+            admin: 'Amministratore',
+            hr: 'Risorse Umane',
+            area_manager: 'Area Manager',
+            store_manager: 'Store Manager',
+            employee: 'Dipendente',
+            store_terminal: 'Terminale Negozio'
+          } : {
+            admin: 'Administrator',
+            hr: 'Human Resources',
+            area_manager: 'Area Manager',
+            store_manager: 'Store Manager',
+            employee: 'Employee',
+            store_terminal: 'Store Terminal'
+          };
+
+          const displayRole = roleMap[signerRole] || signerRole;
+
+          // Priority: 
+          // 1. Explicit display string from client
+          // 2. Format the ISO date from client using server locale as backup
+          // 3. Current server time as ultimate fallback
+          const dateStr = rawSignedAtDisplay || finalDate.toLocaleString(isIt ? 'it-IT' : 'en-US', {
+            dateStyle: 'medium',
+            timeStyle: 'medium',
+            hour12: false
+          });
+
+          console.log('[DEBUG_SIGN] Final dateStr for PDF:', dateStr);
+
+          let y = height - margin;
+          page.drawText(labels.title, { x: margin, y, size: 16, font: fontBold });
+          y -= lineHeight * 1.5;
+
+          const drawField = (label: string, value: string) => {
+            page.drawText(`${label}:`, { x: margin, y, size: fontSize, font: fontBold });
+            page.drawText(value, { x: margin + 100, y, size: fontSize, font });
+            y -= lineHeight;
+          };
+
+          drawField(labels.signedBy, `${signerName} ${signerSurname}`);
+          drawField(labels.role, displayRole);
+          drawField(labels.email, signerEmail);
+          drawField(labels.date, dateStr);
+          drawField(labels.ip, signedIp);
+
+          const browser = req.headers['user-agent'] || 'Unknown';
+          page.drawText(`${labels.browser}:`, { x: margin, y, size: fontSize, font: fontBold });
+          page.drawText(browser.length > 60 ? browser.substring(0, 57) + '...' : browser, { x: margin + 100, y, size: fontSize, font });
+          y -= lineHeight * 2;
+
+          page.drawText(labels.disclaimer, { x: margin, y, size: 10, font, color: rgb(0.4, 0.4, 0.4) });
+
+          const modifiedPdfBytes = await pdfDoc.save();
+
+          // Generate a new unique filename for the signed version
+          const dir = path.dirname(fullPath);
+          const ext = path.extname(fullPath);
+          const baseName = path.basename(fullPath, ext);
+          const newFileName = `signed_${user.userId}_${Date.now()}_${baseName}${ext}`;
+          const newFullPath = path.join(dir, newFileName);
+
+          fs.writeFileSync(newFullPath, modifiedPdfBytes);
+
+          // The path we store in the database (relative or absolute as per convention)
+          // Here we use the same directory structure but the new file name
+          newStoragePath = path.join(path.dirname(docData.storage_path), newFileName);
+        } catch (pdfErr: any) {
+          signatureMeta['pdfSignatureError'] = pdfErr?.message ?? 'Errore PDF';
+        }
+      }
+
+      // Update the correct table
+      let updated: any = null;
+      if (docData.sourceTable === 'employee_documents') {
+        updated = await signDocument(id, {
+          signedByUserId: user.userId,
+          signedIp,
+          signatureMeta,
+          newStoragePath, // Use the new signed file path
+          signedAt: finalDate.toISOString(),
+        });
+
+        // SYNC: Update corresponding record in 'documents' table if exists
+        if (updated) {
+          await query(
+            `UPDATE documents 
               SET signed_at = $1, 
                   signed_by_user_id = $2, 
                   signed_ip = $3::inet, 
                   signature_meta = $4,
                   file_url = $5
             WHERE (file_url = $6 OR file_url = $7) AND (employee_id = $8 OR employee_id IS NULL)`,
-          [
-            finalDate.toISOString(), 
-            user.userId, 
-            signedIp, 
-            signatureMeta, 
-            newStoragePath || docData.storage_path, 
-            docData.storage_path, 
-            newStoragePath || docData.storage_path,
-            docData.employee_id
-          ]
-        );
-      }
-    } else {
-      updated = await signGenericDocument(id, {
-        signedByUserId: user.userId,
-        signedIp,
-        signatureMeta,
-        newStoragePath,
-        signedAt: finalDate.toISOString(),
-      });
+            [
+              finalDate.toISOString(),
+              user.userId,
+              signedIp,
+              signatureMeta,
+              newStoragePath || docData.storage_path,
+              docData.storage_path,
+              newStoragePath || docData.storage_path,
+              docData.employee_id
+            ]
+          );
+        }
+      } else {
+        updated = await signGenericDocument(id, {
+          signedByUserId: user.userId,
+          signedIp,
+          signatureMeta,
+          newStoragePath,
+          signedAt: finalDate.toISOString(),
+        });
 
-      // SYNC: Update corresponding record in 'employee_documents' table if exists
-      if (updated) {
-        await query(
-          `UPDATE employee_documents 
+        // SYNC: Update corresponding record in 'employee_documents' table if exists
+        if (updated) {
+          await query(
+            `UPDATE employee_documents 
               SET signed_at = $1, 
                   signed_by_user_id = $2, 
                   signed_ip = $3::inet, 
                   signature_meta = $4,
                   storage_path = $5
             WHERE storage_path = $6 AND employee_id = $7`,
-          [
-            finalDate.toISOString(), 
-            user.userId, 
-            signedIp, 
-            signatureMeta, 
-            newStoragePath || docData.storage_path, 
-            docData.storage_path, 
-            docData.employee_id
-          ]
-        );
+            [
+              finalDate.toISOString(),
+              user.userId,
+              signedIp,
+              signatureMeta,
+              newStoragePath || docData.storage_path,
+              docData.storage_path,
+              docData.employee_id
+            ]
+          );
+        }
       }
-    }
 
-    if (!updated) {
-      notFound(res, 'Documento non trovato per l\'aggiornamento', 'NOT_FOUND');
-      return;
-    }
+      if (!updated) {
+        notFound(res, 'Documento non trovato per l\'aggiornamento', 'NOT_FOUND');
+        return;
+      }
 
-    // Success response
-    const { storage_path: _sp1, storagePath: _sp2, fileUrl: _sp3, file_url: _sp4, ...safeDoc } = updated;
-    ok(res, {
-      ...safeDoc,
-      signedAt: finalDate.toISOString(),
-      signedByUserId: user.userId,
-      signedIp,
-      signatureMeta
-    }, 'Documento firmato con successo');
+      // Success response
+      const { storage_path: _sp1, storagePath: _sp2, fileUrl: _sp3, file_url: _sp4, ...safeDoc } = updated;
+      ok(res, {
+        ...safeDoc,
+        signedAt: finalDate.toISOString(),
+        signedByUserId: user.userId,
+        signedIp,
+        signatureMeta
+      }, 'Documento firmato con successo');
     } catch (error: any) {
       console.error('SIGN_ERROR_DETAILS:', error);
-      res.status(500).json({ 
-        success: false, 
-        error: 'Errore durante la firma del documento', 
+      res.status(500).json({
+        success: false,
+        error: 'Errore durante la firma del documento',
         details: error.message,
-        code: 'SIGN_ERROR' 
+        code: 'SIGN_ERROR'
       });
     }
   }),
