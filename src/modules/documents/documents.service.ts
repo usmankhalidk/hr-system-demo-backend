@@ -279,6 +279,7 @@ export interface DocumentRecord {
   updatedAt: string;
   sourceTable?: 'documents' | 'employee_documents';
   employeeName?: string;
+  employeeRole?: string;
 }
 
 function mapDocumentRecord(row: {
@@ -306,6 +307,7 @@ function mapDocumentRecord(row: {
   restored_by: number | null;
   created_at: string;
   updated_at: string;
+  employee_role?: string;
 } | any): DocumentRecord {
   return {
     id: row.id,
@@ -333,6 +335,7 @@ function mapDocumentRecord(row: {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     employeeName: row.employee_name,
+    employeeRole: row.employee_role,
     sourceTable: 'employee_documents',
   };
 }
@@ -343,6 +346,7 @@ const DOC_SELECT = `
          d.employee_id,
          e.company_id AS employee_company_id,
          CONCAT(e.name, ' ', e.surname) AS employee_name,
+         e.role AS employee_role,
          d.category_id,
          c.name AS category_name,
          d.file_name,
@@ -374,39 +378,34 @@ const DOC_SELECT = `
 async function checkDocumentAccess(
   isVisibleToRoles: string[] | null,
   assignedEmployeeId: number | null,
-  user: JwtPayload
+  user: JwtPayload,
+  assignedEmployeeRole?: string | null
 ): Promise<boolean> {
+  if (user.is_super_admin) return true;
   if (user.role === 'admin') return true;
 
-  // 1. Role must be in is_visible_to_roles (handles "Only HR")
+  // 1. Role must be in is_visible_to_roles (handles "Only HR" etc)
   const roles = isVisibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee'];
   if (!roles.includes(user.role)) return false;
 
-  // 2. HR can see anything in their company (assuming companyId check passed upstream)
+  // 2. HR can see anything in their allowed companies (company check is done upstream)
   if (user.role === 'hr') return true;
 
   // 3. Hierarchy Check
-  if (user.role === 'area_manager') {
-    // Assigned to them, supervised by them, or unassigned (company-wide)
-    if (assignedEmployeeId === user.userId || assignedEmployeeId === null) return true;
+  if (assignedEmployeeId === user.userId) return true; // Always see own docs
 
-    // Check if the assigned employee is supervised by this area manager
-    const supervision = await queryOne(`
-      SELECT id FROM users 
-      WHERE id = $1 
-        AND (
-          supervisor_id = $2 -- Direct report
-          OR store_id IN (SELECT DISTINCT store_id FROM users WHERE supervisor_id = $2 AND role = 'store_manager' AND status = 'active')
-        )
-    `, [assignedEmployeeId, user.userId]);
-    return !!supervision;
+  if (user.role === 'area_manager') {
+    // Can see SM and Employee docs within same company
+    if (assignedEmployeeId === null) return true; // Company-wide docs
+    return assignedEmployeeRole === 'store_manager' || assignedEmployeeRole === 'employee';
   }
 
   if (user.role === 'store_manager' && user.storeId) {
-    // Assigned to them, in their store, or unassigned (company-wide)
-    if (assignedEmployeeId === user.userId || assignedEmployeeId === null) return true;
+    if (assignedEmployeeId === null) return true; // Store context docs often have employeeId null
+    
+    // Check if the assigned employee is in the same store and is an 'employee'
+    if (assignedEmployeeRole !== 'employee') return false;
 
-    // Check if the assigned employee is in the same store
     const sameStore = await queryOne(`
       SELECT id FROM users WHERE id = $1 AND store_id = $2
     `, [assignedEmployeeId, user.storeId]);
@@ -455,7 +454,7 @@ export async function getEmployeeDocumentById(
   if (!doc) return null;
 
   // Verify visibility
-  if (!(await checkDocumentAccess(doc.is_visible_to_roles, doc.employee_id, user))) {
+  if (!(await checkDocumentAccess(doc.is_visible_to_roles, doc.employee_id, user, (doc as any).employee_role))) {
     return null;
   }
 
@@ -489,7 +488,7 @@ export async function getGenericDocumentById(
     restored_at?: string | null;
     restored_by?: number | null;
   }>(
-    `SELECT d.*, u_up.company_id as u_up_company_id, e.company_id as e_company_id
+    `SELECT d.*, u_up.company_id as u_up_company_id, e.company_id as e_company_id, e.role as e_role
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
        LEFT JOIN users u_up ON u_up.id = d.uploaded_by
@@ -504,7 +503,7 @@ export async function getGenericDocumentById(
   if (!companyIds.includes(docCompanyId)) return null;
 
   // Verify role visibility
-  if (!(await checkDocumentAccess(doc.is_visible_to_roles, doc.employee_id, user))) {
+  if (!(await checkDocumentAccess(doc.is_visible_to_roles, doc.employee_id, user, (doc as any).e_role))) {
     return null;
   }
 
@@ -534,6 +533,7 @@ export async function getGenericDocumentById(
     createdAt: doc.created_at,
     updatedAt: doc.created_at,
     sourceTable: 'documents',
+    employeeRole: (doc as any).e_role,
   };
 }
 
@@ -570,18 +570,31 @@ export async function getEmployeeDocuments(
   let where = 'd.company_id = $1 AND d.employee_id = $2 AND d.is_deleted = false';
   const params: any[] = [companyId, employeeId];
 
+  // Fetch target employee details to check role and store association
+  const target = await queryOne<{ role: string; store_id: number | null }>(
+    'SELECT role, store_id FROM users WHERE id = $1',
+    [employeeId]
+  );
+  if (!target) return [];
+
   // Role-based filtering
-  if (user.role === 'admin') {
-    // No extra filter
-  } else if (user.role === 'hr') {
-    // Full access in company
-  } else if (user.role === 'area_manager' || user.role === 'store_manager') {
-    // Strictly filter by visibility (e.g. not "Only HR")
+  if (user.is_super_admin || user.role === 'admin' || user.role === 'hr') {
+    // Full access within authorized companies (handled by companyId param)
+  } else if (user.role === 'area_manager') {
+    // Area Manager: See SM and Employee docs, or their own
+    if (user.userId !== employeeId) {
+      const allowedSubRoles = ['store_manager', 'employee'];
+      if (!allowedSubRoles.includes(target.role)) return [];
+    }
     where += " AND ($3 = ANY(d.is_visible_to_roles) OR d.is_visible_to_roles IS NULL)";
     params.push(user.role);
-
-    // The "See their employees" part is handled by the initial employeeId filter 
-    // IF the caller (route) verified the relationship.
+  } else if (user.role === 'store_manager') {
+    // Store Manager: See documents of employees in their store only, or their own
+    if (user.userId !== employeeId) {
+      if (target.role !== 'employee' || target.store_id !== user.storeId) return [];
+    }
+    where += " AND ($3 = ANY(d.is_visible_to_roles) OR d.is_visible_to_roles IS NULL)";
+    params.push(user.role);
   } else if (user.role === 'employee') {
     if (user.userId !== employeeId) return []; // Cannot see others
     where += " AND ($3 = ANY(d.is_visible_to_roles) OR d.is_visible_to_roles IS NULL)";
@@ -653,7 +666,12 @@ export async function softDeleteDocument(
   return row !== null;
 }
 
-export async function restoreDocument(id: number, companyId: number, restoredBy: number, sourceTable: 'documents' | 'employee_documents'): Promise<boolean> {
+export async function restoreDocument(
+  id: number,
+  allowedCompanyIds: number[],
+  restoredBy: number,
+  sourceTable: 'documents' | 'employee_documents'
+): Promise<boolean> {
   const { pool } = await import('../../config/database');
   const client = await pool.connect();
 
@@ -678,7 +696,7 @@ export async function restoreDocument(id: number, companyId: number, restoredBy:
       }
     }
 
-    if (!storagePath || mainCompanyId !== companyId) {
+    if (!storagePath || !mainCompanyId || !allowedCompanyIds.includes(mainCompanyId)) {
       await client.query('ROLLBACK');
       return false;
     }
@@ -920,6 +938,7 @@ export interface GenericDocument {
   restoredAt: string | null;
   restoredBy: number | null;
   createdAt: string;
+  employeeRole?: string;
 }
 
 export async function createGenericDocument(data: {
@@ -988,6 +1007,7 @@ export async function getGenericDocuments(options: {
   companyId: number;
   employeeId?: number;
   role: UserRole;
+  isSuperAdmin?: boolean;
   storeId?: number | null;
   allowedCompanyIds?: number[];
 }): Promise<(GenericDocument & { employeeName?: string })[]> {
@@ -999,7 +1019,7 @@ export async function getGenericDocuments(options: {
   const visibilityFilter = `($roleIndex = ANY(COALESCE(d.is_visible_to_roles, ARRAY['admin','hr','area_manager','store_manager','employee']::text[])))`;
 
   // Scoping logic based on role hierarchy
-  if (options.role === 'admin') {
+  if (options.role === 'admin' || options.isSuperAdmin) {
     // Admin: see all documents in allowed companies
     const ids = options.allowedCompanyIds || [options.companyId];
     where = 'd.company_id = ANY($1) AND d.is_deleted = false';
@@ -1010,18 +1030,19 @@ export async function getGenericDocuments(options: {
     where = 'd.company_id = ANY($1) AND d.is_deleted = false';
     params.push(ids);
   } else if (options.role === 'area_manager') {
-    // Area Manager: See all documents in allowed companies that are visible to their role (or everyone)
+    // Area Manager: See AM, SM and Employee docs within same company
     const ids = options.allowedCompanyIds || [options.companyId];
-    where = `d.company_id = ANY($1) AND ${visibilityFilter.replace('$roleIndex', '$2')} AND d.is_deleted = false`;
-    params.push(ids, options.role);
+    where = `d.company_id = ANY($1) 
+             AND ${visibilityFilter.replace('$roleIndex', '$2')} 
+             AND (d.employee_id = $3 OR e.role IN ('store_manager', 'employee')) 
+             AND d.is_deleted = false`;
+    params.push(ids, options.role, options.employeeId);
   } else if (options.role === 'store_manager' && options.storeId) {
-    // Store Manager:
-    // 1. Must pass visibility check
-    // 2. See documents of employees in their store
+    // Store Manager: See own docs and Employee docs in their store
     where = `(
       d.company_id = $4
       AND ${visibilityFilter.replace('$roleIndex', '$3')}
-      AND (d.employee_id = $2 OR e.store_id = $1)
+      AND (d.employee_id = $2 OR (e.store_id = $1 AND e.role = 'employee'))
       AND d.is_deleted = false
     )`;
     params.push(options.storeId, options.employeeId, options.role, options.companyId);
@@ -1064,6 +1085,7 @@ export async function getGenericDocuments(options: {
     deleted_at: string | null;
     restored_at: string | null;
     restored_by: number | null;
+    employee_role?: string;
   }>(
     `SELECT d.*, CONCAT(e.name, ' ', e.surname) AS employee_name,
             e.company_id AS employee_company_id,
@@ -1093,10 +1115,12 @@ export async function getGenericDocuments(options: {
     isVisibleToRoles: r.is_visible_to_roles,
     createdAt: r.created_at,
     employeeName: r.employee_name || undefined,
+    employeeRole: r.employee_role,
     isDeleted: r.is_deleted,
     deletedAt: r.deleted_at,
     restoredAt: r.restored_at,
     restoredBy: r.restored_by,
+    sourceTable: 'documents',
   }));
 }
 
