@@ -132,12 +132,12 @@ function normalizeLeaveDurationInput(
   },
 ):
   | {
-      leaveDurationType: LeaveDurationType;
-      shortStartTime: string | null;
-      shortEndTime: string | null;
-      requestedDays: number;
-      durationHours: number | null;
-    }
+    leaveDurationType: LeaveDurationType;
+    shortStartTime: string | null;
+    shortEndTime: string | null;
+    requestedDays: number;
+    durationHours: number | null;
+  }
   | { error: string; code: string } {
   const leaveDurationType: LeaveDurationType =
     params.leaveDurationType === 'short_leave' ? 'short_leave' : 'full_day';
@@ -235,6 +235,43 @@ function computeRequestedLeaveDays(leave: {
 }
 
 /**
+ * Dynamically calculate the total used leave days for a user in a specific year.
+ * This ensures the balance is always accurate based on approved requests.
+ */
+async function getUserUsedDays(userId: number, year: number, leaveType: string): Promise<number> {
+  const requests = await query<{
+    start_date: string;
+    end_date: string;
+    leave_duration_type: string | null;
+    short_start_time: string | null;
+    short_end_time: string | null;
+  }>(
+    `SELECT start_date::text as start_date, end_date::text as end_date, 
+            leave_duration_type, 
+            TO_CHAR(short_start_time, 'HH24:MI') as short_start_time, 
+            TO_CHAR(short_end_time, 'HH24:MI') as short_end_time
+     FROM leave_requests
+     WHERE user_id = $1 AND leave_type = $2 
+       AND status IN ('approved', 'admin_approved')
+       AND EXTRACT(YEAR FROM start_date) = $3`,
+    [userId, leaveType, year]
+  );
+
+  let total = 0;
+  for (const req of requests) {
+    total += computeRequestedLeaveDays({
+      start_date: req.start_date,
+      end_date: req.end_date,
+      leave_duration_type: req.leave_duration_type,
+      short_start_time: req.short_start_time,
+      short_end_time: req.short_end_time
+    });
+  }
+  return Number(total.toFixed(2));
+}
+
+
+/**
  * Determine the first approver role for a given company/store combination.
  * Skip-stage rule: if no store_manager exists for the store, or they are on leave, escalate to
  * area_manager; if no area_manager exists for the company, or they are on leave, escalate to hr.
@@ -249,9 +286,9 @@ const DEFAULT_APPROVAL_CHAIN = ['store_manager', 'area_manager', 'hr', 'admin'];
  */
 const ROLE_STATUS: Record<string, string> = {
   store_manager: 'store manager approved',
-  area_manager:  'area manager approved',
-  hr:            'HR approved',
-  admin:         'approved',
+  area_manager: 'area manager approved',
+  hr: 'HR approved',
+  admin: 'approved',
 };
 
 function isPgCheckConstraintError(err: unknown): boolean {
@@ -335,9 +372,9 @@ async function findNextActiveApprover(
     } else if (role === 'area_manager') {
       potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'area_manager' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
     } else if (role === 'hr') {
-        potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'hr' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'hr' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
     } else if (role === 'admin') {
-        potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'admin' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'admin' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
     }
 
     if (!potentialApprover) {
@@ -373,6 +410,18 @@ async function determineFirstApprover(
 
   if (lowerRole === 'admin') {
     return { approver: 'admin', skipped: [] };
+  }
+
+  // Area Managers skip directly to HR as first approver
+  if (lowerRole === 'area_manager') {
+    const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, 'hr', chain);
+    return { approver: approver || 'admin', skipped };
+  }
+
+  // HR skip directly to Admin
+  if (lowerRole === 'hr') {
+    const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, 'admin', chain);
+    return { approver: approver || 'admin', skipped };
   }
 
   const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, null, chain);
@@ -457,12 +506,12 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved','admin_approved')
+       AND status IN ('approved', 'admin_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [companyId, userId, end_date, start_date],
   );
   if (overlap) {
-    badRequest(res, 'Hai già una richiesta di permesso che si sovrappone a queste date', 'LEAVE_OVERLAP');
+    badRequest(res, 'Hai già un permesso approvato che si sovrappone a queste date', 'LEAVE_OVERLAP');
     return;
   }
 
@@ -470,21 +519,22 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   if (requestedDays > 0) {
     const year = yearFromIsoDate(start_date);
     const defaultTotal = leave_type === 'vacation' ? 25 : 10;
-    
-    // Attempt to select the balance
-    const balance = await queryOne<{ used_days: number, total_days: number }>(
-      `SELECT used_days, total_days FROM leave_balances 
+
+    // Dynamically calculate current used days from approved requests
+    const currentUsed = await getUserUsedDays(userId, year, leave_type);
+
+    // Fetch total allowed days from balance table, fallback to default if not set
+    const balance = await queryOne<{ total_days: number }>(
+      `SELECT total_days FROM leave_balances 
        WHERE company_id = $1 AND user_id = $2 AND year = $3 AND leave_type = $4`,
       [companyId, userId, year, leave_type]
     );
-
-    const currentUsed = parseFloat(String(balance?.used_days ?? 0));
     const limit = parseFloat(String(balance?.total_days ?? defaultTotal));
 
     if (currentUsed + requestedDays > limit) {
       res.status(400).json({
         success: false,
-        error: "Your leaves are full, you will not able to request this leave.",
+        error: "You have already used all your leaves.",
         code: "LEAVES_FULL"
       });
       return;
@@ -499,8 +549,8 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   let skippedApprovers: string[] = [];
 
   const { approver, skipped } = await determineFirstApprover(
-    companyId, storeId ?? null, 
-    start_date, end_date, 
+    companyId, storeId ?? null,
+    start_date, end_date,
     userId, role
   );
   firstApprover = approver;
@@ -555,8 +605,8 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   const { status, leave_type, date_from, date_to, user_id, page: pageStr, limit: limitStr } =
     req.query as Record<string, string>;
 
-  const page   = Math.max(1, parseInt(pageStr  ?? '1',  10) || 1);
-  const limit  = Math.min(100, Math.max(1, parseInt(limitStr ?? '20', 10) || 20));
+  const page = Math.max(1, parseInt(pageStr ?? '1', 10) || 1);
+  const limit = Math.min(100, Math.max(1, parseInt(limitStr ?? '20', 10) || 20));
   const offset = (page - 1) * limit;
 
   let scopeWhere: string;
@@ -564,11 +614,11 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
 
   switch (role) {
     case 'employee':
-      scopeWhere  = 'lr.company_id = ANY($1) AND lr.user_id = $2';
+      scopeWhere = 'lr.company_id = ANY($1) AND lr.user_id = $2';
       scopeParams = [allowedCompanyIds, userId];
       break;
     case 'store_manager':
-      scopeWhere  = '(lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3';
+      scopeWhere = '(lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3';
       scopeParams = [allowedCompanyIds, storeId, userId];
       break;
     case 'area_manager': {
@@ -581,10 +631,10 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
         // If they manage NO stores, they should still see their OWN requests
-        scopeWhere  = 'lr.company_id = ANY($1) AND lr.user_id = $2';
+        scopeWhere = 'lr.company_id = ANY($1) AND lr.user_id = $2';
         scopeParams = [allowedCompanyIds, userId];
       } else {
-        scopeWhere  = `(lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3`;
+        scopeWhere = `(lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3`;
         scopeParams = [allowedCompanyIds, storeIds, userId];
       }
       break;
@@ -592,7 +642,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     case 'admin':
     case 'hr':
     default:
-      scopeWhere  = 'lr.company_id = ANY($1)';
+      scopeWhere = 'lr.company_id = ANY($1)';
       scopeParams = [allowedCompanyIds];
       if (user_id) {
         scopeWhere += ` AND lr.user_id = $${scopeParams.length + 1}`;
@@ -606,7 +656,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   let paramIdx = scopeParams.length + 1;
 
   if (status) {
-    extraWhere += ` AND lr.status = $${paramIdx}`;    extraParams.push(status);    paramIdx++;
+    extraWhere += ` AND lr.status = $${paramIdx}`; extraParams.push(status); paramIdx++;
   } else if (role !== 'employee') {
     // Managers, HR, and Admin do not see cancelled requests in their dashboard
     extraWhere += ` AND lr.status != 'cancelled'`;
@@ -618,7 +668,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     extraWhere += ` AND lr.start_date >= $${paramIdx}`; extraParams.push(date_from); paramIdx++;
   }
   if (date_to) {
-    extraWhere += ` AND lr.end_date <= $${paramIdx}`;   extraParams.push(date_to);   paramIdx++;
+    extraWhere += ` AND lr.end_date <= $${paramIdx}`; extraParams.push(date_to); paramIdx++;
   }
 
   const allParams = [...scopeParams, ...extraParams];
@@ -647,6 +697,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
        la.action AS latest_action,
        la.created_at AS latest_action_at,
        u.name AS user_name, u.surname AS user_surname,
+       u.role AS user_role,
        u.avatar_filename AS user_avatar_filename,
        s.name AS store_name,
        s.logo_filename AS store_logo_filename,
@@ -692,12 +743,12 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
   let scopeParams: any[];
 
   if (isSuperAdmin) {
-    scopeWhere  = `lr.company_id = ANY($1) AND lr.status IN ('pending','store manager approved','area manager approved')`;
+    scopeWhere = `lr.company_id = ANY($1) AND lr.status IN ('pending','store manager approved','area manager approved')`;
     scopeParams = [allowedCompanyIds];
   } else {
     switch (role) {
       case 'store_manager':
-        scopeWhere  = `lr.company_id = ANY($1) AND lr.current_approver_role = 'store_manager' AND lr.store_id = $2`;
+        scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'store_manager' AND lr.store_id = $2`;
         scopeParams = [allowedCompanyIds, storeId];
         break;
       case 'area_manager': {
@@ -712,14 +763,14 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
           ok(res, { requests: [], total: 0 });
           return;
         }
-        scopeWhere  = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager' AND lr.store_id = ANY($2::int[])`;
+        scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager' AND lr.store_id = ANY($2::int[])`;
         scopeParams = [allowedCompanyIds, storeIds];
         break;
       }
       case 'hr':
       case 'admin':
       default:
-        scopeWhere  = `lr.company_id = ANY($1) AND lr.current_approver_role = $2`;
+        scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = $2`;
         scopeParams = [allowedCompanyIds, role];
         break;
     }
@@ -739,6 +790,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
        la.action AS latest_action,
        la.created_at AS latest_action_at,
        u.name AS user_name, u.surname AS user_surname,
+       u.role AS user_role,
        u.avatar_filename AS user_avatar_filename,
        s.name AS store_name,
        s.logo_filename AS store_logo_filename,
@@ -770,7 +822,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
 export const approveLeave = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId } = req.user!;
   const effectiveRole = role;
-  const isSuperAdmin  = req.user!.is_super_admin === true;
+  const isSuperAdmin = req.user!.is_super_admin === true;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // FIX 4
@@ -819,8 +871,8 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     return;
   }
 
-  const stageRole    = leaveRequest.current_approver_role;
-  const isOverride   = (role === 'admin' || role === 'hr') && (emergency_override === true);
+  const stageRole = leaveRequest.current_approver_role;
+  const isOverride = (role === 'admin' || role === 'hr') && (emergency_override === true);
 
   if (!isSuperAdmin && !isOverride && role !== 'admin' && stageRole !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta", 'LEAVE_NOT_RESPONSIBLE');
@@ -854,7 +906,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   // Final step: update balance only when fully approved
   if (!transition.nextApprover) {
     const requestedDays = computeRequestedLeaveDays(leaveRequest);
-    const year         = yearFromIsoDate(leaveRequest.start_date);
+    const year = yearFromIsoDate(leaveRequest.start_date);
     const defaultTotal = leaveRequest.leave_type === 'vacation' ? 25 : 10;
 
     const client = await pool.connect();
@@ -869,20 +921,41 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
       );
 
       const balanceResult = await client.query(
-        `SELECT total_days, used_days FROM leave_balances
+        `SELECT total_days FROM leave_balances
          WHERE company_id=$1 AND user_id=$2 AND year=$3 AND leave_type=$4
          FOR UPDATE`,
         [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type],
       );
-      const balance  = balanceResult.rows[0];
+      const balance = balanceResult.rows[0];
       const totalDays = parseFloat(balance.total_days);
-      const usedDays  = parseFloat(balance.used_days);
 
-      if (usedDays + requestedDays > totalDays) {
+      // Dynamically calculate used days from already approved requests
+      const usedRes = await client.query(
+        `SELECT start_date::text as start_date, end_date::text as end_date, 
+                leave_duration_type, 
+                TO_CHAR(short_start_time, 'HH24:MI') as short_start_time, 
+                TO_CHAR(short_end_time, 'HH24:MI') as short_end_time
+         FROM leave_requests
+         WHERE user_id = $1 AND leave_type = $2 AND status IN ('approved', 'admin_approved')
+           AND EXTRACT(YEAR FROM start_date) = $3`,
+        [leaveRequest.user_id, leaveRequest.leave_type, year]
+      );
+      let currentUsed = 0;
+      for (const r of usedRes.rows) {
+        currentUsed += computeRequestedLeaveDays({
+          start_date: r.start_date,
+          end_date: r.end_date,
+          leave_duration_type: r.leave_duration_type,
+          short_start_time: r.short_start_time,
+          short_end_time: r.short_end_time
+        });
+      }
+
+      if (currentUsed + requestedDays > totalDays) {
         await client.query('ROLLBACK');
         res.status(422).json({
           success: false,
-          error: `Saldo insufficiente: rimangono ${totalDays - usedDays} giorni, richiesti ${requestedDays}`,
+          error: `Saldo insufficiente: rimangono ${Number((totalDays - currentUsed).toFixed(2))} giorni, richiesti ${requestedDays}`,
           code: 'INSUFFICIENT_BALANCE',
         });
         return;
@@ -999,7 +1072,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
 export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const { role, userId } = req.user!;
   const effectiveRole = role;
-  const isSuperAdmin  = req.user!.is_super_admin === true;
+  const isSuperAdmin = req.user!.is_super_admin === true;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // FIX 4
@@ -1036,7 +1109,7 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const stageRole = leaveRequest.current_approver_role;
-  const isOverride   = (role === 'admin' || role === 'hr') && (emergency_override === true);
+  const isOverride = (role === 'admin' || role === 'hr') && (emergency_override === true);
   if (!isSuperAdmin && !isOverride && role !== 'admin' && stageRole !== effectiveRole) {
     forbidden(res, "Non sei il responsabile dell'approvazione di questa richiesta", 'LEAVE_NOT_RESPONSIBLE');
     return;
@@ -1198,16 +1271,23 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
 
   const balances = await query(
     `SELECT lb.id, lb.company_id, lb.user_id, lb.year, lb.leave_type,
-            lb.total_days, lb.used_days,
-            (lb.total_days - lb.used_days) AS remaining_days,
-            lb.updated_at
+            lb.total_days, lb.updated_at
      FROM leave_balances lb
      WHERE lb.company_id = $1 AND lb.user_id = $2 AND lb.year = $3
      ORDER BY lb.leave_type`,
     [effectiveCompanyRow.company_id, targetUserId, targetYear],
   );
 
-  ok(res, { balances, year: targetYear, user_id: targetUserId, balance_visible: true });
+  const enrichedBalances = await Promise.all(balances.map(async (b: any) => {
+    const usedDays = await getUserUsedDays(b.user_id, b.year, b.leave_type);
+    return {
+      ...b,
+      used_days: usedDays,
+      remaining_days: Number((parseFloat(b.total_days) - usedDays).toFixed(2)),
+    };
+  }));
+
+  ok(res, { balances: enrichedBalances, year: targetYear, user_id: targetUserId, balance_visible: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -1276,17 +1356,25 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
   const overlap = await queryOne<{ id: number }>(
     `SELECT id FROM leave_requests
      WHERE company_id = $1 AND user_id = $2
-       AND status IN ('pending','supervisor_approved','area_manager_approved','hr_approved','admin_approved')
+       AND status IN ('approved', 'admin_approved')
        AND start_date <= $3 AND end_date >= $4`,
     [effectiveCompanyId, user_id, end_date, start_date],
   );
   if (overlap) {
-    badRequest(res, 'Il dipendente ha già una richiesta che si sovrappone a queste date', 'LEAVE_OVERLAP');
+    badRequest(res, 'Il dipendente ha già un permesso approvato che si sovrappone a queste date', 'LEAVE_OVERLAP');
     return;
   }
 
-  const year         = yearFromIsoDate(start_date);
+  const year = yearFromIsoDate(start_date);
   const defaultTotal = leave_type === 'vacation' ? 25 : 10;
+
+  const { role: callerRole, is_super_admin: isSuperAdmin } = req.user!;
+
+  // Explicitly determine if this caller can auto-approve
+  const isAdminOrSuper = callerRole === 'admin' || isSuperAdmin === true;
+
+  const initialStatus = isAdminOrSuper ? 'approved' : 'HR approved';
+  const nextApprover = isAdminOrSuper ? null : 'admin';
 
   const dbClient = await pool.connect();
   try {
@@ -1300,16 +1388,32 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     );
 
     const balRes = await dbClient.query(
-      `SELECT total_days, used_days FROM leave_balances
+      `SELECT total_days FROM leave_balances
        WHERE company_id=$1 AND user_id=$2 AND year=$3 AND leave_type=$4 FOR UPDATE`,
       [effectiveCompanyId, user_id, year, leave_type],
     );
     const bal = balRes.rows[0];
-    if (parseFloat(bal.used_days) + requestedDays > parseFloat(bal.total_days)) {
+
+    // Calculate current used days dynamically from approved requests
+    const usedRes = await dbClient.query(
+      `SELECT start_date::text, end_date::text, leave_duration_type, 
+              TO_CHAR(short_start_time, 'HH24:MI') as short_start_time, 
+              TO_CHAR(short_end_time, 'HH24:MI') as short_end_time
+       FROM leave_requests
+       WHERE user_id = $1 AND leave_type = $2 AND status IN ('approved', 'admin_approved')
+         AND EXTRACT(YEAR FROM start_date) = $3`,
+      [user_id, leave_type, year]
+    );
+    let currentUsed = 0;
+    for (const r of usedRes.rows) {
+      currentUsed += computeRequestedLeaveDays(r);
+    }
+
+    if (currentUsed + requestedDays > parseFloat(bal.total_days)) {
       await dbClient.query('ROLLBACK');
       res.status(422).json({
         success: false,
-        error: `Saldo insufficiente: rimangono ${parseFloat(bal.total_days) - parseFloat(bal.used_days)} giorni, richiesti ${requestedDays}`,
+        error: `Saldo insufficiente: rimangono ${parseFloat(bal.total_days) - currentUsed} giorni, richiesti ${requestedDays}`,
         code: 'INSUFFICIENT_BALANCE',
       });
       return;
@@ -1319,7 +1423,7 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
       `INSERT INTO leave_requests
          (company_id, user_id, store_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time,
           status, current_approver_role, notes)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'hr_approved',NULL,$10)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                  leave_duration_type,
                  TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
@@ -1335,14 +1439,16 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
         leaveDurationType,
         shortStartTime,
         shortEndTime,
+        initialStatus,
+        nextApprover,
         notes ?? null,
       ],
     );
 
     await dbClient.query(
       `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
-       VALUES ($1,$2,'hr','approved',$3)`,
-      [inserted.rows[0].id, adminId, notes ?? null],
+       VALUES ($1,$2,$3,'approved',$4)`,
+      [inserted.rows[0].id, adminId, callerRole, notes ?? null],
     );
 
     const adminBalanceUpdate = await dbClient.query(
@@ -1361,7 +1467,8 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     }
 
     await dbClient.query('COMMIT');
-    created(res, inserted.rows[0], 'Permesso creato e approvato');
+    const msg = isAdminOrSuper ? 'Permesso creato e approvato' : 'Permesso creato (in attesa di approvazione Admin)';
+    created(res, inserted.rows[0], msg);
   } catch (err: any) {
     await dbClient.query('ROLLBACK');
     // FIX 10
@@ -1484,7 +1591,7 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
     // Only hr_approved requests have had balance deducted — reverse those only
     if (existing.status === 'hr_approved') {
       const requestedDays = computeRequestedLeaveDays(existing);
-      const year        = yearFromIsoDate(existing.start_date);
+      const year = yearFromIsoDate(existing.start_date);
       await deleteClient.query(
         `UPDATE leave_balances
          SET used_days = GREATEST(0, used_days - $1), updated_at = NOW()
@@ -1551,7 +1658,7 @@ export const downloadCertificate = asyncHandler(async (req: Request, res: Respon
     return;
   }
 
-  res.setHeader('Content-Type',        row.medical_certificate_type ?? 'application/octet-stream');
+  res.setHeader('Content-Type', row.medical_certificate_type ?? 'application/octet-stream');
   res.setHeader('Content-Disposition', `attachment; filename="${row.medical_certificate_name ?? 'certificato-medico'}"`);
   res.send(row.medical_certificate_data);
 });
@@ -1574,11 +1681,12 @@ export const exportLeaveBalances = asyncHandler(async (req: Request, res: Respon
     targetYear = currentYearInDefaultLeaveTimezone();
   }
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  
-  const rules = await query(`
+
+  // 1. Fetch users and their configured total balances
+  const userBaselines = await query(`
     SELECT u.id, u.name, u.surname,
-           COALESCE(lb_v.total_days, 0) AS vacation_total, COALESCE(lb_v.used_days, 0) AS vacation_used,
-           COALESCE(lb_s.total_days, 0) AS sick_total, COALESCE(lb_s.used_days, 0) AS sick_used
+           COALESCE(lb_v.total_days, 0) AS vacation_total,
+           COALESCE(lb_s.total_days, 0) AS sick_total
     FROM users u
     LEFT JOIN leave_balances lb_v ON lb_v.user_id = u.id AND lb_v.year = $1 AND lb_v.leave_type = 'vacation'
     LEFT JOIN leave_balances lb_s ON lb_s.user_id = u.id AND lb_s.year = $1 AND lb_s.leave_type = 'sick'
@@ -1586,16 +1694,46 @@ export const exportLeaveBalances = asyncHandler(async (req: Request, res: Respon
     ORDER BY u.surname, u.name
   `, [targetYear, allowedCompanyIds]);
 
-  const rows = rules.map(r => ({
-    Matricola: r.id,
-    Cognome: r.surname,
-    Nome: r.name,
-    Anno: targetYear,
-    'Totale Ferie': parseFloat(r.vacation_total),
-    'Ferie Godute': parseFloat(r.vacation_used),
-    'Totale ROL/Permessi': parseFloat(r.sick_total),
-    'ROL/Permessi Goduti': parseFloat(r.sick_used)
-  }));
+  // 2. Fetch ALL approved/admin_approved leaves for these companies in the year
+  const allApproved = await query(`
+    SELECT user_id, leave_type, start_date::text, end_date::text, 
+           leave_duration_type, 
+           TO_CHAR(short_start_time, 'HH24:MI') as short_start_time, 
+           TO_CHAR(short_end_time, 'HH24:MI') as short_end_time
+    FROM leave_requests
+    WHERE company_id = ANY($1) AND status IN ('approved', 'admin_approved')
+      AND EXTRACT(YEAR FROM start_date) = $2
+  `, [allowedCompanyIds, targetYear]);
+
+  // 3. Aggregate usage in memory
+  const usageMap = new Map<number, { vacation: number; sick: number }>();
+  for (const row of allApproved) {
+    const days = computeRequestedLeaveDays({
+      start_date: row.start_date,
+      end_date: row.end_date,
+      leave_duration_type: row.leave_duration_type,
+      short_start_time: row.short_start_time,
+      short_end_time: row.short_end_time
+    });
+    const counts = usageMap.get(row.user_id) || { vacation: 0, sick: 0 };
+    if (row.leave_type === 'vacation') counts.vacation += days;
+    else if (row.leave_type === 'sick') counts.sick += days;
+    usageMap.set(row.user_id, counts);
+  }
+
+  const rows = userBaselines.map(r => {
+    const usage = usageMap.get(r.id) || { vacation: 0, sick: 0 };
+    return {
+      Matricola: r.id,
+      Cognome: r.surname,
+      Nome: r.name,
+      Anno: targetYear,
+      'Totale Ferie': parseFloat(r.vacation_total),
+      'Ferie Godute': Number(usage.vacation.toFixed(2)),
+      'Totale ROL/Permessi': parseFloat(r.sick_total),
+      'ROL/Permessi Goduti': Number(usage.sick.toFixed(2))
+    };
+  });
 
   const wb = XLSX.utils.book_new();
   const ws = XLSX.utils.json_to_sheet(rows);
@@ -1637,7 +1775,7 @@ export const importLeaveBalances = asyncHandler(async (req: Request, res: Respon
     badRequest(res, 'Impossibile leggere il file. Assicurati che sia formato correttamente.');
     return;
   }
-  
+
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<any>(ws);
 
@@ -1648,7 +1786,7 @@ export const importLeaveBalances = asyncHandler(async (req: Request, res: Respon
   try {
     for (const [idx, row] of rows.entries()) {
       const rnum = idx + 2; // header is row 1
-      
+
       // Fetch case-insensitive columns
       let matricola: any, anno: any, totFerie: any, usedFerie: any, totPermessi: any, usedPermessi: any;
       for (const key of Object.keys(row)) {
@@ -1712,7 +1850,7 @@ export const importLeaveBalances = asyncHandler(async (req: Request, res: Respon
           throw dbErr;
         }
       }
-      
+
       if (totPermessi !== undefined || usedPermessi !== undefined) {
         const tot = parseFloat(totPermessi) || 0;
         const used = parseFloat(usedPermessi) || 0;
@@ -1782,25 +1920,25 @@ export async function processEscalationLogic() {
 
   for (const req of stalled) {
     try {
-    const chain = await getApprovalChain(req.company_id);
-    const transitions = buildTransitions(chain);
-    const transition = transitions[req.current_approver_role];
-    if (!transition) continue;
+      const chain = await getApprovalChain(req.company_id);
+      const transitions = buildTransitions(chain);
+      const transition = transitions[req.current_approver_role];
+      if (!transition) continue;
 
-    // Use findNextActiveApprover to skip anyone on leave during escalation
-    const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
-      req.company_id,
-      req.store_id,
-      req.start_date,
-      req.end_date,
-      req.user_id,
-      transition.nextApprover,
-      chain
-    );
+      // Use findNextActiveApprover to skip anyone on leave during escalation
+      const { approver: nextActiveRole, skipped: additionalSkipped } = await findNextActiveApprover(
+        req.company_id,
+        req.store_id,
+        req.start_date,
+        req.end_date,
+        req.user_id,
+        transition.nextApprover,
+        chain
+      );
 
-    const finalNextRole = nextActiveRole;
-    const finalNextStatus = finalNextRole ? (transitions[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
-    const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
+      const finalNextRole = nextActiveRole;
+      const finalNextStatus = finalNextRole ? (transitions[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
+      const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
 
       await query(
         `UPDATE leave_requests
