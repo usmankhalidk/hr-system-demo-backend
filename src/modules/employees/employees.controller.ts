@@ -256,7 +256,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   }
 
   if (exclude_admins === 'true' || exclude_admins === '1') {
-    where += " AND u.role <> 'admin'";
+    where += " AND u.role <> 'admin' AND u.is_super_admin = false";
   }
 
   let extraWhere = '';
