@@ -7,14 +7,35 @@ import { query, queryOne } from '../../config/database';
 export interface OnboardingTemplate {
   id: number;
   companyId: number;
+  companyName?: string;
   name: string;
   description: string | null;
+  taskType: 'day1' | 'week1' | 'month1' | 'ongoing';
   sortOrder: number;
   isActive: boolean;
-  category: 'hr_docs' | 'it_setup' | 'training' | 'meeting' | 'other';
+  category:
+    | 'profile_setup'
+    | 'hr_compliance'
+    | 'system_access'
+    | 'training'
+    | 'operations'
+    | 'scheduling_shifts'
+    | 'performance'
+    | 'communication'
+    | 'it_tools'
+    | 'inventory'
+    | 'customer_service'
+    | 'finance_payroll'
+    | 'hr_docs'
+    | 'it_setup'
+    | 'meeting'
+    | 'other';
   dueDays: number | null;
   linkUrl: string | null;
   priority: 'high' | 'medium' | 'low';
+  createdByUserId: number | null;
+  createdByName: string | null;
+  createdByAvatarFilename: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -25,7 +46,8 @@ export interface OnboardingTask {
   templateId: number;
   templateName: string;
   templateDescription: string | null;
-  templateCategory: 'hr_docs' | 'it_setup' | 'training' | 'meeting' | 'other';
+  templateTaskType: 'day1' | 'week1' | 'month1' | 'ongoing';
+  templateCategory: OnboardingTemplate['category'];
   templateLinkUrl: string | null;
   templatePriority: 'high' | 'medium' | 'low';
   completed: boolean;
@@ -52,14 +74,19 @@ function mapTemplate(row: Record<string, unknown>): OnboardingTemplate {
   return {
     id: row.id as number,
     companyId: row.company_id as number,
+    companyName: (row.company_name as string | undefined) ?? undefined,
     name: row.name as string,
     description: row.description as string | null,
+    taskType: (row.task_type as OnboardingTemplate['taskType']) ?? 'day1',
     sortOrder: row.sort_order as number,
     isActive: row.is_active as boolean,
     category: (row.category as OnboardingTemplate['category']) ?? 'other',
     dueDays: (row.due_days as number | null) ?? null,
     linkUrl: (row.link_url as string | null) ?? null,
     priority: (row.priority as OnboardingTemplate['priority']) ?? 'medium',
+    createdByUserId: (row.created_by_user_id as number | null) ?? null,
+    createdByName: (row.created_by_name as string | null) ?? null,
+    createdByAvatarFilename: (row.created_by_avatar_filename as string | null) ?? null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -75,6 +102,7 @@ function mapTask(row: Record<string, unknown>): OnboardingTask {
     templateId: row.template_id as number,
     templateName: row.template_name as string,
     templateDescription: row.template_description as string | null,
+    templateTaskType: (row.template_task_type as OnboardingTask['templateTaskType']) ?? 'day1',
     templateCategory: (row.template_category as OnboardingTask['templateCategory']) ?? 'other',
     templateLinkUrl: row.template_link_url as string | null,
     templatePriority: (row.template_priority as OnboardingTask['templatePriority']) ?? 'medium',
@@ -93,21 +121,49 @@ function mapTask(row: Record<string, unknown>): OnboardingTask {
 // ---------------------------------------------------------------------------
 
 export async function getTemplates(
-  companyId: number,
+  companyIds: number[],
   includeInactive = false,
 ): Promise<OnboardingTemplate[]> {
+  if (companyIds.length === 0) return [];
   const rows = await query<Record<string, unknown>>(
-    `SELECT * FROM onboarding_templates
-     WHERE company_id = $1 ${includeInactive ? '' : 'AND is_active = TRUE'}
-     ORDER BY sort_order ASC, id ASC`,
-    [companyId],
+    `SELECT tmpl.*, c.name AS company_name,
+            CASE
+              WHEN u.id IS NULL THEN NULL
+              WHEN COALESCE(u.surname, '') = '' THEN u.name
+              ELSE u.name || ' ' || u.surname
+            END AS created_by_name,
+            u.avatar_filename AS created_by_avatar_filename
+     FROM onboarding_templates tmpl
+     JOIN companies c ON c.id = tmpl.company_id
+     LEFT JOIN users u ON u.id = tmpl.created_by_user_id
+     WHERE tmpl.company_id = ANY($1) ${includeInactive ? '' : 'AND tmpl.is_active = TRUE'}
+     ORDER BY
+       CASE tmpl.task_type
+         WHEN 'day1' THEN 1
+         WHEN 'week1' THEN 2
+         WHEN 'month1' THEN 3
+         WHEN 'ongoing' THEN 4
+         ELSE 5
+       END,
+       tmpl.sort_order ASC, tmpl.id ASC`,
+    [companyIds],
   );
   return rows.map(mapTemplate);
 }
 
 export async function getTemplate(id: number, companyId: number): Promise<OnboardingTemplate | null> {
   const row = await queryOne<Record<string, unknown>>(
-    `SELECT * FROM onboarding_templates WHERE id = $1 AND company_id = $2`,
+    `SELECT tmpl.*, c.name AS company_name,
+            CASE
+              WHEN u.id IS NULL THEN NULL
+              WHEN COALESCE(u.surname, '') = '' THEN u.name
+              ELSE u.name || ' ' || u.surname
+            END AS created_by_name,
+            u.avatar_filename AS created_by_avatar_filename
+     FROM onboarding_templates tmpl
+     JOIN companies c ON c.id = tmpl.company_id
+     LEFT JOIN users u ON u.id = tmpl.created_by_user_id
+     WHERE tmpl.id = $1 AND tmpl.company_id = $2`,
     [id, companyId],
   );
   return row ? mapTemplate(row) : null;
@@ -118,6 +174,8 @@ export async function createTemplate(
   data: {
     name: string;
     description?: string;
+    createdByUserId?: number;
+    taskType?: OnboardingTemplate['taskType'];
     sortOrder?: number;
     category?: OnboardingTemplate['category'];
     dueDays?: number;
@@ -127,18 +185,20 @@ export async function createTemplate(
 ): Promise<OnboardingTemplate> {
   const row = await queryOne<Record<string, unknown>>(
     `INSERT INTO onboarding_templates
-       (company_id, name, description, sort_order, category, due_days, link_url, priority)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       (company_id, name, description, task_type, sort_order, category, due_days, link_url, priority, created_by_user_id)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
      RETURNING *`,
     [
       companyId,
       data.name,
       data.description ?? null,
+      data.taskType ?? 'day1',
       data.sortOrder ?? 0,
       data.category ?? 'other',
       data.dueDays ?? null,
       data.linkUrl ?? null,
       data.priority ?? 'medium',
+      data.createdByUserId ?? null,
     ],
   );
   return mapTemplate(row!);
@@ -150,6 +210,7 @@ export async function updateTemplate(
   data: {
     name?: string;
     description?: string;
+    taskType?: OnboardingTemplate['taskType'];
     sortOrder?: number;
     isActive?: boolean;
     category?: OnboardingTemplate['category'];
@@ -164,6 +225,7 @@ export async function updateTemplate(
 
   if (data.name !== undefined)        { setParts.push(`name = $${idx++}`);        params.push(data.name); }
   if (data.description !== undefined) { setParts.push(`description = $${idx++}`); params.push(data.description); }
+  if (data.taskType !== undefined)    { setParts.push(`task_type = $${idx++}`);    params.push(data.taskType); }
   if (data.sortOrder !== undefined)   { setParts.push(`sort_order = $${idx++}`);  params.push(data.sortOrder); }
   if (data.isActive !== undefined)    { setParts.push(`is_active = $${idx++}`);   params.push(data.isActive); }
   if (data.category !== undefined)    { setParts.push(`category = $${idx++}`);    params.push(data.category); }
@@ -215,9 +277,12 @@ export async function deleteTemplate(
 
 export interface EmployeeOnboardingOverview {
   employeeId: number;
+  companyId: number;
+  companyName: string;
   name: string;
   surname: string;
   email: string;
+  storeId: number | null;
   storeName: string | null;
   avatarFilename: string | null;
   total: number;
@@ -226,12 +291,16 @@ export interface EmployeeOnboardingOverview {
   hasTasksAssigned: boolean;
 }
 
-export async function getOnboardingOverview(companyId: number): Promise<EmployeeOnboardingOverview[]> {
+export async function getOnboardingOverview(companyIds: number[]): Promise<EmployeeOnboardingOverview[]> {
+  if (companyIds.length === 0) return [];
   const rows = await query<{
     employee_id: number;
+    company_id: number;
+    company_name: string;
     name: string;
     surname: string;
     email: string;
+    store_id: number | null;
     store_name: string | null;
     avatar_filename: string | null;
     total: string;
@@ -239,23 +308,27 @@ export async function getOnboardingOverview(companyId: number): Promise<Employee
   }>(
     `SELECT
        u.id AS employee_id,
+       u.company_id,
+       c.name AS company_name,
        u.name,
        u.surname,
        u.email,
+       s.id AS store_id,
        s.name AS store_name,
        u.avatar_filename,
        COUNT(t.id)::text AS total,
        COUNT(t.id) FILTER (WHERE t.completed = TRUE)::text AS completed
      FROM users u
+     JOIN companies c ON c.id = u.company_id
      LEFT JOIN stores s ON s.id = u.store_id
      LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
-     LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = $1
-     WHERE u.company_id = $1
+     LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = u.company_id
+     WHERE u.company_id = ANY($1)
        AND u.role = 'employee'
        AND u.status = 'active'
-     GROUP BY u.id, u.name, u.surname, u.email, s.name, u.avatar_filename
+     GROUP BY u.id, u.company_id, c.name, u.name, u.surname, u.email, s.id, s.name, u.avatar_filename
      ORDER BY u.surname ASC, u.name ASC`,
-    [companyId],
+    [companyIds],
   );
 
   return rows.map((r) => {
@@ -263,9 +336,12 @@ export async function getOnboardingOverview(companyId: number): Promise<Employee
     const completed = parseInt(r.completed, 10);
     return {
       employeeId: r.employee_id,
+      companyId: r.company_id,
+      companyName: r.company_name,
       name: r.name,
       surname: r.surname,
       email: r.email,
+      storeId: r.store_id,
       storeName: r.store_name,
       avatarFilename: r.avatar_filename,
       total,
@@ -288,12 +364,21 @@ export async function getEmployeeTasks(
     `SELECT t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
             t.completion_note, t.due_date, t.created_at, t.updated_at,
             tmpl.name AS template_name, tmpl.description AS template_description,
+            tmpl.task_type AS template_task_type,
             tmpl.category AS template_category, tmpl.link_url AS template_link_url,
             tmpl.priority AS template_priority
      FROM employee_onboarding_tasks t
      JOIN onboarding_templates tmpl ON tmpl.id = t.template_id
      WHERE t.employee_id = $1 AND tmpl.company_id = $2
-     ORDER BY tmpl.sort_order ASC, tmpl.id ASC`,
+     ORDER BY
+       CASE tmpl.task_type
+         WHEN 'day1' THEN 1
+         WHEN 'week1' THEN 2
+         WHEN 'month1' THEN 3
+         WHEN 'ongoing' THEN 4
+         ELSE 5
+       END,
+       tmpl.sort_order ASC, tmpl.id ASC`,
     [employeeId, companyId],
   );
 
@@ -316,7 +401,7 @@ export async function assignTasksToEmployee(
 ): Promise<number> {
   const templates = templateIds
     ? (await Promise.all(templateIds.map((id) => getTemplate(id, companyId)))).filter(Boolean) as OnboardingTemplate[]
-    : await getTemplates(companyId);
+    : await getTemplates([companyId]);
 
   // Get employee hire date for due_date calculation
   const emp = await queryOne<{ hire_date: string | null }>(
@@ -373,6 +458,7 @@ export async function completeTask(
        RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
                  t.completion_note, t.due_date, t.created_at, t.updated_at,
                  tmpl.name AS template_name, tmpl.description AS template_description,
+                 tmpl.task_type AS template_task_type,
                  tmpl.category AS template_category, tmpl.link_url AS template_link_url,
                  tmpl.priority AS template_priority`,
       [taskId, companyId, note ?? null],
@@ -384,8 +470,8 @@ export async function completeTask(
 
   if (!row) return null;
 
-  const tmpl = await queryOne<{ name: string; description: string | null; category: string; link_url: string | null; priority: string }>(
-    `SELECT name, description, category, link_url, priority FROM onboarding_templates WHERE id = $1`,
+  const tmpl = await queryOne<{ name: string; description: string | null; task_type: string; category: string; link_url: string | null; priority: string }>(
+    `SELECT name, description, task_type, category, link_url, priority FROM onboarding_templates WHERE id = $1`,
     [row.template_id as number],
   );
 
@@ -393,6 +479,7 @@ export async function completeTask(
     ...row,
     template_name: tmpl?.name ?? '',
     template_description: tmpl?.description ?? null,
+    template_task_type: tmpl?.task_type ?? 'day1',
     template_category: tmpl?.category ?? 'other',
     template_link_url: tmpl?.link_url ?? null,
     template_priority: tmpl?.priority ?? 'medium',
@@ -415,6 +502,7 @@ export async function uncompleteTask(
      RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
                t.completion_note, t.due_date, t.created_at, t.updated_at,
                tmpl.name AS template_name, tmpl.description AS template_description,
+               tmpl.task_type AS template_task_type,
                tmpl.category AS template_category, tmpl.link_url AS template_link_url,
                tmpl.priority AS template_priority`,
     [taskId, companyId],

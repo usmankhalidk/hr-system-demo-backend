@@ -34,12 +34,14 @@ beforeAll(async () => {
       company_id INTEGER NOT NULL,
       name TEXT NOT NULL,
       description TEXT,
+      task_type VARCHAR(20) NOT NULL DEFAULT 'day1',
       sort_order INTEGER NOT NULL DEFAULT 0,
       is_active BOOLEAN NOT NULL DEFAULT TRUE,
       category VARCHAR(20) NOT NULL DEFAULT 'other',
       due_days INTEGER,
       link_url TEXT,
       priority VARCHAR(10) NOT NULL DEFAULT 'medium',
+      created_by_user_id INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -56,9 +58,11 @@ beforeAll(async () => {
       UNIQUE (employee_id, template_id)
     );
     ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS category VARCHAR(20) NOT NULL DEFAULT 'other';
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS task_type VARCHAR(20) NOT NULL DEFAULT 'day1';
     ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS due_days INTEGER;
     ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS link_url TEXT;
     ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS priority VARCHAR(10) NOT NULL DEFAULT 'medium';
+    ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER;
     ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS completion_note TEXT;
     ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS due_date DATE;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(10);
