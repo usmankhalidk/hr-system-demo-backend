@@ -181,7 +181,7 @@ const uploadUnifiedMiddleware = (req: Request, res: Response, next: NextFunction
 
 // --- Step 2 Auto-assignment Logic ---
 
-async function performAutoAssign(
+export async function performAutoAssign(
   documentId: number,
   filename: string,
   companyId: number,
@@ -191,17 +191,21 @@ async function performAutoAssign(
     visibleToRoles?: string[];
     uploadedBy?: number;
     employeeId?: number | null;
+    isSuperAdmin?: boolean;
   },
 ): Promise<boolean> {
-  // Fetch active employees for this company, including unique_id
+  const isGlobalSearch = options?.isSuperAdmin || !companyId || companyId === 0;
+
+  // Fetch active employees (filtered by company unless global search for super admin)
   const employees = await query<{
     id: number;
     name: string;
     surname: string;
     unique_id: string | null;
+    company_id: number;
   }>(
-    `SELECT id, name, surname, unique_id FROM users WHERE company_id = $1 AND status = 'active' AND role <> 'admin'`,
-    [companyId],
+    `SELECT id, name, surname, unique_id, company_id FROM users WHERE status = 'active' AND role <> 'admin' ${!isGlobalSearch ? 'AND company_id = $1' : ''}`,
+    !isGlobalSearch ? [companyId] : [],
   );
 
   // Normalize filename for matching: remove extension and trim
@@ -210,9 +214,9 @@ async function performAutoAssign(
   const tokens = cleanBaseName.toLowerCase().split(/[_\s.-]+/).filter(Boolean);
   const fullLowerName = cleanBaseName.toLowerCase();
 
-  const matchesLevel1: number[] = []; // ID Match
-  const matchesLevel2: number[] = []; // Full name Match
-  const matchesLevel3: number[] = []; // Single name/surname token Match
+  const matchesLevel1: typeof employees = []; // ID Match
+  const matchesLevel2: typeof employees = []; // Full name Match
+  const matchesLevel3: typeof employees = []; // Single name/surname token Match
 
   for (const emp of employees) {
     const name = emp.name.toLowerCase();
@@ -221,7 +225,7 @@ async function performAutoAssign(
 
     // Level 1: Unique ID (highest priority)
     if (uid && tokens.includes(uid)) {
-      matchesLevel1.push(emp.id);
+      matchesLevel1.push(emp);
       continue;
     }
 
@@ -230,33 +234,53 @@ async function performAutoAssign(
       fullLowerName.includes(`${surname} ${name}`) ||
       fullLowerName.includes(`${name}_${surname}`) ||
       fullLowerName.includes(`${surname}_${name}`)) {
-      matchesLevel2.push(emp.id);
+      matchesLevel2.push(emp);
       continue;
     }
 
     // Level 3: Partial token match
     if (tokens.includes(name) || tokens.includes(surname)) {
-      matchesLevel3.push(emp.id);
+      matchesLevel3.push(emp);
     }
   }
 
-  let matchedEmpId: number | null = options?.employeeId !== undefined ? options.employeeId : null;
+  let matchedEmp: typeof employees[0] | null = null;
+  const providedEmpId = options?.employeeId !== undefined ? options.employeeId : null;
 
-  if (matchedEmpId === null) {
+  if (providedEmpId === null) {
     if (matchesLevel1.length === 1) {
-      matchedEmpId = matchesLevel1[0];
+      matchedEmp = matchesLevel1[0];
     } else if (matchesLevel1.length === 0 && matchesLevel2.length === 1) {
-      matchedEmpId = matchesLevel2[0];
+      matchedEmp = matchesLevel2[0];
     } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
-      matchedEmpId = matchesLevel3[0];
+      matchedEmp = matchesLevel3[0];
     }
   }
 
+  let finalEmpId: number | null = providedEmpId;
+  let finalCompanyId: number | null = null;
 
-  if (matchedEmpId) {
-    const empId = matchedEmpId;
-    // 1. Update the generic document as assigned
-    await updateGenericDocumentEmployee(documentId, empId);
+  if (matchedEmp) {
+    finalEmpId = matchedEmp.id;
+    finalCompanyId = matchedEmp.company_id;
+  } else if (providedEmpId) {
+    // If ID was provided but no match found in our search list, resolve its company explicitly
+    const empInfo = await queryOne<{ company_id: number }>(
+      `SELECT company_id FROM users WHERE id = $1`,
+      [providedEmpId]
+    );
+    finalCompanyId = empInfo?.company_id || companyId;
+  }
+
+  if (finalEmpId && finalCompanyId) {
+    const empId = finalEmpId;
+    const targetCompanyId = finalCompanyId;
+
+    // 1. Update the generic document as assigned AND set the correct company_id
+    await query(
+      `UPDATE documents SET employee_id = $1, company_id = $2 WHERE id = $3`,
+      [empId, targetCompanyId, documentId]
+    );
 
     // 2. Fetch origin doc info to migrate to employee_documents
     const doc = await queryOne<{ file_url: string; mime_type?: string }>(
@@ -268,7 +292,7 @@ async function performAutoAssign(
       // 3. Fetch first active category for the company automatically
       const categoryRow = await queryOne<{ id: number; name: string }>(
         `SELECT id, name FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
-        [companyId]
+        [targetCompanyId]
       );
       const autoCategoryId = categoryRow?.id || null;
       const autoCategoryName = categoryRow?.name || null;
@@ -300,7 +324,7 @@ async function performAutoAssign(
           ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
           RETURNING id`,
         [
-          companyId,
+          targetCompanyId,
           empId,
           autoCategoryId,
           filename,
@@ -402,6 +426,7 @@ router.put(
       // 3. Update DB
       let autoCategoryName: string | null = null;
       let autoCategoryId: number | null = null;
+      let targetCompanyId = req.user!.companyId; // Existing company by default
 
       if (employee_id) {
         // Resolve company and category for the employee
@@ -416,6 +441,7 @@ router.put(
         }
 
         if (emp) {
+          targetCompanyId = emp.company_id; // Sync document to employee's company
           const categoryRow = await queryOne<{ id: number; name: string }>(
             `SELECT id, name FROM document_categories WHERE company_id = $1 AND is_active = true ORDER BY created_at ASC LIMIT 1`,
             [emp.company_id]
@@ -430,9 +456,10 @@ router.put(
             SET title = $1,
                 file_url = $2,
                 employee_id = $3,
-                category = $4
-          WHERE id = $5`,
-        [newTitle, newPath, employee_id || null, autoCategoryName, id]
+                category = $4,
+                company_id = $5
+          WHERE id = $6`,
+        [newTitle, newPath, employee_id || null, autoCategoryName, targetCompanyId || 0, id]
       );
 
       // 4. Migration/Sync to employee_documents
@@ -507,7 +534,7 @@ router.get(
   '/',
   authenticate,
   asyncHandler(async (req: Request, res: Response) => {
-    const { companyId, userId, role, storeId } = req.user!;
+    const { companyId, userId, role, storeId, is_super_admin } = req.user!;
     const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
     const docs = await getGenericDocuments({
@@ -516,6 +543,7 @@ router.get(
       role,
       storeId,
       allowedCompanyIds,
+      isSuperAdmin: is_super_admin,
     });
     ok(res, docs);
   }),
@@ -592,8 +620,19 @@ router.post(
       expiresAt: expires_at || null,
       visibleToRoles: visibleToRolesArr,
       uploadedBy: req.user!.userId,
-      employeeId: employee_id ? parseInt(String(employee_id), 10) : undefined
+      employeeId: employee_id ? parseInt(String(employee_id), 10) : undefined,
+      isSuperAdmin: req.user!.is_super_admin
     };
+
+    // Determine target company: Super Admin might have null companyId, so we resolve it from target employee if possible
+    let baseCompanyId = req.user!.companyId;
+    if (!baseCompanyId && options.employeeId) {
+      const emp = await queryOne<{ company_id: number }>(
+        `SELECT company_id FROM users WHERE id = $1`,
+        [options.employeeId]
+      );
+      if (emp) baseCompanyId = emp.company_id;
+    }
 
     if (isZip) {
       // Handle ZIP
@@ -611,7 +650,7 @@ router.post(
 
           const filePath = path.join(extractDir, entry.entryName);
           const doc = await createGenericDocument({
-            companyId: req.user!.companyId!,
+            companyId: baseCompanyId || 0, // Fallback to 0 if still null, though auto-assign will correct it if matched
             title: entry.name,
             fileUrl: filePath,
             uploadedBy: req.user!.userId,
@@ -621,7 +660,7 @@ router.post(
           });
 
           // Rule based auto-assignment
-          await performAutoAssign(doc.id, entry.name, req.user!.companyId!, options);
+          await performAutoAssign(doc.id, entry.name, baseCompanyId || 0, options);
         }
 
         ok(res, { success: true, message: 'ZIP extracted and files saved successfully' });
@@ -637,7 +676,7 @@ router.post(
       fs.renameSync(tempPath, destPath);
 
       const doc = await createGenericDocument({
-        companyId: req.user!.companyId!,
+        companyId: baseCompanyId || 0,
         title: originalname,
         fileUrl: destPath,
         uploadedBy: req.user!.userId,
@@ -647,7 +686,7 @@ router.post(
       });
 
       // Rule based auto-assignment
-      const matched = await performAutoAssign(doc.id, originalname, req.user!.companyId!, options);
+      const matched = await performAutoAssign(doc.id, originalname, baseCompanyId || 0, options);
 
       ok(res, {
         matched,
@@ -1380,16 +1419,15 @@ router.get(
   requireRole('admin', 'hr'),
   asyncHandler(async (req: Request, res: Response) => {
     const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+    if (!user.is_super_admin && allowedCompanyIds.length === 0) {
+      res.status(403).json({ success: false, error: 'Accesso negato: nessuna azienda autorizzata', code: 'COMPANY_MISMATCH' });
       return;
     }
 
     const employeeId = req.query.employee_id ? parseInt(req.query.employee_id as string, 10) : undefined;
-    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
     const docs = await getDeletedDocuments(allowedCompanyIds, employeeId);
     ok(res, docs);
-
   }),
 );
 
@@ -1403,8 +1441,9 @@ router.post(
   requireRole('admin', 'hr'),
   asyncHandler(async (req: Request, res: Response) => {
     const user = req.user!;
-    if (!user.companyId) {
-      res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
+    const allowedCompanyIds = await resolveAllowedCompanyIds(user);
+    if (!user.is_super_admin && allowedCompanyIds.length === 0) {
+      res.status(403).json({ success: false, error: 'Accesso negato: nessuna azienda autorizzata', code: 'COMPANY_MISMATCH' });
       return;
     }
 
@@ -1421,7 +1460,7 @@ router.post(
       return;
     }
 
-    const restored = await restoreDocument(id, user.companyId, user.userId, source);
+    const restored = await restoreDocument(id, allowedCompanyIds, user.userId, source);
     if (restored) {
       ok(res, { id }, 'Documento ripristinato con successo');
       return;
