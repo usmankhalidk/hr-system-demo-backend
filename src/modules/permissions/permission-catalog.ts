@@ -72,6 +72,26 @@ export const MANAGED_ROLES = [
 
 export type ManagedRole = typeof MANAGED_ROLES[number];
 
+export const ROLE_HIERARCHY: Record<ManagedRole, number> = {
+  admin: 50,
+  hr: 40,
+  area_manager: 30,
+  store_manager: 20,
+  employee: 10,
+  store_terminal: 0,
+};
+
+export function canManageRole(currentUserRole: string, isSuperAdmin: boolean, targetRole: ManagedRole): boolean {
+  if (isSuperAdmin) return true;
+  if (currentUserRole === 'admin') return true; // Admin can manage Admin and everything below
+  
+  const currentLevel = ROLE_HIERARCHY[currentUserRole as ManagedRole] ?? -1;
+  const targetLevel = ROLE_HIERARCHY[targetRole] ?? -1;
+  
+  // Lower roles can ONLY manage roles STRICTLY below them
+  return currentLevel > targetLevel;
+}
+
 export const VALID_ROLES: UserRole[] = [...MANAGED_ROLES];
 
 export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]> = {

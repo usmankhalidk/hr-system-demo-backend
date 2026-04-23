@@ -12,6 +12,8 @@ import {
   VALID_ROLES,
   isRoleEligibleForModule,
   isDefaultEnabledForModule,
+  canManageRole,
+  ManagedRole,
 } from './permission-catalog';
 
 interface PermissionRow {
@@ -59,6 +61,9 @@ export const getPermissions = asyncHandler(async (req: Request, res: Response) =
   for (const mod of ALL_MODULES) {
     grid[mod] = {};
     for (const role of VALID_ROLES) {
+      if (!canManageRole(req.user!.role, req.user!.is_super_admin, role as ManagedRole)) {
+        continue;
+      }
       grid[mod][role] = isDefaultEnabledForModule(role, mod);
     }
   }
@@ -108,6 +113,10 @@ export const updatePermissions = asyncHandler(async (req: Request, res: Response
     }
     if (!isRoleEligibleForModule(update.role, update.module as ModuleName)) {
       badRequest(res, `Il ruolo '${update.role}' non è abilitabile per il modulo '${update.module}'`, 'ROLE_NOT_ELIGIBLE');
+      return;
+    }
+    if (!canManageRole(req.user!.role, req.user!.is_super_admin, update.role as ManagedRole)) {
+      badRequest(res, `Non hai i permessi per modificare il ruolo '${update.role}'`, 'ROLE_HIERARCHY_VIOLATION');
       return;
     }
 
