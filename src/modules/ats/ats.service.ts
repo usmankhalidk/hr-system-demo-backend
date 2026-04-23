@@ -220,6 +220,14 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
 }
 
 function mapCandidate(row: Record<string, unknown>): Candidate {
+  const rawStatus = typeof row.status === 'string' ? row.status : '';
+  const normalizedStatus: CandidateStatus = (
+    rawStatus === 'received'
+    || rawStatus === 'review'
+    || rawStatus === 'interview'
+    || rawStatus === 'hired'
+    || rawStatus === 'rejected'
+  ) ? rawStatus : 'received';
   return {
     id: row.id as number,
     companyId: row.company_id as number,
@@ -233,7 +241,7 @@ function mapCandidate(row: Record<string, unknown>): Candidate {
     linkedinUrl: row.linkedin_url as string | null,
     coverLetter: row.cover_letter as string | null,
     tags: (row.tags as string[]) ?? [],
-    status: row.status as CandidateStatus,
+    status: normalizedStatus,
     source: row.source as string,
     sourceRef: row.source_ref as string | null,
     gdprConsent: (row.gdpr_consent as boolean | null) ?? false,
@@ -706,11 +714,12 @@ export async function syncIndeedApplications(
 // ---------------------------------------------------------------------------
 
 export async function listCandidates(
-  companyId: number,
+  companyId: number | number[],
   filters: { status?: string; jobPostingId?: number; storeIds?: number[] } = {},
 ): Promise<Candidate[]> {
-  const conditions: string[] = ['c.company_id = $1'];
-  const params: unknown[] = [companyId];
+  const companyIds = Array.isArray(companyId) ? companyId : [companyId];
+  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const params: unknown[] = [companyIds];
   let idx = 2;
 
   if (filters.status) {
@@ -722,9 +731,13 @@ export async function listCandidates(
     params.push(filters.jobPostingId);
   }
   if (filters.storeIds?.length) {
-    // Scope to the effective store (candidate.store_id first, then job.store_id).
-    conditions.push(`COALESCE(c.store_id, jp.store_id) = ANY($${idx++}::int[])`);
+    // Store-scoped roles: match assigned store, or company-wide postings (both null) so candidates are not hidden.
+    conditions.push(`(
+      COALESCE(c.store_id, jp.store_id) = ANY($${idx}::int[])
+      OR COALESCE(c.store_id, jp.store_id) IS NULL
+    )`);
     params.push(filters.storeIds);
+    idx++;
   }
 
   const rows = await query<Record<string, unknown>>(
@@ -747,7 +760,10 @@ export async function getCandidate(id: number, companyId: number, storeIds?: num
          LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
          WHERE c.id = $1
            AND c.company_id = $2
-           AND COALESCE(c.store_id, jp.store_id) = ANY($3::int[])`
+           AND (
+             COALESCE(c.store_id, jp.store_id) = ANY($3::int[])
+             OR COALESCE(c.store_id, jp.store_id) IS NULL
+           )`
       : `SELECT * FROM candidates WHERE id = $1 AND company_id = $2`,
     useStoreScope ? [id, companyId, storeIds] : [id, companyId],
   );

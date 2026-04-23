@@ -155,7 +155,7 @@ export const assignTasksHandler = asyncHandler(async (req: Request, res: Respons
 
   const { template_ids } = req.body as { template_ids?: number[] };
   const ids = Array.isArray(template_ids) ? template_ids : undefined;
-  const count = await assignTasksToEmployee(employeeId, empRow.company_id, ids);
+  const count = await assignTasksToEmployee(employeeId, empRow.company_id, ids, user.userId);
   const locale = empRow.locale ?? 'it';
 
   sendNotification({

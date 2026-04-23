@@ -544,14 +544,38 @@ export const syncJobHandler = asyncHandler(async (req: Request, res: Response) =
 // ---------------------------------------------------------------------------
 
 export const listCandidatesHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const status    = typeof req.query.status === 'string' ? req.query.status : undefined;
-  const jobId     = req.query.job_id ? parseInt(String(req.query.job_id), 10) : undefined;
-  const storeIds  = resolveStoreIds(req.user);
+  const explicitRaw = req.query.company_id ?? req.query.target_company_id;
+  const explicitCompanyId = explicitRaw != null && String(explicitRaw).trim() !== ''
+    ? Number.parseInt(String(explicitRaw), 10)
+    : undefined;
+  if (explicitCompanyId !== undefined && Number.isNaN(explicitCompanyId)) {
+    badRequest(res, 'Azienda non valida');
+    return;
+  }
 
-  const candidates = await listCandidates(companyId, {
+  let companyScope: number[] = [];
+  if (explicitCompanyId !== undefined) {
+    if (!allowedCompanyIds.includes(explicitCompanyId)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+    companyScope = [explicitCompanyId];
+  } else if (req.user?.companyId && allowedCompanyIds.includes(req.user.companyId)) {
+    companyScope = [req.user.companyId];
+  } else {
+    companyScope = allowedCompanyIds;
+  }
+  if (companyScope.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const jobIdRaw = req.query.job_id ?? req.query.jobId;
+  const jobId = jobIdRaw ? parseInt(String(jobIdRaw), 10) : undefined;
+  const storeIds = resolveStoreIds(req.user);
+
+  const candidates = await listCandidates(companyScope, {
     status,
     jobPostingId: jobId && !Number.isNaN(jobId) ? jobId : undefined,
     storeIds,
@@ -590,6 +614,7 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
+  const body = req.body as Record<string, unknown>;
   const {
     full_name,
     email,
@@ -607,7 +632,32 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     applicant_locale,
     consent_accepted_at,
     applied_at,
-  } = req.body as Record<string, unknown>;
+  } = body;
+
+  const uploadedFile = (req as Request & { file?: Express.Multer.File }).file;
+  let cvPathResolved = typeof cv_path === 'string' && cv_path.trim() !== '' ? cv_path.trim() : undefined;
+  let resumePathResolved = typeof resume_path === 'string' && resume_path.trim() !== '' ? resume_path.trim() : undefined;
+  if (uploadedFile?.filename) {
+    const rel = `public-cv/${uploadedFile.filename}`;
+    cvPathResolved = rel;
+    resumePathResolved = rel;
+  }
+
+  let tagList: string[] = [];
+  if (Array.isArray(tags)) {
+    tagList = tags as string[];
+  } else if (typeof tags === 'string' && tags.trim() !== '') {
+    try {
+      const parsed = JSON.parse(tags) as unknown;
+      if (Array.isArray(parsed)) tagList = parsed as string[];
+    } catch {
+      tagList = [];
+    }
+  }
+
+  const gdprConsentParsed = typeof gdpr_consent === 'boolean'
+    ? gdpr_consent
+    : (typeof gdpr_consent === 'string' && ['true', '1', 'on', 'yes'].includes(gdpr_consent.trim().toLowerCase()));
 
   if (!full_name || typeof full_name !== 'string' || full_name.trim() === '') {
     badRequest(res, 'Il nome è obbligatorio', 'VALIDATION_ERROR');
@@ -679,14 +729,14 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     phone:        typeof phone === 'string' ? phone : undefined,
     jobPostingId: parsedJobPostingId,
     storeId:      parsedStoreId,
-    tags:         Array.isArray(tags) ? (tags as string[]) : [],
-    cvPath:       typeof cv_path === 'string' ? cv_path : undefined,
-    resumePath:   typeof resume_path === 'string' ? resume_path : undefined,
+    tags:         tagList,
+    cvPath:       cvPathResolved,
+    resumePath:   resumePathResolved,
     linkedinUrl:  typeof linkedin_url === 'string' ? linkedin_url : undefined,
     coverLetter:  typeof cover_letter === 'string' ? cover_letter : undefined,
     source:       typeof source === 'string' ? source : undefined,
     sourceRef:    typeof source_ref === 'string' ? source_ref : undefined,
-    gdprConsent:  typeof gdpr_consent === 'boolean' ? gdpr_consent : undefined,
+    gdprConsent:  gdprConsentParsed,
     applicantLocale: typeof applicant_locale === 'string' ? applicant_locale : undefined,
     consentAcceptedAt: typeof consent_accepted_at === 'string' ? consent_accepted_at : undefined,
     appliedAt:    typeof applied_at === 'string' ? applied_at : undefined,
