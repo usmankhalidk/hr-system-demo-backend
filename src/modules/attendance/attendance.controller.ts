@@ -750,8 +750,112 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       continue;
     }
 
-    // Shift linking (optional helper for reporting)
+    // ── Shift validation (same rule as checkin) ───────────────────────────
+    // Find the shift whose window contains this event's timestamp (or the day's shift).
     const eventIso = ts.toISOString();
+    const eventDate = eventIso.slice(0, 10); // YYYY-MM-DD
+
+    // Look for any non-cancelled shift for this user/store on the event's date
+    const dayShift = await queryOne<{
+      id: number;
+      shift_date: string;
+      shift_timezone: string;
+    }>(
+      `SELECT
+         s.id,
+         TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+         ${SHIFT_TIMEZONE_SQL} AS shift_timezone
+       FROM shifts s
+       WHERE s.company_id = $1::int
+         AND s.user_id = $2::int
+         AND s.store_id = $3::int
+         AND s.status != 'cancelled'
+         AND s.date = $4::DATE
+       ORDER BY ${SHIFT_START_UTC_SQL}
+       LIMIT 1`,
+      [companyId, resolvedUserId, storeId, eventDate],
+    );
+
+    if (!dayShift) {
+      errors.push(`Evento ${rowNum}: nessun turno programmato per questo giorno`);
+      failed++;
+      continue;
+    }
+
+    // Check for approved leave on that day
+    const onLeave = await queryOne<{ id: number }>(
+      `SELECT id FROM leave_requests
+       WHERE company_id = $1::int
+         AND user_id = $2::int
+         AND status = 'hr_approved'
+         AND start_date <= $3::date
+         AND end_date   >= $3::date
+       LIMIT 1`,
+      [companyId, resolvedUserId, eventDate],
+    );
+    if (onLeave) {
+      errors.push(`Evento ${rowNum}: presenza non consentita durante ferie/permesso approvato`);
+      failed++;
+      continue;
+    }
+
+    // ── Sequence validation (same rules as checkin) ───────────────────────
+    const dayEventsForSeq = await query<{ event_type: string }>(
+      `SELECT event_type
+       FROM attendance_events
+       WHERE company_id = $1::int
+         AND user_id = $2::int
+         AND event_time >= (($3::DATE)::timestamp AT TIME ZONE $4)
+         AND event_time <  ((($3::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $4)
+       ORDER BY event_time ASC`,
+      [companyId, resolvedUserId, eventDate, dayShift.shift_timezone],
+    );
+
+    const hasEvt = (type: string) => dayEventsForSeq.some((e) => e.event_type === type);
+
+    if (hasEvt(ev.event_type)) {
+      errors.push(`Evento ${rowNum}: azione già registrata oggi`);
+      failed++;
+      continue;
+    }
+
+    if (ev.event_type === 'checkin') {
+      if (dayEventsForSeq.length > 0) {
+        errors.push(`Evento ${rowNum}: check-in già effettuato oggi`);
+        failed++;
+        continue;
+      }
+    } else if (ev.event_type === 'break_start') {
+      if (!hasEvt('checkin')) {
+        errors.push(`Evento ${rowNum}: devi effettuare prima il check-in`);
+        failed++;
+        continue;
+      }
+    } else if (ev.event_type === 'break_end') {
+      if (!hasEvt('checkin')) {
+        errors.push(`Evento ${rowNum}: devi effettuare prima il check-in`);
+        failed++;
+        continue;
+      }
+      if (!hasEvt('break_start')) {
+        errors.push(`Evento ${rowNum}: devi avviare la pausa prima di terminarla`);
+        failed++;
+        continue;
+      }
+    } else if (ev.event_type === 'checkout') {
+      if (!hasEvt('checkin')) {
+        errors.push(`Evento ${rowNum}: devi effettuare prima il check-in`);
+        failed++;
+        continue;
+      }
+      if (hasEvt('break_start') && !hasEvt('break_end')) {
+        errors.push(`Evento ${rowNum}: termina prima la pausa`);
+        failed++;
+        continue;
+      }
+    }
+
+    // ── Shift linking (optional helper for reporting) ─────────────────────
     const linkedShift = await queryOne<{ id: number }>(
       `SELECT s.id
        FROM shifts s
@@ -1272,4 +1376,81 @@ export const deleteAttendanceEvent = asyncHandler(async (req: Request, res: Resp
   );
 
   ok(res, { id }, 'Evento eliminato');
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/attendance/daily-state  — employee self-service today's state
+// Returns { hasShift, hasLeave, state: { checkedIn, breakStarted, breakEnded, checkedOut } }
+// Used by frontend to initialize the attendance state machine.
+// ---------------------------------------------------------------------------
+export const getDailyState = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId, userId } = req.user!;
+
+  // Resolve today in server local time
+  const today = localToday();
+
+  // 1. Check if employee has a shift today (any non-cancelled shift for today)
+  const todayShift = await queryOne<{ id: number; shift_date: string; shift_timezone: string }>(
+    `SELECT
+       s.id,
+       TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+       ${SHIFT_TIMEZONE_SQL} AS shift_timezone
+     FROM shifts s
+     WHERE s.company_id = $1
+       AND s.user_id = $2
+       AND s.status != 'cancelled'
+       AND s.date = $3::DATE
+     ORDER BY ${SHIFT_START_UTC_SQL}
+     LIMIT 1`,
+    [companyId, userId, today],
+  );
+
+  // 2. Check for approved leave today
+  const approvedLeave = todayShift
+    ? await queryOne<{ id: number }>(
+        `SELECT id
+         FROM leave_requests
+         WHERE company_id = $1
+           AND user_id = $2
+           AND status = 'hr_approved'
+           AND start_date <= $3::date
+           AND end_date >= $3::date
+         LIMIT 1`,
+        [companyId, userId, today],
+      )
+    : null;
+
+  const hasShift = !!todayShift;
+  const hasLeave = !!approvedLeave;
+
+  if (!hasShift || hasLeave) {
+    ok(res, {
+      hasShift,
+      hasLeave,
+      state: { checkedIn: false, breakStarted: false, breakEnded: false, checkedOut: false },
+    });
+    return;
+  }
+
+  // 3. Fetch today's events for state derivation
+  const dayEvents = await query<{ event_type: string }>(
+    `SELECT event_type
+     FROM attendance_events
+     WHERE company_id = $1
+       AND user_id = $2
+       AND event_time >= (($3::DATE)::timestamp AT TIME ZONE $4)
+       AND event_time <  ((($3::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $4)
+     ORDER BY event_time ASC`,
+    [companyId, userId, today, todayShift.shift_timezone],
+  );
+
+  const types = dayEvents.map((e) => e.event_type);
+  const state = {
+    checkedIn:    types.includes('checkin'),
+    breakStarted: types.includes('break_start'),
+    breakEnded:   types.includes('break_end'),
+    checkedOut:   types.includes('checkout'),
+  };
+
+  ok(res, { hasShift, hasLeave, state });
 });

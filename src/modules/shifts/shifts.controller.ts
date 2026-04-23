@@ -36,6 +36,38 @@ function parseTimeCell(val: unknown): string | null {
 // ---------------------------------------------------------------------------
 // Helper: parse a cell value as YYYY-MM-DD date string
 // ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Helper: ensure date is YYYY-MM-DD
+// ---------------------------------------------------------------------------
+function normalizeDate(d: string): string {
+  if (!d) return '1970-01-01';
+  const s = d.trim();
+  // Handle MM/DD/YYYY (USA)
+  const mUsa = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (mUsa) {
+    return `${mUsa[3]}-${mUsa[1].padStart(2, '0')}-${mUsa[2].padStart(2, '0')}`;
+  }
+  // Handle DD-MM-YYYY
+  const mEu = s.match(/^(\d{1,2})-(\d{1,2})-(\d{4})$/);
+  if (mEu) {
+    return `${mEu[3]}-${mEu[2].padStart(2, '0')}-${mEu[1].padStart(2, '0')}`;
+  }
+  return s;
+}
+
+// ---------------------------------------------------------------------------
+// Helper: ensure time is HH:MM:00
+// ---------------------------------------------------------------------------
+function normalizeTime(t: string | null | undefined): string {
+  if (!t || typeof t !== 'string' || t.trim() === '') return '00:00:00';
+  const s = t.trim();
+  const parts = s.split(':');
+  const h = parts[0].padStart(2, '0');
+  const m = (parts[1] || '00').padStart(2, '0');
+  const sec = (parts[2] || '00').padStart(2, '0');
+  return `${h}:${m}:${sec}`;
+}
+
 function parseDateCell(val: unknown): string | null {
   if (!val) return null;
   if (typeof val === 'string') {
@@ -467,12 +499,16 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
+  const nDate = normalizeDate(body.date);
+  const nStartTime = normalizeTime(body.start_time);
+  const nEndTime = normalizeTime(body.end_time);
+
   const assignmentResolution = await resolveShiftAssignmentForDate({
     companyId: effectiveCompanyId,
     userId: body.user_id,
     homeStoreId: targetUser.store_id,
     shiftStoreId: body.store_id,
-    shiftDate: body.date,
+    shiftDate: nDate,
   });
   if (assignmentResolution.errorCode || assignmentResolution.errorMessage) {
     badRequest(
@@ -484,6 +520,14 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const targetIsOffDay = body.is_off_day === true;
+
+  // Validation: Mandatory fields for working days
+  if (!targetIsOffDay) {
+    if (!body.start_time || body.start_time.trim() === '' || !body.end_time || body.end_time.trim() === '') {
+      badRequest(res, 'Ora inizio e fine obbligatorie per i giorni lavorativi', 'MISSING_TIMES');
+      return;
+    }
+  }
 
   let insertStatus: string = body.status ?? 'scheduled';
   if (targetIsOffDay) {
@@ -504,7 +548,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     const hasDateOffDay = await hasExplicitOffDayShift({
       companyId: effectiveCompanyId,
       userId: body.user_id,
-      date: body.date,
+      date: nDate,
     });
     if (hasDateOffDay) {
       badRequest(
@@ -520,7 +564,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     await cancelWorkingShiftsForOffDay({
       companyId: effectiveCompanyId,
       userId: body.user_id,
-      date: body.date,
+      date: nDate,
     });
   }
 
@@ -538,11 +582,13 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
          )`,
-      [effectiveCompanyId, body.user_id, body.date, body.end_time, body.start_time],
+      [effectiveCompanyId, body.user_id, nDate, nEndTime, nStartTime],
     );
 
     let overlapSplit = null;
     if (body.is_split && body.split_start2 && body.split_end2) {
+      const nSplitStart = normalizeTime(body.split_start2);
+      const nSplitEnd = normalizeTime(body.split_end2);
       overlapSplit = await queryOne<{ id: number }>(
         `SELECT id FROM shifts
          WHERE company_id = $1
@@ -554,7 +600,7 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
              OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                  AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
            )`,
-        [effectiveCompanyId, body.user_id, body.date, body.split_end2, body.split_start2],
+        [effectiveCompanyId, body.user_id, nDate, nSplitEnd, nSplitStart],
       );
     }
 
@@ -566,6 +612,11 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
 
   const isFlexible = body.break_type === 'flexible';
   const shiftTimezone = normalizeShiftTimezone(body.timezone, DEFAULT_SHIFT_TIMEZONE);
+  const nBreakStart = normalizeTime(body.break_start);
+  const nBreakEnd = normalizeTime(body.break_end);
+  const nSplitS2 = normalizeTime(body.split_start2);
+  const nSplitE2 = normalizeTime(body.split_end2);
+
   const createdShift = await queryOne<{ id: number }>(
     `INSERT INTO shifts (
        company_id, store_id, user_id, date, timezone, start_time, end_time,
@@ -578,17 +629,17 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
        is_off_day,
        notes, status, created_by
      ) VALUES (
-       $1, $2, $3, $4, $5, $6, $7,
-       (($4::DATE + $6::TIME) AT TIME ZONE $5),
-       (($4::DATE + $7::TIME) AT TIME ZONE $5),
+       $1, $2, $3, $4, $5::TEXT, $6, $7,
+       (($4::DATE + $6::TIME) AT TIME ZONE $5::TEXT),
+       (($4::DATE + (CASE WHEN $7::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $7::TIME) AT TIME ZONE $5::TEXT),
        $8,
        $9, $10,
-       CASE WHEN $9::TIME IS NULL THEN NULL ELSE (($4::DATE + $9::TIME) AT TIME ZONE $5) END,
-       CASE WHEN $10::TIME IS NULL THEN NULL ELSE (($4::DATE + $10::TIME) AT TIME ZONE $5) END,
+       CASE WHEN $9::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $9::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $9::TIME) AT TIME ZONE $5::TEXT) END,
+       CASE WHEN $10::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $10::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $10::TIME) AT TIME ZONE $5::TEXT) END,
        $11, $12,
        $13, $14, $15,
-       CASE WHEN $14::TIME IS NULL THEN NULL ELSE (($4::DATE + $14::TIME) AT TIME ZONE $5) END,
-       CASE WHEN $15::TIME IS NULL THEN NULL ELSE (($4::DATE + $15::TIME) AT TIME ZONE $5) END,
+       CASE WHEN $14::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $14::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $14::TIME) AT TIME ZONE $5::TEXT) END,
+       CASE WHEN $15::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $15::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $15::TIME) AT TIME ZONE $5::TEXT) END,
        $16,
        $17, $18, $19
      )
@@ -597,18 +648,18 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
       effectiveCompanyId,
       body.store_id,
       body.user_id,
-      body.date,
+      nDate,
       shiftTimezone,
-      body.start_time,
-      body.end_time,
+      nStartTime,
+      nEndTime,
       assignmentResolution.assignmentId,
-      isFlexible ? null : (body.break_start ?? null),
-      isFlexible ? null : (body.break_end ?? null),
+      isFlexible ? null : (body.break_start ? nBreakStart : null),
+      isFlexible ? null : (body.break_end ? nBreakEnd : null),
       body.break_type ?? 'fixed',
       isFlexible ? (body.break_minutes ?? null) : null,
       body.is_split ?? false,
-      body.split_start2 ?? null,
-      body.split_end2 ?? null,
+      body.is_split ? nSplitS2 : null,
+      body.is_split ? nSplitE2 : null,
       targetIsOffDay,
       body.notes ?? null,
       insertStatus,
@@ -736,6 +787,14 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     : null;
   const targetNotes = body.notes !== undefined ? body.notes : existing.notes;
 
+  // STRICT VALIDATION: Ensure times are present for working days to avoid 500 DB errors
+  if (!targetIsOffDay && targetStatus !== 'cancelled') {
+    if (!targetStart || targetStart.trim() === '' || !targetEnd || targetEnd.trim() === '') {
+      badRequest(res, 'Ora inizio e fine obbligatorie per i giorni lavorativi', 'MISSING_TIMES');
+      return;
+    }
+  }
+
   if (!targetIsOffDay && targetStatus !== 'cancelled') {
     const hasDateOffDay = await hasExplicitOffDayShift({
       companyId: effectiveCompanyId,
@@ -778,6 +837,14 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const nTargetDate = normalizeDate(targetDate);
+  const nTargetStart = normalizeTime(targetStart);
+  const nTargetEnd = normalizeTime(targetEnd);
+  const nTargetBreakStart = normalizeTime(targetBreakStart);
+  const nTargetBreakEnd = normalizeTime(targetBreakEnd);
+  const nTargetSplitStart = normalizeTime(targetSplitStart);
+  const nTargetSplitEnd = normalizeTime(targetSplitEnd);
+
   // H6 fix: use <= / >= so identical shifts (same start+end) are also caught
   if (!targetIsOffDay && targetStatus !== 'cancelled' && targetStart && targetEnd) {
     const overlapMain = await queryOne<{ id: number }>(
@@ -792,7 +859,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
            OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
          )`,
-      [effectiveCompanyId, targetUserId, targetDate, shiftId, targetEnd, targetStart],
+      [effectiveCompanyId, targetUserId, nTargetDate, shiftId, nTargetEnd, nTargetStart],
     );
 
     let overlapSplit = null;
@@ -809,7 +876,7 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
              OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
                  AND split_start2 <= $5::TIME AND split_end2 >= $6::TIME)
            )`,
-        [effectiveCompanyId, targetUserId, targetDate, shiftId, targetSplitEnd, targetSplitStart],
+        [effectiveCompanyId, targetUserId, nTargetDate, shiftId, nTargetSplitEnd, nTargetSplitStart],
       );
     }
 
@@ -821,15 +888,15 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
 
   // Validate cross-field constraints on merged (existing + patched) values
   const mergedForValidation = {
-    start_time: targetStart,
-    end_time: targetEnd,
-    break_start: targetBreakStart,
-    break_end: targetBreakEnd,
+    start_time: nTargetStart,
+    end_time: nTargetEnd,
+    break_start: targetBreakStart ? nTargetBreakStart : null,
+    break_end: targetBreakEnd ? nTargetBreakEnd : null,
     break_type: targetBreakType,
     break_minutes: targetBreakMinutes,
     is_split: targetIsSplit,
-    split_start2: targetSplitStart,
-    split_end2: targetSplitEnd,
+    split_start2: targetSplitStart ? nTargetSplitStart : null,
+    split_end2: targetSplitEnd ? nTargetSplitEnd : null,
   };
   const crossErrs = validateShiftCrossFields(mergedForValidation);
   if (crossErrs.length > 0) {
@@ -851,18 +918,18 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
        start_time    = $5::TIME,
        end_time      = $6::TIME,
        start_at_utc  = (($3::DATE + $5::TIME) AT TIME ZONE $4::TEXT),
-       end_at_utc    = (($3::DATE + $6::TIME) AT TIME ZONE $4::TEXT),
+       end_at_utc    = (($3::DATE + (CASE WHEN $6::TIME < $5::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $6::TIME) AT TIME ZONE $4::TEXT),
        break_start   = $7,
        break_end     = $8,
-       break_start_at_utc = CASE WHEN $7::TIME IS NULL THEN NULL ELSE (($3::DATE + $7::TIME) AT TIME ZONE $4::TEXT) END,
-       break_end_at_utc   = CASE WHEN $8::TIME IS NULL THEN NULL ELSE (($3::DATE + $8::TIME) AT TIME ZONE $4::TEXT) END,
+       break_start_at_utc = CASE WHEN $7::TIME IS NULL THEN NULL ELSE (($3::DATE + (CASE WHEN $7::TIME < $5::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $7::TIME) AT TIME ZONE $4::TEXT) END,
+       break_end_at_utc   = CASE WHEN $8::TIME IS NULL THEN NULL ELSE (($3::DATE + (CASE WHEN $8::TIME < $5::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $8::TIME) AT TIME ZONE $4::TEXT) END,
        break_type    = $9,
        break_minutes = $10,
        is_split      = $11,
        split_start2  = $12,
        split_end2    = $13,
-       split_start2_at_utc = CASE WHEN $12::TIME IS NULL THEN NULL ELSE (($3::DATE + $12::TIME) AT TIME ZONE $4::TEXT) END,
-       split_end2_at_utc   = CASE WHEN $13::TIME IS NULL THEN NULL ELSE (($3::DATE + $13::TIME) AT TIME ZONE $4::TEXT) END,
+       split_start2_at_utc = CASE WHEN $12::TIME IS NULL THEN NULL ELSE (($3::DATE + (CASE WHEN $12::TIME < $5::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $12::TIME) AT TIME ZONE $4::TEXT) END,
+       split_end2_at_utc   = CASE WHEN $13::TIME IS NULL THEN NULL ELSE (($3::DATE + (CASE WHEN $13::TIME < $5::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $13::TIME) AT TIME ZONE $4::TEXT) END,
        notes         = $14,
        assignment_id = $15,
        is_off_day    = $16,
@@ -873,17 +940,17 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     [
       targetStoreId,
       targetUserId,
-      targetDate,
+      nTargetDate,
       targetShiftTimezone,
-      targetStart,
-      targetEnd,
-      targetBreakStart,
-      targetBreakEnd,
+      nTargetStart,
+      nTargetEnd,
+      targetBreakStart ? nTargetBreakStart : null,
+      targetBreakEnd ? nTargetBreakEnd : null,
       targetBreakType,
       targetBreakMinutes,
       targetIsSplit,
-      targetSplitStart,
-      targetSplitEnd,
+      targetSplitStart ? nTargetSplitStart : null,
+      targetSplitEnd ? nTargetSplitEnd : null,
       targetNotes,
       assignmentResolution.assignmentId,
       targetIsOffDay,
