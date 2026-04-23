@@ -47,9 +47,10 @@ const managementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as cons
 const allRoles = [...managementRoles, 'employee', 'store_terminal'] as const;
 
 // Zod schemas
-function toMins(t: string): number {
+function toMins(t: string | null | undefined): number {
+  if (!t || typeof t !== 'string' || !t.includes(':')) return 0;
   const [h, m] = t.split(':').map(Number);
-  return h * 60 + m;
+  return (h || 0) * 60 + (m || 0);
 }
 
 // ---------------------------------------------------------------------------

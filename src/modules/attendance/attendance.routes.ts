@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany, requireModulePermission } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { checkin, createManualEvent, listAttendanceEvents, listMyAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent } from './attendance.controller';
+import { checkin, createManualEvent, listAttendanceEvents, listMyAttendanceEvents, syncEvents, getAnomalies, updateAttendanceEvent, deleteAttendanceEvent, getDailyState } from './attendance.controller';
 
 const router = Router();
 
@@ -102,6 +102,16 @@ router.get(
   enforceCompany,
   requireModulePermission('presenze', 'read'),
   listMyAttendanceEvents,
+);
+
+// GET /api/attendance/daily-state — employee today's attendance state (for state machine)
+// Does NOT require the presenze module permission — functionality vs visibility
+router.get(
+  '/daily-state',
+  authenticate,
+  requireRole('employee'),
+  enforceCompany,
+  getDailyState,
 );
 
 // PUT /api/attendance/:id — admin or hr only
