@@ -563,6 +563,10 @@ export const listCandidatesHandler = asyncHandler(async (req: Request, res: Resp
       return;
     }
     companyScope = [explicitCompanyId];
+  } else if (req.user?.is_super_admin || allowedCompanyIds.length > 1) {
+    // Multi-company contexts should default to full allowed scope to avoid hiding data
+    // when a stale/default company is selected locally.
+    companyScope = allowedCompanyIds;
   } else if (req.user?.companyId && allowedCompanyIds.includes(req.user.companyId)) {
     companyScope = [req.user.companyId];
   } else {
