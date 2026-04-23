@@ -44,6 +44,7 @@ dotenv.config();
 
 const app = express();
 app.set('trust proxy', true);
+// const PORT = Number(process.env.PORT) || 3001;
 const PORT = process.env.PORT || 3001;
 
 const rawCorsOrigins = (process.env.CORS_ORIGIN || '')
@@ -389,6 +390,11 @@ async function start() {
   httpServer.listen(PORT, () => {
     console.log(`HR System backend running on http://localhost:${PORT}`);
   });
+  // Fixed (listens on all network interfaces)
+
+  // httpServer.listen(PORT, '0.0.0.0', () => {
+  //   console.log(`HR System backend running on http://0.0.0.0:${PORT}`);
+  // });
 
 
   // Start background cron jobs (skip in test environment)
