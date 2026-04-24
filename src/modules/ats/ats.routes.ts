@@ -9,6 +9,7 @@ import {
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
   jobFeedHandler,
 } from './ats.controller';
+import { optionalInternalResumeUpload } from './atsCvUpload';
 
 const router = Router();
 
@@ -31,7 +32,7 @@ router.post('/jobs/:id/sync',     requireRole('admin', 'hr'), syncJobHandler);
 
 // Candidates
 router.get('/candidates',         listCandidatesHandler);
-router.post('/candidates',        createCandidateHandler);
+router.post('/candidates',        optionalInternalResumeUpload, createCandidateHandler);
 router.get('/candidates/:id',     getCandidateHandler);
 router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);
 router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHandler);

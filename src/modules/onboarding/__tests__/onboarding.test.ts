@@ -65,6 +65,7 @@ beforeAll(async () => {
     ALTER TABLE onboarding_templates ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER;
     ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS completion_note TEXT;
     ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS due_date DATE;
+    ALTER TABLE employee_onboarding_tasks ADD COLUMN IF NOT EXISTS assigned_by_user_id INTEGER;
     ALTER TABLE users ADD COLUMN IF NOT EXISTS locale VARCHAR(10);
   `);
 

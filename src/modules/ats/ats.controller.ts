@@ -180,6 +180,8 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
     contract_type,
     salary_min,
     salary_max,
+    salary_period,
+    target_role,
   } = req.body as Record<string, unknown>;
   let statusValue: 'draft' | 'published' | 'closed' = 'draft';
   if (status !== undefined) {
@@ -239,6 +241,36 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
+  let salaryPeriodValue: string | undefined;
+  if (salary_period !== undefined && salary_period !== null && String(salary_period).trim() !== '') {
+    if (typeof salary_period !== 'string') {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
+    const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
+    if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    salaryPeriodValue = normalizedSalaryPeriod;
+  }
+
+  let targetRoleValue: string | undefined;
+  if (target_role !== undefined && target_role !== null && String(target_role).trim() !== '') {
+    if (typeof target_role !== 'string') {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    const normalizedTargetRole = target_role.trim().toLowerCase();
+    const allowedTargetRoles = new Set(['hr', 'area_manager', 'store_manager', 'employee']);
+    if (!allowedTargetRoles.has(normalizedTargetRole)) {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    targetRoleValue = normalizedTargetRole;
+  }
+
   let remoteTypeValue: RemoteType;
   if (typeof remote_type === 'string') {
     const normalized = remote_type.toLowerCase();
@@ -281,6 +313,8 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
       contractType: typeof contract_type === 'string' ? contract_type.trim() : undefined,
       salaryMin: salaryMinValue === undefined ? undefined : salaryMinValue ?? undefined,
       salaryMax: salaryMaxValue === undefined ? undefined : salaryMaxValue ?? undefined,
+      salaryPeriod: salaryPeriodValue,
+      targetRole: targetRoleValue,
     });
   } catch (err) {
     if (handleJobPersistenceError(res, err)) return;
@@ -333,6 +367,8 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     contract_type,
     salary_min,
     salary_max,
+    salary_period,
+    target_role,
   } = req.body as Record<string, unknown>;
 
   let targetCompanyId = effectiveCompanyId;
@@ -439,6 +475,42 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
+  let parsedSalaryPeriod: string | null | undefined;
+  if (salary_period !== undefined) {
+    if (salary_period === null || String(salary_period).trim() === '') {
+      parsedSalaryPeriod = null;
+    } else if (typeof salary_period === 'string') {
+      const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
+      const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
+      if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+        badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+        return;
+      }
+      parsedSalaryPeriod = normalizedSalaryPeriod;
+    } else {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
+  let parsedTargetRole: string | null | undefined;
+  if (target_role !== undefined) {
+    if (target_role === null || String(target_role).trim() === '') {
+      parsedTargetRole = null;
+    } else if (typeof target_role === 'string') {
+      const normalizedTargetRole = target_role.trim().toLowerCase();
+      const allowedTargetRoles = new Set(['hr', 'area_manager', 'store_manager', 'employee']);
+      if (!allowedTargetRoles.has(normalizedTargetRole)) {
+        badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+        return;
+      }
+      parsedTargetRole = normalizedTargetRole;
+    } else {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
   let parsedRemoteType: RemoteType | undefined;
   if (remote_type !== undefined) {
     if (typeof remote_type !== 'string') {
@@ -494,6 +566,8 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
       contractType: typeof contract_type === 'string' ? contract_type.trim() : contract_type === null ? null : undefined,
       salaryMin: parsedSalaryMin,
       salaryMax: parsedSalaryMax,
+      salaryPeriod: parsedSalaryPeriod,
+      targetRole: parsedTargetRole,
     });
   } catch (err) {
     if (handleJobPersistenceError(res, err)) return;
@@ -544,14 +618,42 @@ export const syncJobHandler = asyncHandler(async (req: Request, res: Response) =
 // ---------------------------------------------------------------------------
 
 export const listCandidatesHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const status    = typeof req.query.status === 'string' ? req.query.status : undefined;
-  const jobId     = req.query.job_id ? parseInt(String(req.query.job_id), 10) : undefined;
-  const storeIds  = resolveStoreIds(req.user);
+  const explicitRaw = req.query.company_id ?? req.query.target_company_id;
+  const explicitCompanyId = explicitRaw != null && String(explicitRaw).trim() !== ''
+    ? Number.parseInt(String(explicitRaw), 10)
+    : undefined;
+  if (explicitCompanyId !== undefined && Number.isNaN(explicitCompanyId)) {
+    badRequest(res, 'Azienda non valida');
+    return;
+  }
 
-  const candidates = await listCandidates(companyId, {
+  let companyScope: number[] = [];
+  if (explicitCompanyId !== undefined) {
+    if (!allowedCompanyIds.includes(explicitCompanyId)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+    companyScope = [explicitCompanyId];
+  } else if (req.user?.is_super_admin || allowedCompanyIds.length > 1) {
+    // Multi-company contexts should default to full allowed scope to avoid hiding data
+    // when a stale/default company is selected locally.
+    companyScope = allowedCompanyIds;
+  } else if (req.user?.companyId && allowedCompanyIds.includes(req.user.companyId)) {
+    companyScope = [req.user.companyId];
+  } else {
+    companyScope = allowedCompanyIds;
+  }
+  if (companyScope.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const status = typeof req.query.status === 'string' ? req.query.status : undefined;
+  const jobIdRaw = req.query.job_id ?? req.query.jobId;
+  const jobId = jobIdRaw ? parseInt(String(jobIdRaw), 10) : undefined;
+  const storeIds = resolveStoreIds(req.user);
+
+  const candidates = await listCandidates(companyScope, {
     status,
     jobPostingId: jobId && !Number.isNaN(jobId) ? jobId : undefined,
     storeIds,
@@ -590,6 +692,7 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
+  const body = req.body as Record<string, unknown>;
   const {
     full_name,
     email,
@@ -607,7 +710,32 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     applicant_locale,
     consent_accepted_at,
     applied_at,
-  } = req.body as Record<string, unknown>;
+  } = body;
+
+  const uploadedFile = (req as Request & { file?: Express.Multer.File }).file;
+  let cvPathResolved = typeof cv_path === 'string' && cv_path.trim() !== '' ? cv_path.trim() : undefined;
+  let resumePathResolved = typeof resume_path === 'string' && resume_path.trim() !== '' ? resume_path.trim() : undefined;
+  if (uploadedFile?.filename) {
+    const rel = `public-cv/${uploadedFile.filename}`;
+    cvPathResolved = rel;
+    resumePathResolved = rel;
+  }
+
+  let tagList: string[] = [];
+  if (Array.isArray(tags)) {
+    tagList = tags as string[];
+  } else if (typeof tags === 'string' && tags.trim() !== '') {
+    try {
+      const parsed = JSON.parse(tags) as unknown;
+      if (Array.isArray(parsed)) tagList = parsed as string[];
+    } catch {
+      tagList = [];
+    }
+  }
+
+  const gdprConsentParsed = typeof gdpr_consent === 'boolean'
+    ? gdpr_consent
+    : (typeof gdpr_consent === 'string' && ['true', '1', 'on', 'yes'].includes(gdpr_consent.trim().toLowerCase()));
 
   if (!full_name || typeof full_name !== 'string' || full_name.trim() === '') {
     badRequest(res, 'Il nome è obbligatorio', 'VALIDATION_ERROR');
@@ -679,14 +807,14 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     phone:        typeof phone === 'string' ? phone : undefined,
     jobPostingId: parsedJobPostingId,
     storeId:      parsedStoreId,
-    tags:         Array.isArray(tags) ? (tags as string[]) : [],
-    cvPath:       typeof cv_path === 'string' ? cv_path : undefined,
-    resumePath:   typeof resume_path === 'string' ? resume_path : undefined,
+    tags:         tagList,
+    cvPath:       cvPathResolved,
+    resumePath:   resumePathResolved,
     linkedinUrl:  typeof linkedin_url === 'string' ? linkedin_url : undefined,
     coverLetter:  typeof cover_letter === 'string' ? cover_letter : undefined,
     source:       typeof source === 'string' ? source : undefined,
     sourceRef:    typeof source_ref === 'string' ? source_ref : undefined,
-    gdprConsent:  typeof gdpr_consent === 'boolean' ? gdpr_consent : undefined,
+    gdprConsent:  gdprConsentParsed,
     applicantLocale: typeof applicant_locale === 'string' ? applicant_locale : undefined,
     consentAcceptedAt: typeof consent_accepted_at === 'string' ? consent_accepted_at : undefined,
     appliedAt:    typeof applied_at === 'string' ? applied_at : undefined,

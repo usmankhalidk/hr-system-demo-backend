@@ -52,6 +52,7 @@ export interface JobPosting {
   salaryMin: number | null;
   salaryMax: number | null;
   salaryPeriod: string | null;
+  targetRole: string | null;
   experience: string | null;
   education: string | null;
   category: string | null;
@@ -194,6 +195,7 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     salaryMin: parseNullableNumber(row.salary_min),
     salaryMax: parseNullableNumber(row.salary_max),
     salaryPeriod: row.salary_period as string | null,
+    targetRole: row.target_role as string | null,
     experience: row.experience as string | null,
     education: row.education as string | null,
     category: row.category as string | null,
@@ -220,6 +222,14 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
 }
 
 function mapCandidate(row: Record<string, unknown>): Candidate {
+  const rawStatus = typeof row.status === 'string' ? row.status : '';
+  const normalizedStatus: CandidateStatus = (
+    rawStatus === 'received'
+    || rawStatus === 'review'
+    || rawStatus === 'interview'
+    || rawStatus === 'hired'
+    || rawStatus === 'rejected'
+  ) ? rawStatus : 'received';
   return {
     id: row.id as number,
     companyId: row.company_id as number,
@@ -233,7 +243,7 @@ function mapCandidate(row: Record<string, unknown>): Candidate {
     linkedinUrl: row.linkedin_url as string | null,
     coverLetter: row.cover_letter as string | null,
     tags: (row.tags as string[]) ?? [],
-    status: row.status as CandidateStatus,
+    status: normalizedStatus,
     source: row.source as string,
     sourceRef: row.source_ref as string | null,
     gdprConsent: (row.gdpr_consent as boolean | null) ?? false,
@@ -481,6 +491,8 @@ export async function createJob(
     contractType?: string;
     salaryMin?: number;
     salaryMax?: number;
+    salaryPeriod?: string;
+    targetRole?: string;
   },
 ): Promise<JobPosting> {
   const row = await queryOne<{ id: number }>(
@@ -506,9 +518,11 @@ export async function createJob(
        contract_type,
        salary_min,
        salary_max,
+       salary_period,
+       target_role,
        published_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
      RETURNING id`,
     [
       companyId,
@@ -534,6 +548,8 @@ export async function createJob(
       data.contractType ?? null,
       data.salaryMin ?? null,
       data.salaryMax ?? null,
+      data.salaryPeriod ?? null,
+      data.targetRole ?? null,
     ],
   );
   const createdId = row?.id as number | undefined;
@@ -571,6 +587,8 @@ export async function updateJob(
     contractType?: string | null;
     salaryMin?: number | null;
     salaryMax?: number | null;
+    salaryPeriod?: string | null;
+    targetRole?: string | null;
   },
 ): Promise<JobPosting | null> {
   const setParts: string[] = [];
@@ -615,6 +633,8 @@ export async function updateJob(
   if (data.contractType !== undefined){ setParts.push(`contract_type = $${idx++}`);params.push(data.contractType); }
   if (data.salaryMin !== undefined)   { setParts.push(`salary_min = $${idx++}`);   params.push(data.salaryMin); }
   if (data.salaryMax !== undefined)   { setParts.push(`salary_max = $${idx++}`);   params.push(data.salaryMax); }
+  if (data.salaryPeriod !== undefined){ setParts.push(`salary_period = $${idx++}`);params.push(data.salaryPeriod); }
+  if (data.targetRole !== undefined)  { setParts.push(`target_role = $${idx++}`);  params.push(data.targetRole); }
 
   if (setParts.length === 0) return getJob(id, companyId);
 
@@ -706,11 +726,12 @@ export async function syncIndeedApplications(
 // ---------------------------------------------------------------------------
 
 export async function listCandidates(
-  companyId: number,
+  companyId: number | number[],
   filters: { status?: string; jobPostingId?: number; storeIds?: number[] } = {},
 ): Promise<Candidate[]> {
-  const conditions: string[] = ['c.company_id = $1'];
-  const params: unknown[] = [companyId];
+  const companyIds = Array.isArray(companyId) ? companyId : [companyId];
+  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const params: unknown[] = [companyIds];
   let idx = 2;
 
   if (filters.status) {
@@ -722,9 +743,13 @@ export async function listCandidates(
     params.push(filters.jobPostingId);
   }
   if (filters.storeIds?.length) {
-    // Scope to the effective store (candidate.store_id first, then job.store_id).
-    conditions.push(`COALESCE(c.store_id, jp.store_id) = ANY($${idx++}::int[])`);
+    // Store-scoped roles: match assigned store, or company-wide postings (both null) so candidates are not hidden.
+    conditions.push(`(
+      COALESCE(c.store_id, jp.store_id) = ANY($${idx}::int[])
+      OR COALESCE(c.store_id, jp.store_id) IS NULL
+    )`);
     params.push(filters.storeIds);
+    idx++;
   }
 
   const rows = await query<Record<string, unknown>>(
@@ -747,7 +772,10 @@ export async function getCandidate(id: number, companyId: number, storeIds?: num
          LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
          WHERE c.id = $1
            AND c.company_id = $2
-           AND COALESCE(c.store_id, jp.store_id) = ANY($3::int[])`
+           AND (
+             COALESCE(c.store_id, jp.store_id) = ANY($3::int[])
+             OR COALESCE(c.store_id, jp.store_id) IS NULL
+           )`
       : `SELECT * FROM candidates WHERE id = $1 AND company_id = $2`,
     useStoreScope ? [id, companyId, storeIds] : [id, companyId],
   );

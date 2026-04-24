@@ -9,16 +9,17 @@ import { t } from '../utils/i18n';
 export async function runOnboardingReminderJob(companyId: number): Promise<void> {
   // Fetch pending employees along with their locale
   const rows = await query<{ employee_id: number; pending_count: number; locale?: string }>(
-    `SELECT ot.employee_id,
-            COUNT(*) FILTER (WHERE ot.completed_at IS NULL) AS pending_count,
+    `SELECT eot.employee_id,
+            COUNT(*)::int AS pending_count,
             u.locale
-       FROM onboarding_tasks ot
-       JOIN users u ON u.id = ot.employee_id
-      WHERE ot.company_id = $1
-        AND ot.completed_at IS NULL
-        AND ot.assigned_at < NOW() - INTERVAL '3 days'
-      GROUP BY ot.employee_id, u.locale
-      HAVING COUNT(*) FILTER (WHERE ot.completed_at IS NULL) > 0`,
+       FROM employee_onboarding_tasks eot
+       JOIN users u ON u.id = eot.employee_id
+       JOIN onboarding_templates otpl ON otpl.id = eot.template_id
+      WHERE otpl.company_id = $1
+        AND eot.completed = FALSE
+        AND eot.created_at < NOW() - INTERVAL '3 days'
+      GROUP BY eot.employee_id, u.locale
+      HAVING COUNT(*) > 0`,
     [companyId],
   );
 

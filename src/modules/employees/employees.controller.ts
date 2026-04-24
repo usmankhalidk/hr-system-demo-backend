@@ -33,7 +33,8 @@ const LIST_FIELDS = `
 // Extended list fields including company name (for super admin cross-company view)
 const LIST_FIELDS_WITH_COMPANY = `
   ${LIST_FIELDS.trim()},
-  c.name AS company_name
+  c.name AS company_name,
+  cg.name AS company_group_name
 `;
 
 // Full fields for detail view (includes sensitive)
@@ -60,6 +61,7 @@ const BASE_JOINS_WITH_COMPANY = `
   LEFT JOIN stores s ON s.id = u.store_id
   LEFT JOIN users sup ON sup.id = u.supervisor_id
   LEFT JOIN companies c ON c.id = u.company_id
+  LEFT JOIN company_groups cg ON cg.id = c.group_id
 `;
 
 // Valid supervisor roles
@@ -391,6 +393,8 @@ interface AssociationCompanyRow {
   name: string;
   slug: string;
   is_active: boolean;
+  logo_filename: string | null;
+  group_name: string | null;
 }
 
 interface AssociationStoreRow {
@@ -399,6 +403,7 @@ interface AssociationStoreRow {
   name: string;
   code: string;
   is_active: boolean;
+  logo_filename: string | null;
 }
 
 interface AssociationEmployeeRow {
@@ -436,6 +441,7 @@ interface AssociationStoreItem {
   name: string;
   code: string;
   isActive: boolean;
+  logoFilename: string | null;
   employees: AssociationEmployeeItem[];
 }
 
@@ -444,6 +450,8 @@ interface AssociationCompanyItem {
   name: string;
   slug: string;
   isActive: boolean;
+  logoFilename: string | null;
+  groupName: string | null;
   stores: AssociationStoreItem[];
   unassignedEmployees: AssociationEmployeeItem[];
   employeeCount: number;
@@ -535,7 +543,7 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
     if (storeIds && storeIds.length === 0) return [];
     if (storeIds) {
       return query<AssociationStoreRow>(
-        `SELECT s.id, s.company_id, s.name, s.code, s.is_active
+        `SELECT s.id, s.company_id, s.name, s.code, s.is_active, s.logo_filename
          FROM stores s
          WHERE s.company_id = ANY($1) AND s.id = ANY($2)
          ORDER BY s.name`,
@@ -543,7 +551,7 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
       );
     }
     return query<AssociationStoreRow>(
-      `SELECT s.id, s.company_id, s.name, s.code, s.is_active
+      `SELECT s.id, s.company_id, s.name, s.code, s.is_active, s.logo_filename
        FROM stores s
        WHERE s.company_id = ANY($1)
        ORDER BY s.name`,
@@ -665,8 +673,24 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
          FROM users u
          JOIN companies c ON c.id = u.company_id
          LEFT JOIN stores s ON s.id = u.store_id
-         WHERE u.id = $1`,
-        [empId],
+         WHERE u.company_id = ANY($1)
+           AND u.status = 'active'
+           AND (
+             u.id = $2
+             OR u.role IN ('hr', 'area_manager')
+             OR (u.role = 'store_manager' AND $3::int IS NOT NULL AND u.store_id = $3)
+           )
+         ORDER BY
+           CASE
+             WHEN u.id = $2 THEN 0
+             WHEN u.role = 'hr' THEN 1
+             WHEN u.role = 'area_manager' THEN 2
+             WHEN u.role = 'store_manager' THEN 3
+             ELSE 4
+           END,
+           u.surname,
+           u.name`,
+        [scopedCompanyIds, empId, subject.store_id],
       );
       break;
     }
@@ -678,10 +702,11 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
   }
 
   const companies = await query<AssociationCompanyRow>(
-    `SELECT id, name, slug, is_active
-     FROM companies
-     WHERE id = ANY($1)
-     ORDER BY name`,
+    `SELECT c.id, c.name, c.slug, c.is_active, c.logo_filename, cg.name AS group_name
+     FROM companies c
+     LEFT JOIN company_groups cg ON cg.id = c.group_id
+     WHERE c.id = ANY($1)
+     ORDER BY c.name`,
     [scopedCompanyIds],
   );
 
@@ -690,6 +715,8 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
     name: company.name,
     slug: company.slug,
     isActive: company.is_active,
+    logoFilename: company.logo_filename,
+    groupName: company.group_name,
     stores: [],
     unassignedEmployees: [],
     employeeCount: 0,
@@ -708,6 +735,7 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
       name: store.name,
       code: store.code,
       isActive: store.is_active,
+      logoFilename: store.logo_filename,
       employees: [],
     };
     parentCompany.stores.push(storeItem);

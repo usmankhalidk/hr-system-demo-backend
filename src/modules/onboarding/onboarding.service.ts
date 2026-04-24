@@ -50,6 +50,9 @@ export interface OnboardingTask {
   templateCategory: OnboardingTemplate['category'];
   templateLinkUrl: string | null;
   templatePriority: 'high' | 'medium' | 'low';
+  assignedByUserId: number | null;
+  assignedByName: string | null;
+  assignedByAvatarFilename: string | null;
   completed: boolean;
   completedAt: string | null;
   completionNote: string | null;
@@ -106,6 +109,9 @@ function mapTask(row: Record<string, unknown>): OnboardingTask {
     templateCategory: (row.template_category as OnboardingTask['templateCategory']) ?? 'other',
     templateLinkUrl: row.template_link_url as string | null,
     templatePriority: (row.template_priority as OnboardingTask['templatePriority']) ?? 'medium',
+    assignedByUserId: (row.assigned_by_user_id as number | null) ?? null,
+    assignedByName: (row.assigned_by_name as string | null) ?? null,
+    assignedByAvatarFilename: (row.assigned_by_avatar_filename as string | null) ?? null,
     completed: row.completed as boolean,
     completedAt: row.completed_at as string | null,
     completionNote: row.completion_note as string | null,
@@ -363,12 +369,20 @@ export async function getEmployeeTasks(
   const rows = await query<Record<string, unknown>>(
     `SELECT t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
             t.completion_note, t.due_date, t.created_at, t.updated_at,
+            t.assigned_by_user_id,
             tmpl.name AS template_name, tmpl.description AS template_description,
             tmpl.task_type AS template_task_type,
             tmpl.category AS template_category, tmpl.link_url AS template_link_url,
-            tmpl.priority AS template_priority
+            tmpl.priority AS template_priority,
+            CASE
+              WHEN assigner.id IS NULL THEN NULL
+              WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
+              ELSE assigner.name || ' ' || assigner.surname
+            END AS assigned_by_name,
+            assigner.avatar_filename AS assigned_by_avatar_filename
      FROM employee_onboarding_tasks t
      JOIN onboarding_templates tmpl ON tmpl.id = t.template_id
+     LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
      WHERE t.employee_id = $1 AND tmpl.company_id = $2
      ORDER BY
        CASE tmpl.task_type
@@ -398,6 +412,7 @@ export async function assignTasksToEmployee(
   employeeId: number,
   companyId: number,
   templateIds?: number[],
+  assignedByUserId?: number | null,
 ): Promise<number> {
   const templates = templateIds
     ? (await Promise.all(templateIds.map((id) => getTemplate(id, companyId)))).filter(Boolean) as OnboardingTemplate[]
@@ -416,14 +431,16 @@ export async function assignTasksToEmployee(
       ? new Date(hireDate.getTime() + tmpl.dueDays * 86400000).toISOString().slice(0, 10)
       : null;
 
-    const inserted = await query<{ id: number }>(
-      `INSERT INTO employee_onboarding_tasks (employee_id, template_id, due_date)
-       VALUES ($1, $2, $3)
-       ON CONFLICT (employee_id, template_id) DO NOTHING
-       RETURNING id`,
-      [employeeId, tmpl.id, dueDate],
+    const upserted = await query<{ was_inserted: boolean }>(
+      `INSERT INTO employee_onboarding_tasks (employee_id, template_id, due_date, assigned_by_user_id)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (employee_id, template_id) DO UPDATE SET
+         assigned_by_user_id = EXCLUDED.assigned_by_user_id,
+         updated_at = NOW()
+       RETURNING (xmax = 0) AS was_inserted`,
+      [employeeId, tmpl.id, dueDate, assignedByUserId ?? null],
     );
-    if (inserted.length > 0) assigned++;
+    if (upserted[0]?.was_inserted) assigned++;
   }
   return assigned;
 }
@@ -436,31 +453,49 @@ export async function completeTask(
 ): Promise<OnboardingTask | null> {
   let row: Record<string, unknown> | null;
 
+  const assignerSql = `CASE
+              WHEN assigner.id IS NULL THEN NULL
+              WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
+              ELSE assigner.name || ' ' || assigner.surname
+            END AS assigned_by_name,
+            assigner.avatar_filename AS assigned_by_avatar_filename`;
+
   if (employeeId) {
     // Employee completing their own task — filter by employee_id
     row = await queryOne<Record<string, unknown>>(
-      `UPDATE employee_onboarding_tasks
+      `UPDATE employee_onboarding_tasks t
        SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
-       WHERE id = $1 AND employee_id = $2 AND completed = FALSE
-       RETURNING *`,
+       FROM onboarding_templates tmpl
+       LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
+       WHERE t.id = $1 AND t.employee_id = $2 AND t.template_id = tmpl.id AND t.completed = FALSE
+       RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
+                 t.completion_note, t.due_date, t.created_at, t.updated_at, t.assigned_by_user_id,
+                 tmpl.name AS template_name, tmpl.description AS template_description,
+                 tmpl.task_type AS template_task_type,
+                 tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+                 tmpl.priority AS template_priority,
+                 ${assignerSql}`,
       [taskId, employeeId, note ?? null],
     );
+    if (row) return mapTask(row);
   } else if (companyId) {
     // Admin completing on behalf — verify company ownership via template
     row = await queryOne<Record<string, unknown>>(
       `UPDATE employee_onboarding_tasks t
        SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
        FROM onboarding_templates tmpl
+       LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
        WHERE t.id = $1
          AND t.template_id = tmpl.id
          AND tmpl.company_id = $2
          AND t.completed = FALSE
        RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-                 t.completion_note, t.due_date, t.created_at, t.updated_at,
+                 t.completion_note, t.due_date, t.created_at, t.updated_at, t.assigned_by_user_id,
                  tmpl.name AS template_name, tmpl.description AS template_description,
                  tmpl.task_type AS template_task_type,
                  tmpl.category AS template_category, tmpl.link_url AS template_link_url,
-                 tmpl.priority AS template_priority`,
+                 tmpl.priority AS template_priority,
+                 ${assignerSql}`,
       [taskId, companyId, note ?? null],
     );
     if (row) return mapTask(row);
@@ -468,22 +503,7 @@ export async function completeTask(
     return null;
   }
 
-  if (!row) return null;
-
-  const tmpl = await queryOne<{ name: string; description: string | null; task_type: string; category: string; link_url: string | null; priority: string }>(
-    `SELECT name, description, task_type, category, link_url, priority FROM onboarding_templates WHERE id = $1`,
-    [row.template_id as number],
-  );
-
-  return mapTask({
-    ...row,
-    template_name: tmpl?.name ?? '',
-    template_description: tmpl?.description ?? null,
-    template_task_type: tmpl?.task_type ?? 'day1',
-    template_category: tmpl?.category ?? 'other',
-    template_link_url: tmpl?.link_url ?? null,
-    template_priority: tmpl?.priority ?? 'medium',
-  });
+  return null;
 }
 
 export async function uncompleteTask(
@@ -495,16 +515,23 @@ export async function uncompleteTask(
     `UPDATE employee_onboarding_tasks t
      SET completed = FALSE, completed_at = NULL, updated_at = NOW()
      FROM onboarding_templates tmpl
+     LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
      WHERE t.id = $1
        AND t.template_id = tmpl.id
        AND tmpl.company_id = $2
        AND t.completed = TRUE
      RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-               t.completion_note, t.due_date, t.created_at, t.updated_at,
+               t.completion_note, t.due_date, t.created_at, t.updated_at, t.assigned_by_user_id,
                tmpl.name AS template_name, tmpl.description AS template_description,
                tmpl.task_type AS template_task_type,
                tmpl.category AS template_category, tmpl.link_url AS template_link_url,
-               tmpl.priority AS template_priority`,
+               tmpl.priority AS template_priority,
+               CASE
+                 WHEN assigner.id IS NULL THEN NULL
+                 WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
+                 ELSE assigner.name || ' ' || assigner.surname
+               END AS assigned_by_name,
+               assigner.avatar_filename AS assigned_by_avatar_filename`,
     [taskId, companyId],
   );
   return row ? mapTask(row) : null;
