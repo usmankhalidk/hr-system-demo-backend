@@ -55,16 +55,20 @@ export async function resolveAllowedCompanyIds(user: JwtPayload): Promise<number
     );
     allowedIds = rows.map((r) => r.id);
   } else if (user.role === 'hr' || user.role === 'area_manager') {
-    // If part of a group, HR and Area Managers see all companies in that group.
-    // Otherwise, they are restricted to their own company.
+    // If part of a group, check if the role has cross-company visibility permission.
     if (groupId === null) {
       allowedIds = [user.companyId];
     } else {
-      const rows = await query<{ id: number }>(
-        `SELECT id FROM companies WHERE group_id = $1 ORDER BY id`,
-        [groupId],
-      );
-      allowedIds = rows.map((r) => r.id);
+      const canCross = await resolveGroupRoleVisibility(groupId, user.role);
+      if (canCross) {
+        const rows = await query<{ id: number }>(
+          `SELECT id FROM companies WHERE group_id = $1 ORDER BY id`,
+          [groupId],
+        );
+        allowedIds = rows.map((r) => r.id);
+      } else {
+        allowedIds = [user.companyId];
+      }
     }
   } else {
     // store_manager / employee / store_terminal: always isolated
