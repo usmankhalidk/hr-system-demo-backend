@@ -384,7 +384,7 @@ router.put(
   requireRole('admin', 'hr'),
   asyncHandler(async (req: Request, res: Response) => {
     const id = parseInt(req.params.id, 10);
-    const { title, employee_id } = req.body;
+    const { title, employee_id, requires_signature, expires_at, visible_to_roles } = req.body;
 
     if (!title) {
       badRequest(res, 'Il titolo è obbligatorio', 'MISSING_TITLE');
@@ -397,8 +397,10 @@ router.put(
       file_url: string;
       title: string;
       is_visible_to_roles: string[];
+      requires_signature: boolean;
+      expires_at: string | null;
     }>(
-      `SELECT id, file_url, title, is_visible_to_roles FROM documents WHERE id = $1`,
+      `SELECT id, file_url, title, is_visible_to_roles, requires_signature, expires_at FROM documents WHERE id = $1`,
       [id],
     );
 
@@ -451,15 +453,32 @@ router.put(
         }
       }
 
+      // Sync metadata from body if provided, otherwise keep existing
+      const finalRequiresSignature = requires_signature !== undefined ? (requires_signature === 'true' || requires_signature === true) : doc.requires_signature;
+      const finalExpiresAt = expires_at !== undefined ? (expires_at || null) : doc.expires_at;
+      
+      let finalVisibleToRolesArr = doc.is_visible_to_roles;
+      if (visible_to_roles) {
+        try {
+          const parsed = JSON.parse(visible_to_roles);
+          if (Array.isArray(parsed)) finalVisibleToRolesArr = parsed;
+        } catch {
+          finalVisibleToRolesArr = String(visible_to_roles).split(',').map(r => r.trim()).filter(Boolean);
+        }
+      }
+
       await query(
         `UPDATE documents
             SET title = $1,
                 file_url = $2,
                 employee_id = $3,
                 category = $4,
-                company_id = $5
-          WHERE id = $6`,
-        [newTitle, newPath, employee_id || null, autoCategoryName, targetCompanyId || 0, id]
+                company_id = $5,
+                requires_signature = $6,
+                expires_at = $7,
+                is_visible_to_roles = $8
+          WHERE id = $9`,
+        [newTitle, newPath, employee_id || null, autoCategoryName, targetCompanyId || 0, finalRequiresSignature, finalExpiresAt, finalVisibleToRolesArr, id]
       );
 
       // 4. Migration/Sync to employee_documents
@@ -492,9 +511,9 @@ router.put(
             await query(
               `INSERT INTO employee_documents (
                 company_id, employee_id, category_id, file_name, storage_path, mime_type,
-                uploaded_by_user_id, is_visible_to_roles
-              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, mimeType, req.user!.userId, doc.is_visible_to_roles]
+                uploaded_by_user_id, is_visible_to_roles, requires_signature, expires_at
+              ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, mimeType, req.user!.userId, finalVisibleToRolesArr, finalRequiresSignature, finalExpiresAt]
             );
           } else {
             // Re-assignment: Update existing record with NEW company and NEW employee
@@ -505,9 +524,12 @@ router.put(
                       category_id = $3, 
                       file_name = $4, 
                       storage_path = $5,
+                      requires_signature = $6,
+                      expires_at = $7,
+                      is_visible_to_roles = $8,
                       updated_at = NOW()
-                WHERE id = $6`,
-              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, existing.id]
+                WHERE id = $9`,
+              [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, finalRequiresSignature, finalExpiresAt, finalVisibleToRolesArr, existing.id]
             );
           }
         }
