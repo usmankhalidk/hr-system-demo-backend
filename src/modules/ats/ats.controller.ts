@@ -180,6 +180,8 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
     contract_type,
     salary_min,
     salary_max,
+    salary_period,
+    target_role,
   } = req.body as Record<string, unknown>;
   let statusValue: 'draft' | 'published' | 'closed' = 'draft';
   if (status !== undefined) {
@@ -239,6 +241,36 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
+  let salaryPeriodValue: string | undefined;
+  if (salary_period !== undefined && salary_period !== null && String(salary_period).trim() !== '') {
+    if (typeof salary_period !== 'string') {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
+    const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
+    if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    salaryPeriodValue = normalizedSalaryPeriod;
+  }
+
+  let targetRoleValue: string | undefined;
+  if (target_role !== undefined && target_role !== null && String(target_role).trim() !== '') {
+    if (typeof target_role !== 'string') {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    const normalizedTargetRole = target_role.trim().toLowerCase();
+    const allowedTargetRoles = new Set(['hr', 'area_manager', 'store_manager', 'employee']);
+    if (!allowedTargetRoles.has(normalizedTargetRole)) {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+    targetRoleValue = normalizedTargetRole;
+  }
+
   let remoteTypeValue: RemoteType;
   if (typeof remote_type === 'string') {
     const normalized = remote_type.toLowerCase();
@@ -281,6 +313,8 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
       contractType: typeof contract_type === 'string' ? contract_type.trim() : undefined,
       salaryMin: salaryMinValue === undefined ? undefined : salaryMinValue ?? undefined,
       salaryMax: salaryMaxValue === undefined ? undefined : salaryMaxValue ?? undefined,
+      salaryPeriod: salaryPeriodValue,
+      targetRole: targetRoleValue,
     });
   } catch (err) {
     if (handleJobPersistenceError(res, err)) return;
@@ -333,6 +367,8 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     contract_type,
     salary_min,
     salary_max,
+    salary_period,
+    target_role,
   } = req.body as Record<string, unknown>;
 
   let targetCompanyId = effectiveCompanyId;
@@ -439,6 +475,42 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
+  let parsedSalaryPeriod: string | null | undefined;
+  if (salary_period !== undefined) {
+    if (salary_period === null || String(salary_period).trim() === '') {
+      parsedSalaryPeriod = null;
+    } else if (typeof salary_period === 'string') {
+      const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
+      const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
+      if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+        badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+        return;
+      }
+      parsedSalaryPeriod = normalizedSalaryPeriod;
+    } else {
+      badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
+  let parsedTargetRole: string | null | undefined;
+  if (target_role !== undefined) {
+    if (target_role === null || String(target_role).trim() === '') {
+      parsedTargetRole = null;
+    } else if (typeof target_role === 'string') {
+      const normalizedTargetRole = target_role.trim().toLowerCase();
+      const allowedTargetRoles = new Set(['hr', 'area_manager', 'store_manager', 'employee']);
+      if (!allowedTargetRoles.has(normalizedTargetRole)) {
+        badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+        return;
+      }
+      parsedTargetRole = normalizedTargetRole;
+    } else {
+      badRequest(res, 'Ruolo target non valido', 'VALIDATION_ERROR');
+      return;
+    }
+  }
+
   let parsedRemoteType: RemoteType | undefined;
   if (remote_type !== undefined) {
     if (typeof remote_type !== 'string') {
@@ -494,6 +566,8 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
       contractType: typeof contract_type === 'string' ? contract_type.trim() : contract_type === null ? null : undefined,
       salaryMin: parsedSalaryMin,
       salaryMax: parsedSalaryMax,
+      salaryPeriod: parsedSalaryPeriod,
+      targetRole: parsedTargetRole,
     });
   } catch (err) {
     if (handleJobPersistenceError(res, err)) return;

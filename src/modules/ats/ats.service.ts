@@ -52,6 +52,7 @@ export interface JobPosting {
   salaryMin: number | null;
   salaryMax: number | null;
   salaryPeriod: string | null;
+  targetRole: string | null;
   experience: string | null;
   education: string | null;
   category: string | null;
@@ -194,6 +195,7 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     salaryMin: parseNullableNumber(row.salary_min),
     salaryMax: parseNullableNumber(row.salary_max),
     salaryPeriod: row.salary_period as string | null,
+    targetRole: row.target_role as string | null,
     experience: row.experience as string | null,
     education: row.education as string | null,
     category: row.category as string | null,
@@ -489,6 +491,8 @@ export async function createJob(
     contractType?: string;
     salaryMin?: number;
     salaryMax?: number;
+    salaryPeriod?: string;
+    targetRole?: string;
   },
 ): Promise<JobPosting> {
   const row = await queryOne<{ id: number }>(
@@ -514,9 +518,11 @@ export async function createJob(
        contract_type,
        salary_min,
        salary_max,
+       salary_period,
+       target_role,
        published_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
      RETURNING id`,
     [
       companyId,
@@ -542,6 +548,8 @@ export async function createJob(
       data.contractType ?? null,
       data.salaryMin ?? null,
       data.salaryMax ?? null,
+      data.salaryPeriod ?? null,
+      data.targetRole ?? null,
     ],
   );
   const createdId = row?.id as number | undefined;
@@ -579,6 +587,8 @@ export async function updateJob(
     contractType?: string | null;
     salaryMin?: number | null;
     salaryMax?: number | null;
+    salaryPeriod?: string | null;
+    targetRole?: string | null;
   },
 ): Promise<JobPosting | null> {
   const setParts: string[] = [];
@@ -623,6 +633,8 @@ export async function updateJob(
   if (data.contractType !== undefined){ setParts.push(`contract_type = $${idx++}`);params.push(data.contractType); }
   if (data.salaryMin !== undefined)   { setParts.push(`salary_min = $${idx++}`);   params.push(data.salaryMin); }
   if (data.salaryMax !== undefined)   { setParts.push(`salary_max = $${idx++}`);   params.push(data.salaryMax); }
+  if (data.salaryPeriod !== undefined){ setParts.push(`salary_period = $${idx++}`);params.push(data.salaryPeriod); }
+  if (data.targetRole !== undefined)  { setParts.push(`target_role = $${idx++}`);  params.push(data.targetRole); }
 
   if (setParts.length === 0) return getJob(id, companyId);
 

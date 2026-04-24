@@ -33,7 +33,8 @@ const LIST_FIELDS = `
 // Extended list fields including company name (for super admin cross-company view)
 const LIST_FIELDS_WITH_COMPANY = `
   ${LIST_FIELDS.trim()},
-  c.name AS company_name
+  c.name AS company_name,
+  cg.name AS company_group_name
 `;
 
 // Full fields for detail view (includes sensitive)
@@ -60,6 +61,7 @@ const BASE_JOINS_WITH_COMPANY = `
   LEFT JOIN stores s ON s.id = u.store_id
   LEFT JOIN users sup ON sup.id = u.supervisor_id
   LEFT JOIN companies c ON c.id = u.company_id
+  LEFT JOIN company_groups cg ON cg.id = c.group_id
 `;
 
 // Valid supervisor roles
