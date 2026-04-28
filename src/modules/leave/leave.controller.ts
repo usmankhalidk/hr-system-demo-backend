@@ -6,6 +6,8 @@ import { ok, created, notFound, forbidden, badRequest } from '../../utils/respon
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { DEFAULT_SHIFT_TIMEZONE } from '../../utils/shiftTimezone';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -699,6 +701,16 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     );
   }
 
+  // Send notification for leave submission
+  void sendNotification({
+    companyId,
+    userId,
+    type: 'leave.submitted',
+    title: 'Richiesta di permesso inviata',
+    message: `La tua richiesta di ${leave_type === 'vacation' ? 'ferie' : 'malattia'} dal ${start_date} al ${end_date} è stata inviata con successo.`,
+    priority: 'medium',
+  }).catch(() => undefined);
+
   created(res, leaveRequest, 'Richiesta di permesso inviata');
 });
 
@@ -1138,6 +1150,17 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
       }
 
       await client.query('COMMIT');
+
+      // Send notification for leave approval
+      void sendNotification({
+        companyId: leaveRequest.company_id,
+        userId: leaveRequest.user_id,
+        type: 'leave.approved',
+        title: 'Richiesta di permesso approvata',
+        message: `La tua richiesta di ${leaveRequest.leave_type === 'vacation' ? 'ferie' : 'malattia'} dal ${leaveRequest.start_date} al ${leaveRequest.end_date} è stata approvata.`,
+        priority: 'high',
+      }).catch(() => undefined);
+
       ok(res, updated.rows[0], 'Richiesta approvata');
     } catch (err: any) {
       await client.query('ROLLBACK');
@@ -1232,10 +1255,13 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const leaveRequest = await queryOne<{
     id: number;
     company_id: number;
+    user_id: number;
+    start_date: string;
+    end_date: string;
     current_approver_role: string;
     status: string;
   }>(
-    `SELECT id, company_id, current_approver_role, status
+    `SELECT id, company_id, user_id, start_date, end_date, current_approver_role, status
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -1288,6 +1314,17 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
     );
 
     await client.query('COMMIT');
+
+    // Send notification for leave rejection
+    void sendNotification({
+      companyId: leaveRequest.company_id,
+      userId: leaveRequest.user_id,
+      type: 'leave.rejected',
+      title: 'Richiesta di permesso rifiutata',
+      message: `La tua richiesta di permesso dal ${leaveRequest.start_date} al ${leaveRequest.end_date} è stata rifiutata.`,
+      priority: 'high',
+    }).catch(() => undefined);
+
     ok(res, updatedResult.rows[0], 'Richiesta rifiutata');
   } catch (err) {
     await client.query('ROLLBACK');

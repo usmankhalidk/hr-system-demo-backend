@@ -7,6 +7,7 @@ import {
   getUnreadCount,
   listSettings,
   updateSetting,
+  getRecentRecipients,
   listAutomationSettings,
   updateAutomationSetting,
 } from './notifications.controller';
@@ -50,6 +51,15 @@ router.patch(
   authenticate,
   requireRole('admin'),
   updateSetting,
+);
+
+// GET /api/notifications/settings/:eventKey/recipients
+// Returns recent users who received this notification type (Admin/HR only)
+router.get(
+  '/settings/:eventKey/recipients',
+  authenticate,
+  requireRole('admin', 'hr'),
+  getRecentRecipients,
 );
 
 // GET /api/notifications/automation-settings

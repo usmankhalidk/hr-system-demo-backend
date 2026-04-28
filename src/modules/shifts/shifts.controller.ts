@@ -7,6 +7,8 @@ import { UserRole } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { validateShiftCrossFields } from './shifts.routes';
 import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
 // Helper: parse a cell value as HH:MM time string (handles Excel fractions, Date, string)
@@ -678,6 +680,27 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  const createdLocaleRow = await queryOne<{ locale: string | null }>(
+    `SELECT locale FROM users WHERE id = $1 LIMIT 1`,
+    [targetUser.id],
+  );
+  const createdLocale = createdLocaleRow?.locale ?? 'it';
+
+  void sendNotification({
+    companyId: effectiveCompanyId,
+    userId: targetUser.id,
+    type: 'shift.assigned',
+    title: t(createdLocale, 'notifications.shift_assigned.title'),
+    message: t(createdLocale, 'notifications.shift_assigned.message', {
+      date: String(shift.date ?? nDate),
+      start: String(shift.start_time ?? '').slice(0, 5),
+      end: String(shift.end_time ?? '').slice(0, 5),
+      store: String(shift.store_name ?? ''),
+    }),
+    priority: 'medium',
+    locale: createdLocale,
+  }).catch(() => undefined);
+
   created(res, shift, 'Turno creato');
 });
 
@@ -967,6 +990,27 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     badRequest(res, 'Impossibile recuperare il turno aggiornato', 'SHIFT_UPDATE_FAILED');
     return;
   }
+
+  const updatedLocaleRow = await queryOne<{ locale: string | null }>(
+    `SELECT locale FROM users WHERE id = $1 LIMIT 1`,
+    [targetUserId],
+  );
+  const updatedLocale = updatedLocaleRow?.locale ?? 'it';
+
+  void sendNotification({
+    companyId: effectiveCompanyId,
+    userId: targetUserId,
+    type: 'shift.changed',
+    title: t(updatedLocale, 'notifications.shift_changed.title'),
+    message: t(updatedLocale, 'notifications.shift_changed.message', {
+      date: String(shift.date ?? nTargetDate),
+      start: String(shift.start_time ?? '').slice(0, 5),
+      end: String(shift.end_time ?? '').slice(0, 5),
+      store: String(shift.store_name ?? ''),
+    }),
+    priority: 'medium',
+    locale: updatedLocale,
+  }).catch(() => undefined);
 
   ok(res, shift, 'Turno aggiornato');
 });

@@ -23,7 +23,9 @@ function hasCustomActivityName(value: string | null | undefined): boolean {
 const createSchema = z.object({
   store_id: z.number().int().positive(),
   company_id: z.number().int().positive().nullable().optional(),
-  date: z.string().regex(isoDate, 'Date must be YYYY-MM-DD'),
+  date: z.string().regex(isoDate, 'Date must be YYYY-MM-DD').optional(),
+  start_date: z.string().regex(isoDate, 'start_date must be YYYY-MM-DD').optional(),
+  end_date: z.string().regex(isoDate, 'end_date must be YYYY-MM-DD').optional(),
   activity_type: z.enum(activityTypes).optional(),
   activity_icon: z.string().trim().min(1).max(16).nullable().optional(),
   custom_activity_name: z.string().trim().min(1).max(120).nullable().optional(),
@@ -32,6 +34,33 @@ const createSchema = z.object({
 }).superRefine((data, ctx) => {
   const activityType = data.activity_type ?? 'window_display';
   const hasCustomName = hasCustomActivityName(data.custom_activity_name);
+  const hasDate = Boolean(data.date);
+  const hasStart = Boolean(data.start_date);
+  const hasEnd = Boolean(data.end_date);
+
+  if (!hasDate && !hasStart && !hasEnd) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'date or start_date/end_date is required',
+      path: ['date'],
+    });
+  }
+
+  if ((hasStart && !hasEnd) || (!hasStart && hasEnd)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'start_date and end_date must be provided together',
+      path: ['start_date'],
+    });
+  }
+
+  if (hasStart && hasEnd && data.end_date! < data.start_date!) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'end_date must be greater than or equal to start_date',
+      path: ['end_date'],
+    });
+  }
 
   if (activityType === CUSTOM_ACTIVITY_TYPE && !hasCustomName) {
     ctx.addIssue({
@@ -53,6 +82,8 @@ const createSchema = z.object({
 const updateSchema = z.object({
   company_id: z.number().int().positive().nullable().optional(),
   date: z.string().regex(isoDate, 'Date must be YYYY-MM-DD').optional(),
+  start_date: z.string().regex(isoDate, 'start_date must be YYYY-MM-DD').optional(),
+  end_date: z.string().regex(isoDate, 'end_date must be YYYY-MM-DD').optional(),
   activity_type: z.enum(activityTypes).optional(),
   activity_icon: z.string().trim().min(1).max(16).nullable().optional(),
   custom_activity_name: z.string().trim().min(1).max(120).nullable().optional(),
@@ -62,6 +93,8 @@ const updateSchema = z.object({
   (data) =>
     data.company_id !== undefined ||
     data.date !== undefined ||
+    data.start_date !== undefined ||
+    data.end_date !== undefined ||
     data.activity_type !== undefined ||
     data.activity_icon !== undefined ||
     data.custom_activity_name !== undefined ||
@@ -84,6 +117,14 @@ const updateSchema = z.object({
       code: z.ZodIssueCode.custom,
       message: 'custom_activity_name can only be used when activity_type is custom_activity',
       path: ['custom_activity_name'],
+    });
+  }
+
+  if (data.start_date && data.end_date && data.end_date < data.start_date) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: 'end_date must be greater than or equal to start_date',
+      path: ['end_date'],
     });
   }
 });

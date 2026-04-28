@@ -7,6 +7,8 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { signQrToken2, verifyQrToken2 } from '../../config/jwt';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
 // Date helpers used where API contracts expect date-only values.
@@ -983,13 +985,13 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     shiftIdx++;
   }
   const shifts = await query<{
-    id: number; user_id: number; store_id: number; date: string;
+    id: number; company_id: number; user_id: number; store_id: number; date: string;
     start_time: string; end_time: string;
     break_start: string | null; break_end: string | null;
     user_name: string; user_surname: string; store_name: string;
     user_avatar_filename: string | null;
   }>(
-    `SELECT s.id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+    `SELECT s.id, s.company_id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
             s.start_time, s.end_time, s.break_start, s.break_end,
             u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename,
             st.name AS store_name
@@ -1055,7 +1057,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const OVERTIME_MS   = 15 * 60 * 1000;
 
   const anomalies: Array<{
-    shift_id: number; user_id: number; user_name: string; user_surname: string;
+    shift_id: number; company_id: number; user_id: number; user_name: string; user_surname: string;
     user_avatar_filename: string | null;
     store_name: string; date: string;
     anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime';
@@ -1074,7 +1076,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
     if (!evGroup?.checkin) {
       anomalies.push({
-        shift_id: shift.id, user_id: shift.user_id,
+        shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
         user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
@@ -1094,7 +1096,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     if (lateMs > LATE_MS) {
       const lateMin = Math.round(lateMs / 60000);
       anomalies.push({
-        shift_id: shift.id, user_id: shift.user_id,
+        shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
         user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
@@ -1112,7 +1114,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       if (earlyMs > EARLY_EXIT_MS) {
         const earlyMin = Math.round(earlyMs / 60000);
         anomalies.push({
-          shift_id: shift.id, user_id: shift.user_id,
+          shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
@@ -1131,7 +1133,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       if (breakMs > LONG_BREAK_MS) {
         const breakMin = Math.round(breakMs / 60000);
         anomalies.push({
-          shift_id: shift.id, user_id: shift.user_id,
+          shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
@@ -1166,7 +1168,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         const scheduledHrs = Math.floor(scheduledNetMs / 3600000);
         const scheduledMin = Math.round((scheduledNetMs % 3600000) / 60000);
         anomalies.push({
-          shift_id: shift.id, user_id: shift.user_id,
+          shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
@@ -1182,6 +1184,59 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
         });
       }
     }
+  }
+
+  const localeCache = new Map<number, string>();
+  for (const anomaly of anomalies) {
+    if (!localeCache.has(anomaly.user_id)) {
+      const localeRow = await queryOne<{ locale: string | null }>(
+        `SELECT locale
+         FROM users
+         WHERE id = $1 AND company_id = $2
+         LIMIT 1`,
+        [anomaly.user_id, anomaly.company_id],
+      );
+      localeCache.set(anomaly.user_id, localeRow?.locale ?? 'it');
+    }
+
+    const locale = localeCache.get(anomaly.user_id) ?? 'it';
+    const kind = t(locale, `notifications.attendance_anomaly_kind_${anomaly.anomaly_type}`);
+    const title = t(locale, 'notifications.attendance_anomaly.title');
+    const message = t(locale, 'notifications.attendance_anomaly.message', {
+      kind,
+      date: anomaly.date,
+      store: anomaly.store_name,
+    });
+
+    const existing = await queryOne<{ id: number }>(
+      `SELECT id
+       FROM notifications
+       WHERE company_id = $1
+         AND user_id = $2
+         AND type = 'attendance.anomaly'
+         AND title = $3
+         AND message = $4
+         AND created_at > NOW() - INTERVAL '24 hours'
+       LIMIT 1`,
+      [anomaly.company_id, anomaly.user_id, title, message],
+    );
+    if (existing) {
+      continue;
+    }
+
+    const priority = anomaly.anomaly_type === 'no_show'
+      ? 'high'
+      : (anomaly.anomaly_type === 'overtime' ? 'low' : 'medium');
+
+    await sendNotification({
+      companyId: anomaly.company_id,
+      userId: anomaly.user_id,
+      type: 'attendance.anomaly',
+      title,
+      message,
+      priority,
+      locale,
+    });
   }
 
   ok(res, { anomalies, total: anomalies.length });

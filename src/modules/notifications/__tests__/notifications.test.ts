@@ -86,11 +86,15 @@ beforeAll(async () => {
       title      TEXT NOT NULL,
       message    TEXT NOT NULL,
       priority   TEXT NOT NULL DEFAULT 'medium',
+      is_enabled BOOLEAN NOT NULL DEFAULT TRUE,
       is_read    BOOLEAN NOT NULL DEFAULT FALSE,
       read_at    TIMESTAMPTZ,
+      locale     TEXT NOT NULL DEFAULT 'it',
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
   `);
+  await testPool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS is_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+  await testPool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS locale TEXT NOT NULL DEFAULT 'it'`);
   await testPool.query(`
     CREATE TABLE IF NOT EXISTS notification_settings (
       id         SERIAL PRIMARY KEY,

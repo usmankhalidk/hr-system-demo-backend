@@ -5,6 +5,15 @@
 ALTER TABLE onboarding_templates
   ADD COLUMN IF NOT EXISTS created_by_user_id INTEGER;
 
+UPDATE onboarding_templates
+SET created_by_user_id = NULL
+WHERE created_by_user_id IS NOT NULL
+  AND NOT EXISTS (
+    SELECT 1
+    FROM users
+    WHERE users.id = onboarding_templates.created_by_user_id
+  );
+
 DO $$
 BEGIN
   IF NOT EXISTS (

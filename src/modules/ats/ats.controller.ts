@@ -2,7 +2,7 @@ import { Request, Response } from 'express';
 import sanitizeHtml from 'sanitize-html';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound } from '../../utils/response';
-import { queryOne } from '../../config/database';
+import { query, queryOne } from '../../config/database';
 import {
   listJobs, getJob, createJob, updateJob, deleteJob,
   publishJobToIndeed, syncIndeedApplications,
@@ -865,9 +865,65 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
   }
 
   const storeIds = resolveStoreIds(req.user);
+  const previousStatusRow = await queryOne<{ status: CandidateStatus }>(
+    storeIds && storeIds.length > 0
+      ? `SELECT c.status
+         FROM candidates c
+         LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+         WHERE c.id = $1
+           AND c.company_id = $2
+           AND (
+             COALESCE(c.store_id, jp.store_id) = ANY($3::int[])
+             OR COALESCE(c.store_id, jp.store_id) IS NULL
+           )
+         LIMIT 1`
+      : `SELECT status
+         FROM candidates
+         WHERE id = $1 AND company_id = $2
+         LIMIT 1`,
+    storeIds && storeIds.length > 0
+      ? [id, owner.company_id, storeIds]
+      : [id, owner.company_id],
+  );
+
+  if (!previousStatusRow) {
+    notFound(res, 'Candidato non trovato');
+    return;
+  }
+
   const { candidate, error } = await updateCandidateStage(id, owner.company_id, status as CandidateStatus, storeIds);
   if (error) { badRequest(res, error, 'INVALID_TRANSITION'); return; }
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
+
+  if (previousStatusRow.status !== candidate.status) {
+    const recipients = await query<{ id: number; locale: string | null }>(
+      `SELECT id, locale
+       FROM users
+       WHERE company_id = $1
+         AND role IN ('admin', 'hr')
+         AND status = 'active'`,
+      [owner.company_id],
+    );
+
+    void Promise.all(
+      recipients.map((recipient) => {
+        const recipientLocale = recipient.locale ?? 'it';
+        return sendNotification({
+          companyId: owner.company_id,
+          userId: recipient.id,
+          type: 'ats.outcome',
+          title: t(recipientLocale, 'notifications.ats_outcome.title'),
+          message: t(recipientLocale, 'notifications.ats_outcome.message', {
+            name: candidate.fullName,
+            from: t(recipientLocale, `notifications.ats_status_${previousStatusRow.status}`),
+            to: t(recipientLocale, `notifications.ats_status_${candidate.status}`),
+          }),
+          priority: 'medium',
+          locale: recipientLocale,
+        });
+      }),
+    ).catch(() => undefined);
+  }
 
   ok(res, { candidate }, 'Stato candidato aggiornato');
 });
