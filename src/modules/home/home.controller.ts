@@ -2,15 +2,68 @@ import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
 import { ok } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { coalescedShiftPointUtcSql } from '../../utils/shiftTimezone';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
-
 export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
 
   switch (role) {
     case 'admin': {
       const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-      const [companiesRes, storesRes, employeesRes, roleBreakdown, storeBreakdown] = await Promise.all([
+      const tr = req.query.timeRange || req.query.time_range || req.query.timerange || 'this_month';
+      const timeRange = String(tr).trim().toLowerCase();
+
+      // DEBUG: Log the received parameters to a file in the workspace
+      const fs = require('fs');
+      const logMsg = `[${new Date().toISOString()}] req.query: ${JSON.stringify(req.query)}, resolved timeRange: ${timeRange}\n`;
+      fs.appendFileSync('home_debug.log', logMsg);
+
+      const now = new Date();
+      let startDate: Date;
+      let endDate: Date;
+
+      if (timeRange === 'this_week') {
+        // Last 7 days to match anomalies default
+        startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - 7);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date(now);
+        endDate.setHours(23, 59, 59, 999);
+      } else if (timeRange === 'three_months') {
+        // Last 3 months
+        startDate = new Date(now);
+        startDate.setMonth(startDate.getMonth() - 3);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date(now);
+        endDate.setHours(23, 59, 59, 999);
+      } else {
+        // default: this_month (last 30 days)
+        startDate = new Date(now);
+        startDate.setDate(startDate.getDate() - 30);
+        startDate.setHours(0, 0, 0, 0);
+        endDate = new Date(now);
+        endDate.setHours(23, 59, 59, 999);
+      }
+
+      // Add one day to endDate for < comparison in SQL
+      const nextDay = new Date(endDate);
+      nextDay.setDate(nextDay.getDate() + 1);
+
+      startDate.setHours(0, 0, 0, 0);
+      // We look until end of today to include all potential events
+      endDate = new Date(now);
+      endDate.setHours(23, 59, 59, 999);
+
+      const startStr = startDate.toISOString().split('T')[0];
+      const endStr = new Date(endDate.getTime() + 86400000).toISOString().split('T')[0];
+
+      console.log(`[AdminHome] SQL Range: ${startStr} to ${endStr}`);
+
+      const [
+        companiesRes, storesRes, employeesRes, roleBreakdown, storeBreakdown,
+        attendanceRes, absencesRes, delaysRes, coverageRes,
+        documentExpiryRes, onboardingRes, atsRes
+      ] = await Promise.all([
         queryOne<{ count: string }>(
           `SELECT COUNT(*) AS count FROM companies WHERE id = ANY($1)`,
           [allowedCompanyIds]
@@ -38,12 +91,141 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            GROUP BY s.id, s.name ORDER BY count DESC LIMIT 10`,
           [allowedCompanyIds]
         ),
+        queryOne<{ expected: string; present: string }>(
+          `SELECT 
+            COUNT(DISTINCT (s.user_id, s.date))::text AS expected,
+            COUNT(DISTINCT CASE WHEN ae.id IS NOT NULL THEN (s.user_id, s.date) END)::text AS present
+          FROM shifts s
+          LEFT JOIN attendance_events ae 
+            ON ae.user_id = s.user_id 
+            AND ae.event_time::DATE = s.date 
+            AND ae.event_type = 'checkin'
+          WHERE s.company_id = ANY($1) 
+            AND s.status != 'cancelled'
+            AND s.date >= $2
+            AND s.date < $3
+            AND s.date <= CURRENT_DATE`,
+          [allowedCompanyIds, startStr, endStr]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(DISTINCT s.id)::text AS count
+          FROM shifts s
+          LEFT JOIN attendance_events ae 
+            ON ae.user_id = s.user_id 
+            AND ae.event_time::DATE = s.date 
+            AND ae.event_type = 'checkin'
+          WHERE s.company_id = ANY($1) 
+            AND s.status != 'cancelled'
+            AND ae.id IS NULL
+            AND s.date >= $2
+            AND s.date < $3
+            AND (
+              s.date < CURRENT_DATE 
+              OR (s.date = CURRENT_DATE AND s.start_time < LOCALTIME)
+            )`,
+          [allowedCompanyIds, startStr, endStr]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+          FROM shifts s
+          LEFT JOIN LATERAL (
+            SELECT ae.event_time
+            FROM attendance_events ae
+            WHERE ae.user_id = s.user_id
+              AND ae.event_time::DATE = s.date
+              AND ae.event_type = 'checkin'
+            ORDER BY ae.event_time ASC
+            LIMIT 1
+          ) first_checkin ON true
+          WHERE s.company_id = ANY($1) 
+            AND s.status != 'cancelled'
+            AND s.date >= $2
+            AND s.date < $3
+            AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < LOCALTIME))
+            AND first_checkin.event_time IS NOT NULL
+            AND first_checkin.event_time > ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '15 minutes'`,
+          [allowedCompanyIds, startStr, endStr]
+        ),
+        queryOne<{ total: string; confirmed: string }>(
+          `SELECT 
+            COUNT(*)::text AS total,
+            SUM(CASE WHEN status = 'confirmed' THEN 1 ELSE 0 END)::text AS confirmed
+          FROM shifts
+          WHERE company_id = ANY($1)
+            AND status IN ('confirmed', 'scheduled')
+            AND date >= $2
+            AND date < $3`,
+          [allowedCompanyIds, startStr, endStr]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*)::text AS count
+          FROM employee_documents
+          WHERE company_id = ANY($1)
+            AND deleted_at IS NULL
+            AND (is_deleted = FALSE OR is_deleted IS NULL)
+            AND expires_at >= CURRENT_DATE
+            AND expires_at <= CURRENT_DATE + INTERVAL '60 days'`,
+          [allowedCompanyIds]
+        ),
+        queryOne<{ in_progress: string; avg_pct: string }>(
+          `SELECT
+            COUNT(*) FILTER (WHERE total_tasks > 0 AND completed_tasks < total_tasks)::text AS in_progress,
+            COALESCE(AVG(CASE WHEN total_tasks > 0 THEN (completed_tasks * 100.0 / total_tasks) ELSE 0 END), 0)::text AS avg_pct
+          FROM (
+            SELECT
+              u.id,
+              COUNT(t.id) AS total_tasks,
+              COUNT(t.id) FILTER (WHERE t.completed = TRUE) AS completed_tasks
+            FROM users u
+            LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
+            WHERE u.company_id = ANY($1)
+              AND u.role = 'employee'
+              AND u.status = 'active'
+            GROUP BY u.id
+          ) sub`,
+          [allowedCompanyIds]
+        ),
+        queryOne<{ total: string; interview: string }>(
+          `SELECT
+            COUNT(*)::text AS total,
+            SUM(CASE WHEN status = 'interview' THEN 1 ELSE 0 END)::text AS interview
+          FROM candidates
+          WHERE company_id = ANY($1)`,
+          [allowedCompanyIds]
+        )
       ]);
+
+      const expectedAtt = parseInt(attendanceRes?.expected || '0', 10);
+      const presentAtt = parseInt(attendanceRes?.present || '0', 10);
+      const attendanceRate = expectedAtt > 0 ? Math.round((presentAtt / expectedAtt) * 100) : 0;
+
+      const totalShiftsCov = parseInt(coverageRes?.total || '0', 10);
+      const confirmedShiftsCov = parseInt(coverageRes?.confirmed || '0', 10);
+      const shiftCoverage = totalShiftsCov > 0 ? Math.round((confirmedShiftsCov / totalShiftsCov) * 100) : 0;
+
+      console.log(`[AdminHome] Results - AttRate: ${attendanceRate}% (${presentAtt}/${expectedAtt}), Absences: ${absencesRes?.count}, Delays: ${delaysRes?.count}, Coverage: ${shiftCoverage}%`);
+
+      const onboardingInProgress = parseInt(onboardingRes?.in_progress || '0', 10);
+      const onboardingCompletionRate = Math.round(parseFloat(onboardingRes?.avg_pct || '0'));
+
       ok(res, {
         stats: {
           companies: parseInt(companiesRes?.count || '0', 10),
           activeStores: parseInt(storesRes?.count || '0', 10),
           activeEmployees: parseInt(employeesRes?.count || '0', 10),
+        },
+        dashboardStats: {
+          attendanceRate,
+          totalAbsences: parseInt(absencesRes?.count || '0', 10),
+          delays: parseInt(delaysRes?.count || '0', 10),
+          shiftCoverage,
+        },
+        staticStats: {
+          documentExpiryCount: parseInt(documentExpiryRes?.count || '0', 10),
+          onboardingInProgress,
+          onboardingCompletionRate,
+          atsTotalCandidates: parseInt(atsRes?.total || '0', 10),
+          atsInterviewCandidates: parseInt(atsRes?.interview || '0', 10),
         },
         roleBreakdown,
         storeBreakdown,
@@ -58,9 +240,9 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         pendingShiftPreview, pendingShiftCountRow, pendingLeavePreview, pendingLeaveCountRow,
       ] = await Promise.all([
         query(
-          `SELECT id, name, surname, store_id, contract_end_date FROM users
-           WHERE company_id = ANY($1) AND status = 'active' AND contract_end_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
-           ORDER BY contract_end_date LIMIT 10`,
+          `SELECT id, name, surname, store_id, termination_date AS contract_end_date FROM users
+           WHERE company_id = ANY($1) AND status = 'active' AND termination_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+           ORDER BY termination_date LIMIT 10`,
           [allowedCompanyIds]
         ),
         query(
@@ -345,10 +527,10 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         profile,
         nextShift: nextShiftRow ?? null,
         leaveBalance: leaveBalances.map((b) => ({
-          leaveType:  b.leave_type,
-          totalDays:  parseFloat(b.total_days),
-          usedDays:   parseFloat(b.used_days),
-          remaining:  parseFloat(b.total_days) - parseFloat(b.used_days),
+          leaveType: b.leave_type,
+          totalDays: parseFloat(b.total_days),
+          usedDays: parseFloat(b.used_days),
+          remaining: parseFloat(b.total_days) - parseFloat(b.used_days),
         })),
         isBirthday: birthdayRow?.is_birthday ?? false,
         showLeaveBalance: companySettings?.show_leave_balance_to_employee ?? true,
