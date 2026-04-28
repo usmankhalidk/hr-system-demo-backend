@@ -1,0 +1,14 @@
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_week, resolved: this_week
+timeRange received: undefined, time_range received: three_months, resolved: three_months
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: this_week, resolved: this_week
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: three_months, resolved: three_months
+timeRange received: undefined, time_range received: this_week, resolved: this_week
+timeRange received: undefined, time_range received: this_month, resolved: this_month
+timeRange received: undefined, time_range received: three_months, resolved: three_months
