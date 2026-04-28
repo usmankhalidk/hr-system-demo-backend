@@ -1,3 +1,4 @@
+// Leave Controller - Refined with escalation fixes
 import { Request, Response } from 'express';
 import * as XLSX from 'xlsx';
 import { query, queryOne, pool } from '../../config/database';
@@ -57,6 +58,46 @@ function yearFromIsoDate(isoDate: string): number {
  * store_terminal is a kiosk-only role; system_admin has no company binding.
  */
 const LEAVE_BLOCKED_ROLES = new Set(['store_terminal', 'system_admin']);
+
+/**
+ * Role hierarchy for visibility and approval logic.
+ * Higher value means higher in the hierarchy.
+ */
+const ROLE_RANKS: Record<string, number> = {
+  admin: 100,
+  hr: 80,
+  area_manager: 60,
+  store_manager: 40,
+  employee: 20,
+};
+
+function getRoleRank(role?: string): number {
+  if (!role) return 0;
+  const r = role.toLowerCase().replace(/\s+/g, '_');
+  return ROLE_RANKS[r] ?? 0;
+}
+
+const RANK_SQL_CASE = `
+  CASE LOWER(REPLACE($ROLE_VAR::text, ' ', '_'))
+    WHEN 'admin' THEN 100
+    WHEN 'hr' THEN 80
+    WHEN 'area_manager' THEN 60
+    WHEN 'store_manager' THEN 40
+    WHEN 'employee' THEN 20
+    ELSE 0
+  END
+`;
+
+const TARGET_RANK_SQL = `
+  CASE LOWER(REPLACE(u.role::text, ' ', '_'))
+    WHEN 'admin' THEN 100
+    WHEN 'hr' THEN 80
+    WHEN 'area_manager' THEN 60
+    WHEN 'store_manager' THEN 40
+    WHEN 'employee' THEN 20
+    ELSE 0
+  END
+`;
 
 // ---------------------------------------------------------------------------
 // Pure utilities
@@ -326,26 +367,31 @@ function buildTransitions(chain: string[]): Record<string, { nextStatus: string;
 }
 
 /**
- * Helper to check if a specific user is on leave (Approved or Pending) during the requested dates
- * OR is currently away TODAY (which means they can't approve immediately).
+ * Helper to check if a specific user is on leave (Approved) during the requested dates
+ * OR is currently away TODAY.
  */
 async function isUserOnLeave(userId: number, startDate: string, endDate: string) {
-  const today = todayInDefaultLeaveTimezone();
   const leave = await queryOne(
     `SELECT id FROM leave_requests 
      WHERE user_id = $1 
-       AND status IN ('pending', 'store manager approved', 'area manager approved', 'HR approved', 'approved')
+       AND status NOT IN ('rejected', 'cancelled', 'store manager rejected', 'area manager rejected', 'HR rejected')
        AND (
-         (start_date <= $2 AND end_date >= $3) OR -- Overlaps with requested leave dates
-         (start_date <= $4 AND end_date >= $4)    -- Overlaps with TODAY
-       )`,
-    [userId, endDate, startDate, today]
+         (start_date <= $2::date AND end_date >= $3::date) OR -- Overlaps with requested leave dates
+         (start_date <= CURRENT_DATE AND end_date >= CURRENT_DATE)    -- Overlaps with TODAY
+       )
+     LIMIT 1`,
+    [userId, endDate, startDate]
   );
   return !!leave;
 }
 
+
+
+
 /**
- * Recursively find the next active approver in the chain, skipping those on leave.
+ * Recursively find the next active approver in the chain, skipping those on leave or unavailable.
+
+ * Updated to correctly handle skips when starting from a mid-chain role and to check multiple potential users.
  */
 async function findNextActiveApprover(
   companyId: number,
@@ -356,46 +402,74 @@ async function findNextActiveApprover(
   startRole: string | null,
   chain?: string[]
 ): Promise<{ approver: string | null, skipped: string[] }> {
-  const skipped: string[] = [];
   const approvalChain = chain ?? await getApprovalChain(companyId);
+  const skipped: string[] = [];
+  let startIndex = 0;
+  if (startRole) {
+    startIndex = approvalChain.indexOf(startRole);
+    if (startIndex === -1) {
+      const requestedIndexInDefault = DEFAULT_APPROVAL_CHAIN.indexOf(startRole);
+      const nextEnabledRole = approvalChain.find(r => DEFAULT_APPROVAL_CHAIN.indexOf(r) > requestedIndexInDefault);
+      if (nextEnabledRole) {
+        const result = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, nextEnabledRole, approvalChain);
+        return { ...result, skipped: [startRole, ...result.skipped] };
+      }
+      return { approver: 'admin', skipped: [startRole] }; 
+    }
+  }
 
-  const startIndex = startRole ? approvalChain.indexOf(startRole) : 0;
-  if (startIndex === -1) return { approver: 'hr', skipped }; // Fallback to HR
 
   for (let i = startIndex; i < approvalChain.length; i++) {
     const role = approvalChain[i];
 
-    // 1. Get potential approver ID
-    let potentialApprover: { id: number } | null = null;
+    // 1. Get ALL potential active users for this role
+    let users: { id: number }[] = [];
     if (role === 'store_manager' && storeId) {
-      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'store_manager' AND store_id = $1 AND company_id = $2 AND status = 'active' LIMIT 1`, [storeId, companyId]);
+      users = await query(`SELECT id FROM users WHERE role = 'store_manager' AND store_id = $1 AND company_id = $2 AND status = 'active'`, [storeId, companyId]);
     } else if (role === 'area_manager') {
-      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'area_manager' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+      // Priority: direct supervisor of the submitter
+      const supervisor = await queryOne<{ id: number }>(
+        `SELECT id FROM users WHERE id = (SELECT supervisor_id FROM users WHERE id = $1) AND role = 'area_manager' AND status = 'active' LIMIT 1`,
+        [submitterId]
+      );
+      if (supervisor) {
+        users = [supervisor];
+      } else {
+        users = await query(`SELECT id FROM users WHERE role = 'area_manager' AND company_id = $1 AND status = 'active'`, [companyId]);
+      }
     } else if (role === 'hr') {
-      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'hr' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+      users = await query(`SELECT id FROM users WHERE role = 'hr' AND company_id = $1 AND status = 'active'`, [companyId]);
     } else if (role === 'admin') {
-      potentialApprover = await queryOne(`SELECT id FROM users WHERE role = 'admin' AND company_id = $1 AND status = 'active' LIMIT 1`, [companyId]);
+      users = await query(`SELECT id FROM users WHERE role = 'admin' AND company_id = $1 AND status = 'active'`, [companyId]);
     }
 
-    if (!potentialApprover) {
+    // 2. Filter out users who are either the submitter or on leave
+    const availableUsers: { id: number }[] = [];
+    for (const u of users) {
+      const onLeave = await isUserOnLeave(u.id, startDate, endDate);
+      if (u.id !== submitterId && !onLeave) {
+        availableUsers.push(u);
+      }
+    }
+
+    // 3. If no available users found for this role, skip it and continue to the next
+    if (availableUsers.length === 0) {
       skipped.push(role);
       continue;
     }
 
-    // 2. Check if they are the submitter or on leave
-    if (potentialApprover.id === submitterId || await isUserOnLeave(potentialApprover.id, startDate, endDate)) {
-      skipped.push(role);
-      continue;
-    }
-
+    // 4. We found at least one available user, this is the current approver stage
     return { approver: role, skipped };
   }
 
   return { approver: null, skipped };
 }
 
+
+
 /**
  * Determine the first approver role for a given company/store combination.
+ * Enforces role-based hierarchy skips.
  */
 async function determineFirstApprover(
   companyId: number,
@@ -405,28 +479,43 @@ async function determineFirstApprover(
   submitterId: number,
   submitterRole: string
 ): Promise<{ approver: string, skipped: string[] }> {
-  const lowerRole = submitterRole?.toLowerCase();
+  const role = submitterRole?.toLowerCase() || '';
   const chain = await getApprovalChain(companyId);
+  
+  const disabledRoles = DEFAULT_APPROVAL_CHAIN.filter(r => !chain.includes(r));
+  const hierarchySkips: string[] = [];
+  let minRole: string | null = null;
 
-  if (lowerRole === 'admin') {
+  // Use includes to be more flexible with role strings (handles underscores, spaces, etc.)
+  if (role.includes('admin')) {
     return { approver: 'admin', skipped: [] };
+  } else if (role.includes('hr')) {
+    hierarchySkips.push('store_manager', 'area_manager', 'hr');
+    minRole = 'admin';
+  } else if (role.includes('area_manager') || role.includes('area manager')) {
+    hierarchySkips.push('store_manager', 'area_manager');
+    minRole = 'hr';
+  } else if (role.includes('store_manager') || role.includes('store manager')) {
+    hierarchySkips.push('store_manager');
+    minRole = 'area_manager';
+  } else {
+    // Regular employees start at store_manager
+    minRole = 'store_manager';
   }
 
-  // Area Managers skip directly to HR as first approver
-  if (lowerRole === 'area_manager') {
-    const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, 'hr', chain);
-    return { approver: approver || 'admin', skipped };
-  }
+  const { approver, skipped: unavailabilitySkips } = await findNextActiveApprover(
+    companyId, storeId, startDate, endDate, submitterId, minRole, chain
+  );
 
-  // HR skip directly to Admin
-  if (lowerRole === 'hr') {
-    const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, 'admin', chain);
-    return { approver: approver || 'admin', skipped };
-  }
+  const allSkipped = Array.from(new Set([
+    ...disabledRoles,
+    ...hierarchySkips,
+    ...unavailabilitySkips
+  ]));
 
-  const { approver, skipped } = await findNextActiveApprover(companyId, storeId, startDate, endDate, submitterId, null, chain);
-  return { approver: approver || 'admin', skipped };
+  return { approver: approver || 'admin', skipped: allSkipped };
 }
+
 
 // ---------------------------------------------------------------------------
 // POST /api/leave — submit a leave request
@@ -547,6 +636,9 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 
   let firstApprover = 'hr';
   let skippedApprovers: string[] = [];
+  let status = 'pending';
+  let nextApproverRole: string | null = null;
+  const finalRole = role.toLowerCase().replace(/\s+/g, '_');
 
   const { approver, skipped } = await determineFirstApprover(
     companyId, storeId ?? null,
@@ -555,13 +647,25 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
   );
   firstApprover = approver;
   skippedApprovers = skipped;
+  nextApproverRole = firstApprover;
+
+  // Rule 2a: Admin-created requests are auto-approved
+  if (finalRole === 'admin') {
+    status = 'approved';
+    nextApproverRole = null;
+  } 
+  // Rule 2b: HR-created requests are auto-approved at HR level, move to Admin
+  else if (finalRole === 'hr') {
+    status = 'HR approved';
+    nextApproverRole = 'admin';
+  }
 
   const leaveRequest = await queryOne(
     `INSERT INTO leave_requests
       (company_id, user_id, store_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time,
        status, current_approver_role, notes,
        medical_certificate_name, medical_certificate_data, medical_certificate_type, skipped_approvers)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                leave_duration_type, short_start_time, short_end_time,
                status, current_approver_role, notes, medical_certificate_name, 
@@ -576,7 +680,8 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
       leaveDurationType,
       shortStartTime,
       shortEndTime,
-      firstApprover,
+      status,
+      nextApproverRole,
       notes ?? null,
       certificateName,
       certificateData,
@@ -584,6 +689,15 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
       JSON.stringify(skippedApprovers),
     ],
   );
+
+  // If auto-approved (Admin or HR), record the approval action
+  if (finalRole === 'admin' || finalRole === 'hr') {
+    await query(
+      `INSERT INTO leave_approvals (leave_request_id, approver_id, approver_role, action, notes)
+       VALUES ($1,$2,$3,'approved',$4)`,
+      [leaveRequest.id, userId, role, 'Auto-approved on creation']
+    );
+  }
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
 });
@@ -609,16 +723,23 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   const limit = Math.min(100, Math.max(1, parseInt(limitStr ?? '20', 10) || 20));
   const offset = (page - 1) * limit;
 
+  const viewerRank = getRoleRank(role);
+  const isViewerAdmin = role.toLowerCase().replace(/\s+/g, '_') === 'admin';
+
   let scopeWhere: string;
   let scopeParams: any[];
 
+  const buildHierarchyFilter = (uIdIdx: number) => {
+    return `(lr.user_id = $${uIdIdx} OR ${isViewerAdmin} OR (${viewerRank} > ${TARGET_RANK_SQL}))`;
+  };
+
   switch (role) {
     case 'employee':
-      scopeWhere = 'lr.company_id = ANY($1) AND lr.user_id = $2';
+      scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2`;
       scopeParams = [allowedCompanyIds, userId];
       break;
     case 'store_manager':
-      scopeWhere = '(lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3';
+      scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
       scopeParams = [allowedCompanyIds, storeId, userId];
       break;
     case 'area_manager': {
@@ -630,25 +751,28 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
       );
       const storeIds = amStores.map((s) => s.store_id);
       if (storeIds.length === 0) {
-        // If they manage NO stores, they should still see their OWN requests
-        scopeWhere = 'lr.company_id = ANY($1) AND lr.user_id = $2';
+        scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2 AND ${buildHierarchyFilter(2)}`;
         scopeParams = [allowedCompanyIds, userId];
       } else {
-        scopeWhere = `(lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3`;
+        scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
         scopeParams = [allowedCompanyIds, storeIds, userId];
       }
       break;
     }
     case 'admin':
+      scopeWhere = `lr.company_id = ANY($1)`;
+      scopeParams = [allowedCompanyIds];
+      break;
     case 'hr':
     default:
-      scopeWhere = 'lr.company_id = ANY($1)';
-      scopeParams = [allowedCompanyIds];
-      if (user_id) {
-        scopeWhere += ` AND lr.user_id = $${scopeParams.length + 1}`;
-        scopeParams.push(parseInt(user_id, 10));
-      }
+      scopeWhere = `lr.company_id = ANY($1) AND ${buildHierarchyFilter(2)}`;
+      scopeParams = [allowedCompanyIds, userId];
       break;
+  }
+
+  if (user_id) {
+    scopeWhere += ` AND lr.user_id = $${scopeParams.length + 1}`;
+    scopeParams.push(parseInt(user_id, 10));
   }
 
   let extraWhere = '';
@@ -694,8 +818,16 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
        lr.last_action_at,
        lr.medical_certificate_name,
        lr.skipped_approvers, lr.escalated, lr.is_emergency_override,
+       (
+         SELECT array_agg(DISTINCT approver_role)
+         FROM leave_approvals
+         WHERE leave_request_id = lr.id AND action = 'approved'
+       ) AS approved_by_roles,
        la.action AS latest_action,
        la.created_at AS latest_action_at,
+       la.approver_name AS latest_action_by_name,
+       la.approver_surname AS latest_action_by_surname,
+       la.approver_role AS latest_action_by_role,
        u.name AS user_name, u.surname AS user_surname,
        u.role AS user_role,
        u.avatar_filename AS user_avatar_filename,
@@ -707,8 +839,9 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
      LEFT JOIN stores s ON s.id = lr.store_id
      LEFT JOIN companies c ON c.id = lr.company_id
      LEFT JOIN LATERAL (
-       SELECT action, created_at
+       SELECT la0.action, la0.created_at, u2.name as approver_name, u2.surname as approver_surname, u2.role as approver_role
        FROM leave_approvals la0
+       LEFT JOIN users u2 ON u2.id = la0.approver_id
        WHERE la0.leave_request_id = lr.id
          AND la0.action IN ('approved', 'rejected')
        ORDER BY la0.created_at DESC
@@ -787,8 +920,16 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
        lr.notes, lr.created_at,
        lr.medical_certificate_name,
        lr.last_action_at,
+       (
+         SELECT array_agg(DISTINCT approver_role)
+         FROM leave_approvals
+         WHERE leave_request_id = lr.id AND action = 'approved'
+       ) AS approved_by_roles,
        la.action AS latest_action,
        la.created_at AS latest_action_at,
+       la.approver_name AS latest_action_by_name,
+       la.approver_surname AS latest_action_by_surname,
+       la.approver_role AS latest_action_by_role,
        u.name AS user_name, u.surname AS user_surname,
        u.role AS user_role,
        u.avatar_filename AS user_avatar_filename,
@@ -800,8 +941,9 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
      LEFT JOIN stores s ON s.id = lr.store_id
      LEFT JOIN companies c ON c.id = lr.company_id
      LEFT JOIN LATERAL (
-       SELECT action, created_at
+       SELECT la0.action, la0.created_at, u2.name as approver_name, u2.surname as approver_surname, u2.role as approver_role
        FROM leave_approvals la0
+       LEFT JOIN users u2 ON u2.id = la0.approver_id
        WHERE la0.leave_request_id = lr.id
          AND la0.action IN ('approved', 'rejected')
        ORDER BY la0.created_at DESC
