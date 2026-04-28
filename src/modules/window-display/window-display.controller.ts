@@ -10,7 +10,9 @@ interface WindowDisplayActivity {
   company_id: number;
   store_id: number;
   store_name?: string | null;
-  date: string;
+  date: string; // Deprecated: use start_date
+  start_date: string;
+  end_date: string;
   year_month: string;
   flagged_by: number;
   activity_type: WindowDisplayActivityType;
@@ -63,6 +65,8 @@ const WINDOW_DISPLAY_SELECT = `
     wda.store_id,
     s.name AS store_name,
     TO_CHAR(wda.date, 'YYYY-MM-DD') AS date,
+    TO_CHAR(wda.start_date, 'YYYY-MM-DD') AS start_date,
+    TO_CHAR(wda.end_date, 'YYYY-MM-DD') AS end_date,
     wda.year_month,
     wda.flagged_by,
     wda.activity_type,
@@ -166,7 +170,9 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
   const companyId = scopedCompany.value;
   const {
     store_id,
-    date,
+    date, // Deprecated: use start_date/end_date
+    start_date,
+    end_date,
     activity_type,
     activity_icon,
     custom_activity_name,
@@ -174,7 +180,9 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     notes,
   } = req.body as {
     store_id: number;
-    date: string;
+    date?: string; // Deprecated
+    start_date?: string;
+    end_date?: string;
     activity_type?: WindowDisplayActivityType;
     activity_icon?: string | null;
     custom_activity_name?: string | null;
@@ -182,7 +190,19 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     notes?: string | null;
   };
 
-  const yearMonth = date.slice(0, 7);
+  // Support both old (date) and new (start_date/end_date) formats
+  const activityStartDate = start_date || date;
+  const activityEndDate = end_date || date;
+
+  if (!activityStartDate || !activityEndDate) {
+    return badRequest(res, 'start_date and end_date are required');
+  }
+
+  if (activityEndDate < activityStartDate) {
+    return badRequest(res, 'end_date must be greater than or equal to start_date');
+  }
+
+  const yearMonth = activityStartDate.slice(0, 7);
   const normalizedNotes = normalizeNotes(notes);
   const nextActivityType = activity_type ?? 'window_display';
   const normalizedActivityIcon = normalizeActivityIcon(activity_icon);
@@ -212,13 +232,15 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
   try {
     const inserted = await queryOne<{ id: number }>(
       `INSERT INTO window_display_activities
-         (company_id, store_id, date, year_month, flagged_by, activity_type, activity_icon, custom_activity_name, duration_hours, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+         (company_id, store_id, date, start_date, end_date, year_month, flagged_by, activity_type, activity_icon, custom_activity_name, duration_hours, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
         targetCompanyId,
         store_id,
-        date,
+        activityStartDate, // Keep date for backward compatibility
+        activityStartDate,
+        activityEndDate,
         yearMonth,
         userId,
         nextActivityType,
@@ -233,7 +255,7 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     return created(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'A window display activity is already set for this store and month. Use PUT to update it.', 'WINDOW_DISPLAY_ALREADY_SET');
+      return conflict(res, 'A window display activity with overlapping dates already exists for this store. Please adjust the date range.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }
@@ -246,14 +268,18 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
   const companyId = scopedCompany.value;
   const id = Number(req.params.id);
   const {
-    date,
+    date, // Deprecated
+    start_date,
+    end_date,
     activity_type,
     activity_icon,
     custom_activity_name,
     duration_hours,
     notes,
   } = req.body as {
-    date?: string;
+    date?: string; // Deprecated
+    start_date?: string;
+    end_date?: string;
     activity_type?: WindowDisplayActivityType;
     activity_icon?: string | null;
     custom_activity_name?: string | null;
@@ -266,6 +292,8 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
       `SELECT
          id,
          TO_CHAR(date, 'YYYY-MM-DD') AS date,
+         TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+         TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date,
          year_month,
          activity_type,
          activity_icon,
@@ -285,6 +313,8 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
       `SELECT
          id,
          TO_CHAR(date, 'YYYY-MM-DD') AS date,
+         TO_CHAR(start_date, 'YYYY-MM-DD') AS start_date,
+         TO_CHAR(end_date, 'YYYY-MM-DD') AS end_date,
          year_month,
          activity_type,
          activity_icon,
@@ -302,8 +332,15 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
     );
   if (!existing) return notFound(res, 'Window display activity not found');
 
-  const nextDate = date ?? existing.date;
-  const nextYearMonth = nextDate.slice(0, 7);
+  // Support both old (date) and new (start_date/end_date) formats
+  const nextStartDate = start_date || date || existing.start_date;
+  const nextEndDate = end_date || date || existing.end_date;
+
+  if (nextEndDate < nextStartDate) {
+    return badRequest(res, 'end_date must be greater than or equal to start_date');
+  }
+
+  const nextYearMonth = nextStartDate.slice(0, 7);
   const nextActivityType = activity_type ?? existing.activity_type;
   const nextActivityIcon = activity_icon !== undefined ? normalizeActivityIcon(activity_icon) : normalizeActivityIcon(existing.activity_icon);
   const nextCustomActivityNameCandidate = custom_activity_name !== undefined
@@ -327,22 +364,24 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
     await queryOne<WindowDisplayActivity>(
       `UPDATE window_display_activities
        SET date = $1,
-           year_month = $2,
-           activity_type = $3,
-           activity_icon = $4,
-           custom_activity_name = $5,
-           duration_hours = $6,
-           notes = $7,
+           start_date = $2,
+           end_date = $3,
+           year_month = $4,
+           activity_type = $5,
+           activity_icon = $6,
+           custom_activity_name = $7,
+           duration_hours = $8,
+           notes = $9,
            updated_at = NOW()
-         WHERE id = $8`,
-        [nextDate, nextYearMonth, nextActivityType, nextActivityIcon, nextCustomActivityName, nextDurationHours, nextNotes, id],
+         WHERE id = $10`,
+        [nextStartDate, nextStartDate, nextEndDate, nextYearMonth, nextActivityType, nextActivityIcon, nextCustomActivityName, nextDurationHours, nextNotes, id],
     );
 
     const row = await findWindowDisplayById(companyId, id);
     return ok(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'Another window display activity already exists for that month. Remove it first.', 'WINDOW_DISPLAY_ALREADY_SET');
+      return conflict(res, 'Another window display activity with overlapping dates already exists. Please adjust the date range.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }
