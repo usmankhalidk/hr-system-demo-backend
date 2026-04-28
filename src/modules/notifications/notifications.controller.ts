@@ -7,6 +7,7 @@ import {
   markAsRead,
   markAllAsRead,
   getUnreadCount as getUnreadCountService,
+  getRecentNotificationRecipients,
 } from './notifications.service';
 import {
   getNotificationSettings,
@@ -27,9 +28,9 @@ import {
  */
 export const listNotifications = asyncHandler(
   async (req: Request, res: Response) => {
-    const { userId, companyId } = req.user!;
+    const { userId, companyId, role, is_super_admin } = req.user!;
 
-    if (!companyId) {
+    if (!companyId && is_super_admin !== true) {
       forbidden(res, 'Nessuna azienda associata a questo account');
       return;
     }
@@ -39,16 +40,32 @@ export const listNotifications = asyncHandler(
 
     const rawLimit  = parseInt(String(req.query.limit  ?? '50'), 10);
     const rawOffset = parseInt(String(req.query.offset ?? '0'),  10);
+    const scopeParam = String(req.query.scope ?? 'mine').toLowerCase();
+
+    if (scopeParam !== 'mine' && scopeParam !== 'company') {
+      badRequest(res, 'Invalid scope (allowed: mine, company)', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (scopeParam === 'company') {
+      const canViewCompanyFeed = role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager' || is_super_admin === true;
+      if (!canViewCompanyFeed) {
+        forbidden(res, 'You are not authorised to view company notifications', 'FORBIDDEN');
+        return;
+      }
+    }
 
     const limit  = Number.isNaN(rawLimit)  ? 50 : Math.min(Math.max(rawLimit,  1), 100);
     const offset = Number.isNaN(rawOffset) ? 0  : Math.max(rawOffset, 0);
 
     const result = await getNotifications({
       userId,
-      companyId,
+      companyId: companyId ?? 0,
       unreadOnly,
       limit,
       offset,
+      scope: scopeParam === 'company' ? 'company' : 'mine',
+      isSuperAdmin: is_super_admin === true,
     });
 
     ok(res, {
@@ -57,6 +74,7 @@ export const listNotifications = asyncHandler(
       unreadCount:   result.unreadCount,
       limit,
       offset,
+      scope: scopeParam,
     });
   },
 );
@@ -161,16 +179,32 @@ export const getUnreadCount = asyncHandler(
  */
 export const listSettings = asyncHandler(
   async (req: Request, res: Response) => {
-    const { companyId, is_super_admin } = req.user!;
+    const { companyId, is_super_admin, role } = req.user!;
 
     if (!companyId && is_super_admin !== true) {
       forbidden(res, 'No company associated with this account');
       return;
     }
 
-    // Super admin with no company scope returns empty — they should target a
-    // specific company via a different mechanism (out of scope here)
-    const effectiveCompanyId = companyId ?? 0;
+    // Check permissions for notifications module - only admin, hr, and store_manager can access
+    if (is_super_admin !== true) {
+      const hasPermission = role === 'admin' || role === 'hr' || role === 'store_manager';
+      if (!hasPermission) {
+        forbidden(res, 'You do not have permission to access notification settings', 'FORBIDDEN');
+        return;
+      }
+    }
+
+    // Allow super admin to specify target company via query parameter
+    let effectiveCompanyId = companyId ?? 0;
+    
+    if (is_super_admin === true && req.query.company_id) {
+      const targetCompanyId = parseInt(String(req.query.company_id), 10);
+      if (!Number.isNaN(targetCompanyId) && targetCompanyId > 0) {
+        effectiveCompanyId = targetCompanyId;
+      }
+    }
+    
     if (effectiveCompanyId === 0) {
       ok(res, { settings: [] });
       return;
@@ -189,16 +223,19 @@ export const listSettings = asyncHandler(
  * Creates or updates a notification setting for an event key.
  * Only admin role (or super admin) is permitted to call this endpoint.
  *
- * Body: { enabled: boolean, roles?: string[] }
+ * Body: { enabled?: boolean, roles?: string[] }
  */
 export const updateSetting = asyncHandler(
   async (req: Request, res: Response) => {
     const { companyId, role, is_super_admin } = req.user!;
 
-    // Enforce admin-only access (super admin bypasses this check)
-    if (is_super_admin !== true && role !== 'admin') {
-      forbidden(res, 'Only administrators can change notification settings', 'FORBIDDEN');
-      return;
+    // Check permissions for notifications module - only admin can modify settings
+    if (is_super_admin !== true) {
+      const hasPermission = role === 'admin';
+      if (!hasPermission) {
+        forbidden(res, 'Only administrators can change notification settings', 'FORBIDDEN');
+        return;
+      }
     }
 
     if (!companyId && is_super_admin !== true) {
@@ -212,15 +249,27 @@ export const updateSetting = asyncHandler(
       return;
     }
 
-    const { enabled, roles } = req.body as {
-      enabled: unknown;
+    const { enabled, roles, priority, locale } = req.body as {
+      enabled?: unknown;
       roles?: unknown;
+      priority?: unknown;
+      locale?: unknown;
     };
 
-    if (typeof enabled !== 'boolean') {
+    // At least one field must be provided
+    if (enabled === undefined && roles === undefined && priority === undefined && locale === undefined) {
       badRequest(
         res,
-        'The "enabled" field is required and must be a boolean',
+        'At least one of "enabled", "roles", "priority", or "locale" must be provided',
+        'VALIDATION_ERROR',
+      );
+      return;
+    }
+
+    if (enabled !== undefined && typeof enabled !== 'boolean') {
+      badRequest(
+        res,
+        'The "enabled" field must be a boolean',
         'VALIDATION_ERROR',
       );
       return;
@@ -236,20 +285,112 @@ export const updateSetting = asyncHandler(
           'The "roles" field must be an array of strings',
           'VALIDATION_ERROR',
         );
-        return;
+      return;
       }
     }
 
-    const effectiveCompanyId = companyId ?? 0;
+    if (priority !== undefined && typeof priority !== 'string') {
+      badRequest(
+        res,
+        'The "priority" field must be a string',
+        'VALIDATION_ERROR',
+      );
+      return;
+    }
+
+    if (locale !== undefined && typeof locale !== 'string') {
+      badRequest(
+        res,
+        'The "locale" field must be a string',
+        'VALIDATION_ERROR',
+      );
+      return;
+    }
+
+    // Allow super admin to specify target company via query parameter
+    let effectiveCompanyId = companyId ?? 0;
+    
+    if (is_super_admin === true && req.query.company_id) {
+      const targetCompanyId = parseInt(String(req.query.company_id), 10);
+      if (!Number.isNaN(targetCompanyId) && targetCompanyId > 0) {
+        effectiveCompanyId = targetCompanyId;
+      }
+    }
+
+    // Get current setting or use defaults
+    const current = await queryOne<{ enabled: boolean; roles: string[]; priority?: string; locale?: string }>(
+      `SELECT enabled, roles, priority, locale FROM notification_settings 
+       WHERE company_id = $1 AND event_key = $2 LIMIT 1`,
+      [effectiveCompanyId, eventKey.trim()],
+    );
+
+    const finalEnabled = enabled !== undefined ? enabled : (current?.enabled ?? true);
+    const finalRoles = roles !== undefined ? (roles as string[]) : (current?.roles ?? ['admin', 'hr']);
+    const finalPriority = priority !== undefined ? (priority as string) : current?.priority;
+    const finalLocale = locale !== undefined ? (locale as string) : current?.locale;
 
     const setting = await upsertNotificationSetting(
       effectiveCompanyId,
       eventKey.trim(),
-      enabled,
-      Array.isArray(roles) ? (roles as string[]) : undefined,
+      finalEnabled,
+      finalRoles,
+      finalPriority,
+      finalLocale,
     );
 
     ok(res, { setting }, 'Notification setting updated');
+  },
+);
+
+// ---------------------------------------------------------------------------
+// GET /api/notifications/settings/:eventKey/recipients (Admin/HR only)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns recent users (last 24 hours) who received notifications for a specific event type.
+ * Used to display avatars in the settings modal.
+ */
+export const getRecentRecipients = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { companyId, is_super_admin, role } = req.user!;
+
+    if (!companyId && is_super_admin !== true) {
+      forbidden(res, 'No company associated with this account');
+      return;
+    }
+
+    // Check permissions for notifications module - only admin, hr, and store_manager can access
+    if (is_super_admin !== true) {
+      const hasPermission = role === 'admin' || role === 'hr' || role === 'store_manager';
+      if (!hasPermission) {
+        forbidden(res, 'You do not have permission to access notification recipients', 'FORBIDDEN');
+        return;
+      }
+    }
+
+    const { eventKey } = req.params;
+    if (!eventKey || typeof eventKey !== 'string' || eventKey.trim() === '') {
+      badRequest(res, 'Invalid event key', 'INVALID_EVENT_KEY');
+      return;
+    }
+
+    // Allow super admin to specify target company via query parameter
+    let effectiveCompanyId = companyId ?? 0;
+    
+    if (is_super_admin === true && req.query.company_id) {
+      const targetCompanyId = parseInt(String(req.query.company_id), 10);
+      if (!Number.isNaN(targetCompanyId) && targetCompanyId > 0) {
+        effectiveCompanyId = targetCompanyId;
+      }
+    }
+
+    const recipients = await getRecentNotificationRecipients(
+      effectiveCompanyId, 
+      eventKey.trim(),
+      is_super_admin === true
+    );
+
+    ok(res, { recipients });
   },
 );
 

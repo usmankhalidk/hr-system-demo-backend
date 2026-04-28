@@ -99,6 +99,80 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
     it: 'Hai {{count}} richieste di permesso in attesa da più di 2 giorni.',
   },
 
+  // ── leave events ──────────────────────────────────────────────────────────
+  'notifications.leave_submitted.title': {
+    en: 'New leave request',
+    it: 'Nuova richiesta di permesso',
+  },
+  'notifications.leave_submitted.message': {
+    en: '{{name}} submitted a leave request ({{start}} - {{end}}).',
+    it: '{{name}} ha inviato una richiesta di permesso ({{start}} - {{end}}).',
+  },
+  'notifications.leave_approved.title': {
+    en: 'Leave request approved',
+    it: 'Richiesta di permesso approvata',
+  },
+  'notifications.leave_approved.message': {
+    en: 'Your leave request for {{start}} - {{end}} has been approved.',
+    it: 'La tua richiesta di permesso per il periodo {{start}} - {{end}} e stata approvata.',
+  },
+  'notifications.leave_rejected.title': {
+    en: 'Leave request rejected',
+    it: 'Richiesta di permesso rifiutata',
+  },
+  'notifications.leave_rejected.message': {
+    en: 'Your leave request for {{start}} - {{end}} has been rejected.',
+    it: 'La tua richiesta di permesso per il periodo {{start}} - {{end}} e stata rifiutata.',
+  },
+
+  // ── shift events ──────────────────────────────────────────────────────────
+  'notifications.shift_assigned.title': {
+    en: 'Shift assigned',
+    it: 'Turno assegnato',
+  },
+  'notifications.shift_assigned.message': {
+    en: 'New shift on {{date}} ({{start}}-{{end}}) at {{store}}.',
+    it: 'Nuovo turno il {{date}} ({{start}}-{{end}}) in {{store}}.',
+  },
+  'notifications.shift_changed.title': {
+    en: 'Shift updated',
+    it: 'Turno modificato',
+  },
+  'notifications.shift_changed.message': {
+    en: 'Your shift on {{date}} is now {{start}}-{{end}} at {{store}}.',
+    it: 'Il tuo turno del {{date}} ora e {{start}}-{{end}} in {{store}}.',
+  },
+
+  // ── attendance anomalies ─────────────────────────────────────────────────
+  'notifications.attendance_anomaly.title': {
+    en: 'Attendance anomaly detected',
+    it: 'Anomalia presenze rilevata',
+  },
+  'notifications.attendance_anomaly.message': {
+    en: '{{kind}} on {{date}} at {{store}}.',
+    it: '{{kind}} il {{date}} in {{store}}.',
+  },
+  'notifications.attendance_anomaly_kind_late_arrival': {
+    en: 'Late arrival',
+    it: 'Ritardo in ingresso',
+  },
+  'notifications.attendance_anomaly_kind_no_show': {
+    en: 'No show',
+    it: 'Assenza al turno',
+  },
+  'notifications.attendance_anomaly_kind_long_break': {
+    en: 'Long break',
+    it: 'Pausa troppo lunga',
+  },
+  'notifications.attendance_anomaly_kind_early_exit': {
+    en: 'Early exit',
+    it: 'Uscita anticipata',
+  },
+  'notifications.attendance_anomaly_kind_overtime': {
+    en: 'Overtime',
+    it: 'Straordinario',
+  },
+
   // ── ats.bottleneck ────────────────────────────────────────────────────────
   'notifications.ats_bottleneck.title': {
     en: 'At-risk position: {{jobTitle}}',
@@ -149,6 +223,36 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
   'notifications.ats_interview_invite.message': {
     en: 'You have been assigned as an interviewer for {{date}}.',
     it: 'Sei stato assegnato come intervistatore per il {{date}}.',
+  },
+
+  // ── ats.outcome ─────────────────────────────────────────────────────────
+  'notifications.ats_outcome.title': {
+    en: 'Candidate status updated',
+    it: 'Stato candidato aggiornato',
+  },
+  'notifications.ats_outcome.message': {
+    en: '{{name}} moved from {{from}} to {{to}}.',
+    it: '{{name}} e passato da {{from}} a {{to}}.',
+  },
+  'notifications.ats_status_received': {
+    en: 'Received',
+    it: 'Ricevuto',
+  },
+  'notifications.ats_status_review': {
+    en: 'In review',
+    it: 'In revisione',
+  },
+  'notifications.ats_status_interview': {
+    en: 'Interview',
+    it: 'Colloquio',
+  },
+  'notifications.ats_status_hired': {
+    en: 'Hired',
+    it: 'Assunto',
+  },
+  'notifications.ats_status_rejected': {
+    en: 'Rejected',
+    it: 'Rifiutato',
   },
 };
 

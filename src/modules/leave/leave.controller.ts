@@ -5,6 +5,8 @@ import { ok, created, notFound, forbidden, badRequest } from '../../utils/respon
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { DEFAULT_SHIFT_TIMEZONE } from '../../utils/shiftTimezone';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -57,6 +59,88 @@ function yearFromIsoDate(isoDate: string): number {
  * store_terminal is a kiosk-only role; system_admin has no company binding.
  */
 const LEAVE_BLOCKED_ROLES = new Set(['store_terminal', 'system_admin']);
+
+async function notifyLeaveSubmittedToApprovers(params: {
+  companyId: number;
+  submitterId: number;
+  approverRole: string;
+  storeId: number | null;
+  startDate: string;
+  endDate: string;
+}): Promise<void> {
+  const submitter = await queryOne<{ name: string | null; surname: string | null }>(
+    `SELECT name, surname FROM users WHERE id = $1 LIMIT 1`,
+    [params.submitterId],
+  );
+  const submitterName = `${submitter?.name ?? ''} ${submitter?.surname ?? ''}`.trim() || 'Employee';
+
+  const recipients = await query<{ id: number; locale: string | null }>(
+    params.approverRole === 'store_manager'
+      ? `SELECT id, locale
+         FROM users
+         WHERE company_id = $1
+           AND role = $2
+           AND status = 'active'
+           AND store_id = $3`
+      : `SELECT id, locale
+         FROM users
+         WHERE company_id = $1
+           AND role = $2
+           AND status = 'active'`,
+    params.approverRole === 'store_manager'
+      ? [params.companyId, params.approverRole, params.storeId]
+      : [params.companyId, params.approverRole],
+  );
+
+  await Promise.all(
+    recipients
+      .filter((recipient) => recipient.id !== params.submitterId)
+      .map((recipient) => {
+        const locale = recipient.locale ?? 'it';
+        return sendNotification({
+          companyId: params.companyId,
+          userId: recipient.id,
+          type: 'leave.submitted',
+          title: t(locale, 'notifications.leave_submitted.title'),
+          message: t(locale, 'notifications.leave_submitted.message', {
+            name: submitterName,
+            start: params.startDate,
+            end: params.endDate,
+          }),
+          priority: 'high',
+          locale,
+        });
+      }),
+  );
+}
+
+async function notifyLeaveOutcomeToRequester(params: {
+  companyId: number;
+  userId: number;
+  type: 'leave.approved' | 'leave.rejected';
+  startDate: string;
+  endDate: string;
+}): Promise<void> {
+  const localeRow = await queryOne<{ locale: string | null }>(
+    `SELECT locale FROM users WHERE id = $1 LIMIT 1`,
+    [params.userId],
+  );
+  const locale = localeRow?.locale ?? 'it';
+  const keyBase = params.type === 'leave.approved' ? 'notifications.leave_approved' : 'notifications.leave_rejected';
+
+  await sendNotification({
+    companyId: params.companyId,
+    userId: params.userId,
+    type: params.type,
+    title: t(locale, `${keyBase}.title`),
+    message: t(locale, `${keyBase}.message`, {
+      start: params.startDate,
+      end: params.endDate,
+    }),
+    priority: params.type === 'leave.rejected' ? 'high' : 'medium',
+    locale,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Pure utilities
@@ -585,6 +669,15 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     ],
   );
 
+  void notifyLeaveSubmittedToApprovers({
+    companyId,
+    submitterId: userId,
+    approverRole: firstApprover,
+    storeId: storeId ?? null,
+    startDate: start_date,
+    endDate: end_date,
+  }).catch(() => undefined);
+
   created(res, leaveRequest, 'Richiesta di permesso inviata');
 });
 
@@ -996,6 +1089,15 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
       }
 
       await client.query('COMMIT');
+
+      void notifyLeaveOutcomeToRequester({
+        companyId: leaveRequest.company_id,
+        userId: leaveRequest.user_id,
+        type: 'leave.approved',
+        startDate: leaveRequest.start_date,
+        endDate: leaveRequest.end_date,
+      }).catch(() => undefined);
+
       ok(res, updated.rows[0], 'Richiesta approvata');
     } catch (err: any) {
       await client.query('ROLLBACK');
@@ -1090,10 +1192,13 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
   const leaveRequest = await queryOne<{
     id: number;
     company_id: number;
+    user_id: number;
+    start_date: string;
+    end_date: string;
     current_approver_role: string;
     status: string;
   }>(
-    `SELECT id, company_id, current_approver_role, status
+    `SELECT id, company_id, user_id, start_date, end_date, current_approver_role, status
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -1146,6 +1251,15 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
     );
 
     await client.query('COMMIT');
+
+    void notifyLeaveOutcomeToRequester({
+      companyId: leaveRequest.company_id,
+      userId: leaveRequest.user_id,
+      type: 'leave.rejected',
+      startDate: leaveRequest.start_date,
+      endDate: leaveRequest.end_date,
+    }).catch(() => undefined);
+
     ok(res, updatedResult.rows[0], 'Richiesta rifiutata');
   } catch (err) {
     await client.query('ROLLBACK');

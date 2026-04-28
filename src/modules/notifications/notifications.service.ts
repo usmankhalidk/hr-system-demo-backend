@@ -25,6 +25,34 @@ export type NotificationEventType =
   | 'onboarding.task_reminder'
   | 'manager.alert';
 
+export type NotificationCategory =
+  | 'employees'
+  | 'shifts'
+  | 'attendance'
+  | 'leave'
+  | 'documents'
+  | 'ats'
+  | 'onboarding'
+  | 'manager';
+
+/**
+ * Derives the notification category from the event type.
+ * Maps event types to their corresponding module/category.
+ */
+function deriveCategory(eventType: NotificationEventType): NotificationCategory {
+  if (eventType.startsWith('employee.')) return 'employees';
+  if (eventType.startsWith('shift.')) return 'shifts';
+  if (eventType.startsWith('attendance.')) return 'attendance';
+  if (eventType.startsWith('leave.')) return 'leave';
+  if (eventType.startsWith('document.')) return 'documents';
+  if (eventType.startsWith('ats.')) return 'ats';
+  if (eventType.startsWith('onboarding.')) return 'onboarding';
+  if (eventType.startsWith('manager.')) return 'manager';
+  
+  // Fallback for unknown types
+  return 'manager';
+}
+
 export interface SendNotificationOptions {
   companyId: number;
   userId: number;
@@ -54,6 +82,13 @@ export interface Notification {
   createdAt: string;
   /** Locale in which title/message were generated, if available */
   locale?: string;
+  /** Category/module this notification belongs to */
+  category?: string;
+  /** Recipient details (used in company-scope feeds) */
+  recipientName?: string | null;
+  recipientSurname?: string | null;
+  recipientRole?: string | null;
+  recipientAvatarFilename?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -68,10 +103,16 @@ interface NotificationRow {
   title: string;
   message: string;
   priority: NotificationPriority;
+  is_enabled?: boolean;
   is_read: boolean;
   read_at: string | null;
   created_at: string;
   locale?: string | null;
+  category?: string | null;
+  recipient_name?: string | null;
+  recipient_surname?: string | null;
+  recipient_role?: string | null;
+  recipient_avatar_filename?: string | null;
 }
 
 interface NotificationSettingRow {
@@ -96,8 +137,13 @@ function toNotification(row: NotificationRow): Notification {
     priority: row.priority,
     isRead: row.is_read,
     readAt: row.read_at,
-  createdAt: row.created_at,
-  locale: row.locale ?? undefined,
+    createdAt: row.created_at,
+    locale: row.locale ?? undefined,
+    category: row.category ?? undefined,
+    recipientName: row.recipient_name ?? undefined,
+    recipientSurname: row.recipient_surname ?? undefined,
+    recipientRole: row.recipient_role ?? undefined,
+    recipientAvatarFilename: row.recipient_avatar_filename ?? undefined,
   };
 }
 
@@ -170,14 +216,17 @@ export async function sendNotification(
       effectiveLocale = localeRow?.locale || 'it';
     }
 
+    // Derive category from event type
+    const category = deriveCategory(type);
+
     // ------------------------------------------------------------------
     // 2. In-app notification — always inserted (unless filtered above)
     // ------------------------------------------------------------------
     await query(
       `INSERT INTO notifications
-         (company_id, user_id, type, title, message, priority, locale)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [companyId, userId, type, title, message, priority, effectiveLocale],
+         (company_id, user_id, type, title, message, priority, is_enabled, locale, category)
+       VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8)`,
+      [companyId, userId, type, title, message, priority, effectiveLocale, category],
     );
 
     // ------------------------------------------------------------------
@@ -255,6 +304,8 @@ export async function getNotifications(options: {
   unreadOnly?: boolean;
   limit?: number;
   offset?: number;
+  scope?: 'mine' | 'company';
+  isSuperAdmin?: boolean;
 }): Promise<{ notifications: Notification[]; total: number; unreadCount: number }> {
   const {
     userId,
@@ -262,35 +313,95 @@ export async function getNotifications(options: {
     unreadOnly = false,
     limit = 50,
     offset = 0,
+    scope = 'mine',
+    isSuperAdmin = false,
   } = options;
 
   const safeLimit  = Math.min(limit, 100);
   const safeOffset = Math.max(offset, 0);
 
-  const unreadFilter = unreadOnly ? 'AND is_read = FALSE' : '';
+  if (scope === 'company') {
+    const unreadFilter = unreadOnly ? 'AND n.is_read = FALSE' : '';
+    const companyFilter = isSuperAdmin ? '' : 'AND n.company_id = $1';
+    const params = isSuperAdmin ? [] : [companyId];
+
+    const countRow = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM notifications n
+       WHERE n.is_enabled = TRUE
+         ${companyFilter}
+         ${unreadFilter}`,
+      params,
+    );
+    const total = parseInt(countRow?.count ?? '0', 10);
+
+    const unreadRow = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) AS count
+       FROM notifications n
+       WHERE n.is_enabled = TRUE
+         ${companyFilter}
+         AND n.is_read = FALSE`,
+      params,
+    );
+    const unreadCount = parseInt(unreadRow?.count ?? '0', 10);
+
+    const rows = await query<NotificationRow>(
+      `SELECT n.id, n.company_id, n.user_id, n.type, n.title, n.message,
+              n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category,
+              u.name AS recipient_name,
+              u.surname AS recipient_surname,
+              u.role::text AS recipient_role,
+              u.avatar_filename AS recipient_avatar_filename
+       FROM notifications n
+       LEFT JOIN users u ON u.id = n.user_id
+       WHERE n.is_enabled = TRUE
+         ${companyFilter}
+         ${unreadFilter}
+       ORDER BY n.created_at DESC
+       LIMIT $${isSuperAdmin ? 1 : 2} OFFSET $${isSuperAdmin ? 2 : 3}`,
+      isSuperAdmin ? [safeLimit, safeOffset] : [companyId, safeLimit, safeOffset],
+    );
+
+    return {
+      notifications: rows.map(toNotification),
+      total,
+      unreadCount,
+    };
+  }
+
+  const unreadFilter = unreadOnly ? 'AND n.is_read = FALSE' : '';
 
   const countRow = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
-     FROM notifications
-     WHERE user_id = $1 AND company_id = $2 ${unreadFilter}`,
+     FROM notifications n
+     WHERE n.user_id = $1
+       AND n.company_id = $2
+       AND n.is_enabled = TRUE
+       ${unreadFilter}`,
     [userId, companyId],
   );
   const total = parseInt(countRow?.count ?? '0', 10);
 
   const unreadRow = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
-     FROM notifications
-     WHERE user_id = $1 AND company_id = $2 AND is_read = FALSE`,
+     FROM notifications n
+     WHERE n.user_id = $1
+       AND n.company_id = $2
+       AND n.is_enabled = TRUE
+       AND n.is_read = FALSE`,
     [userId, companyId],
   );
   const unreadCount = parseInt(unreadRow?.count ?? '0', 10);
 
   const rows = await query<NotificationRow>(
-    `SELECT id, company_id, user_id, type, title, message,
-            priority, is_read, read_at, created_at, locale
-     FROM notifications
-     WHERE user_id = $1 AND company_id = $2 ${unreadFilter}
-     ORDER BY created_at DESC
+    `SELECT n.id, n.company_id, n.user_id, n.type, n.title, n.message,
+            n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category
+     FROM notifications n
+     WHERE n.user_id = $1
+       AND n.company_id = $2
+       AND n.is_enabled = TRUE
+       ${unreadFilter}
+     ORDER BY n.created_at DESC
      LIMIT $3 OFFSET $4`,
     [userId, companyId, safeLimit, safeOffset],
   );
@@ -300,6 +411,49 @@ export async function getNotifications(options: {
     total,
     unreadCount,
   };
+}
+
+/**
+ * Returns recent users (last 24 hours) who received notifications for a specific event type.
+ * Used to display avatars in the settings modal.
+ * 
+ * @param companyId - Company ID (0 for super admin to see all companies)
+ * @param eventKey - Notification event type
+ * @param isSuperAdmin - Whether the requester is a super admin
+ */
+export async function getRecentNotificationRecipients(
+  companyId: number,
+  eventKey: string,
+  isSuperAdmin: boolean = false,
+): Promise<Array<{ userId: number; name: string; surname: string; avatarFilename: string | null }>> {
+  const companyFilter = isSuperAdmin ? '' : 'AND n.company_id = $1';
+  const params = isSuperAdmin ? [eventKey] : [companyId, eventKey];
+  const eventKeyIndex = isSuperAdmin ? 1 : 2;
+
+  const rows = await query<{
+    user_id: number;
+    name: string;
+    surname: string;
+    avatar_filename: string | null;
+  }>(
+    `SELECT DISTINCT ON (n.user_id) n.user_id, u.name, u.surname, u.avatar_filename
+     FROM notifications n
+     LEFT JOIN users u ON u.id = n.user_id
+     WHERE n.type = $${eventKeyIndex}
+       ${companyFilter}
+       AND n.created_at > NOW() - INTERVAL '24 hours'
+       AND n.is_enabled = TRUE
+     ORDER BY n.user_id, n.created_at DESC
+     LIMIT 10`,
+    params,
+  );
+
+  return rows.map((row) => ({
+    userId: row.user_id,
+    name: row.name,
+    surname: row.surname,
+    avatarFilename: row.avatar_filename,
+  }));
 }
 
 /**
@@ -314,7 +468,7 @@ export async function markAsRead(
   const rows = await query<{ id: number }>(
     `UPDATE notifications
      SET is_read = TRUE, read_at = NOW()
-     WHERE id = $1 AND user_id = $2 AND is_read = FALSE
+     WHERE id = $1 AND user_id = $2 AND is_enabled = TRUE AND is_read = FALSE
      RETURNING id`,
     [id, userId],
   );
@@ -332,7 +486,7 @@ export async function markAllAsRead(
   const rows = await query<{ id: number }>(
     `UPDATE notifications
      SET is_read = TRUE, read_at = NOW()
-     WHERE user_id = $1 AND company_id = $2 AND is_read = FALSE
+     WHERE user_id = $1 AND company_id = $2 AND is_enabled = TRUE AND is_read = FALSE
      RETURNING id`,
     [userId, companyId],
   );
@@ -347,7 +501,7 @@ export async function getUnreadCount(userId: number): Promise<number> {
   const row = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
      FROM notifications
-     WHERE user_id = $1 AND is_read = FALSE`,
+     WHERE user_id = $1 AND is_enabled = TRUE AND is_read = FALSE`,
     [userId],
   );
   return parseInt(row?.count ?? '0', 10);

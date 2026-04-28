@@ -718,13 +718,22 @@ CREATE TABLE IF NOT EXISTS notifications (
   title           TEXT NOT NULL,
   message         TEXT NOT NULL,
   priority        TEXT NOT NULL DEFAULT 'medium',
+  is_enabled      BOOLEAN NOT NULL DEFAULT TRUE,
   is_read         BOOLEAN NOT NULL DEFAULT FALSE,
   read_at         TIMESTAMPTZ,
+  locale          TEXT NOT NULL DEFAULT 'it',
   created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 CREATE INDEX IF NOT EXISTS idx_notifications_user_unread
   ON notifications (user_id, is_read, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_company_created
+  ON notifications (company_id, created_at DESC);
+
+CREATE INDEX IF NOT EXISTS idx_notifications_company_unread_enabled
+  ON notifications (company_id, is_read, created_at DESC)
+  WHERE is_enabled = TRUE;
 
 CREATE TABLE IF NOT EXISTS onboarding_templates (
   id              SERIAL PRIMARY KEY,

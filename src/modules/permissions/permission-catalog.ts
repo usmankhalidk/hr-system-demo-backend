@@ -13,6 +13,7 @@ export const ALL_MODULES = [
   'documenti',
   'ats',
   'onboarding',
+  'notifiche',
   'report',
   'impostazioni',
   'gestione_accessi',
@@ -34,6 +35,7 @@ export const ACTIVE_MODULES = [
   'documenti',
   'ats',
   'onboarding',
+  'notifiche',
   'impostazioni',
   'gestione_accessi',
   'terminali',
@@ -57,6 +59,7 @@ export const SYSTEM_MODULES = [
   'terminali',
   'ats',
   'onboarding',
+  'notifiche',
 ] as const;
 
 export type SystemModuleName = typeof SYSTEM_MODULES[number];
@@ -108,6 +111,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   documenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   ats: ['admin', 'hr', 'area_manager'],
   onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
+  notifiche: ['admin', 'hr', 'store_manager'],
   report: [],
   gestione_accessi: ['admin', 'hr', 'area_manager'],
   terminali: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
@@ -130,5 +134,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager')) return true;
   if (moduleName === 'ats' && role === 'admin') return true;
   if (moduleName === 'onboarding') return true;
+  if (moduleName === 'notifiche' && (role === 'admin' || role === 'hr')) return true;
   return false;
 }
