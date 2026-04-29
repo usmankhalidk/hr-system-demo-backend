@@ -1001,7 +1001,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
      WHERE s.company_id = ANY($1)
        AND s.date BETWEEN $2 AND $3
        AND s.status != 'cancelled'
-       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME))
+       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
        ${shiftScope.clause}
        ${shiftExtraWhere}
      ORDER BY s.date, s.user_id`,
@@ -1051,10 +1051,10 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
   }
 
-  const LATE_MS       = 15 * 60 * 1000;
-  const EARLY_EXIT_MS = 15 * 60 * 1000;
-  const LONG_BREAK_MS = 60 * 60 * 1000;
-  const OVERTIME_MS   = 15 * 60 * 1000;
+  const LATE_MS       = 1000;
+  const EARLY_EXIT_MS = 1000;
+  const LONG_BREAK_MS = 1000;
+  const OVERTIME_MS   = 1000;
 
   const anomalies: Array<{
     shift_id: number; company_id: number; user_id: number; user_name: string; user_surname: string;
@@ -1068,6 +1068,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     checkin_source: string | null;
   }> = [];
 
+  const nowTs = new Date().getTime();
   for (const shift of shifts) {
     const key      = `${shift.user_id}:${shift.date}`;
     const evGroup  = eventMap.get(key);
@@ -1075,17 +1076,19 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
 
     if (!evGroup?.checkin) {
-      anomalies.push({
-        shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
-        user_name: shift.user_name, user_surname: shift.user_surname,
-        user_avatar_filename: shift.user_avatar_filename,
-        store_name: shift.store_name, date: shift.date,
-        anomaly_type: 'no_show', severity: 'high',
-        details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
-        details_key: 'attendance.detail_no_show',
-        details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
-        checkin_source: null,
-      });
+      if (shiftEnd.getTime() < nowTs) {
+        anomalies.push({
+          shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
+          user_name: shift.user_name, user_surname: shift.user_surname,
+          user_avatar_filename: shift.user_avatar_filename,
+          store_name: shift.store_name, date: shift.date,
+          anomaly_type: 'no_show', severity: 'high',
+          details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
+          details_key: 'attendance.detail_no_show',
+          details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
+          checkin_source: null,
+        });
+      }
       continue;
     }
 
@@ -1093,7 +1096,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
     // Late arrival
     const lateMs = checkin.getTime() - shiftStart.getTime();
-    if (lateMs > LATE_MS) {
+    if (lateMs >= LATE_MS) {
       const lateMin = Math.round(lateMs / 60000);
       anomalies.push({
         shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1111,7 +1114,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     // Early exit
     if (checkout) {
       const earlyMs = shiftEnd.getTime() - checkout.getTime();
-      if (earlyMs > EARLY_EXIT_MS) {
+      if (earlyMs >= EARLY_EXIT_MS) {
         const earlyMin = Math.round(earlyMs / 60000);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1127,18 +1130,19 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
-    // Long break
-    if (bStart && bEnd) {
-      const breakMs = bEnd.getTime() - bStart.getTime();
-      if (breakMs > LONG_BREAK_MS) {
-        const breakMin = Math.round(breakMs / 60000);
+    // Long break: actual break end > scheduled break end
+    if (bEnd && shift.break_end) {
+      const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
+      const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
+      if (breakLateMs >= LONG_BREAK_MS) {
+        const breakMin = Math.round(breakLateMs / 60000);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
-          anomaly_type: 'long_break', severity: breakMin > 90 ? 'high' : 'medium',
-          details: `Pausa di ${breakMin} min (limite: 60 min)`,
+          anomaly_type: 'long_break', severity: breakMin > 30 ? 'high' : 'medium',
+          details: `Pausa terminata in ritardo di ${breakMin} min. Fine prevista: ${shift.break_end}`,
           details_key: 'attendance.detail_long_break',
           details_params: { minutes: breakMin },
           checkin_source: evGroup.checkin_source ?? null,
@@ -1146,39 +1150,23 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
-    // Overtime: employee worked more hours than scheduled
+    // Overtime: check-out > scheduled end time
     if (checkout) {
-      const actualWorkMs = checkout.getTime() - checkin.getTime();
-      const actualBreakMs = (bStart && bEnd) ? bEnd.getTime() - bStart.getTime() : 0;
-      const actualNetMs = actualWorkMs - Math.max(actualBreakMs, 0);
-
-      const scheduledWorkMs = shiftEnd.getTime() - shiftStart.getTime();
-      const scheduledBreakStart = shift.break_start ? new Date(`${shift.date}T${shift.break_start}`) : null;
-      const scheduledBreakEnd = shift.break_end ? new Date(`${shift.date}T${shift.break_end}`) : null;
-      const scheduledBreakMs = (scheduledBreakStart && scheduledBreakEnd)
-        ? scheduledBreakEnd.getTime() - scheduledBreakStart.getTime()
-        : 0;
-      const scheduledNetMs = scheduledWorkMs - Math.max(scheduledBreakMs, 0);
-
-      const overtimeMs = actualNetMs - scheduledNetMs;
-      if (overtimeMs > OVERTIME_MS) {
+      const overtimeMs = checkout.getTime() - shiftEnd.getTime();
+      if (overtimeMs >= OVERTIME_MS) {
         const overtimeMin = Math.round(overtimeMs / 60000);
-        const actualHrs = Math.floor(actualNetMs / 3600000);
-        const actualMin = Math.round((actualNetMs % 3600000) / 60000);
-        const scheduledHrs = Math.floor(scheduledNetMs / 3600000);
-        const scheduledMin = Math.round((scheduledNetMs % 3600000) / 60000);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
-          anomaly_type: 'overtime', severity: overtimeMin > 60 ? 'high' : 'medium',
-          details: `Straordinario di ${overtimeMin} min. Lavorato: ${actualHrs}h${actualMin}m, Previsto: ${scheduledHrs}h${scheduledMin}m`,
+          anomaly_type: 'overtime', severity: overtimeMin > 30 ? 'high' : 'medium',
+          details: `Straordinario di ${overtimeMin} min. Fine turno prevista: ${shift.end_time}`,
           details_key: 'attendance.detail_overtime',
           details_params: {
             minutes: overtimeMin,
-            actual: `${actualHrs}h${String(actualMin).padStart(2, '0')}m`,
-            scheduled: `${scheduledHrs}h${String(scheduledMin).padStart(2, '0')}m`,
+            actual: checkout.toTimeString().slice(0, 5),
+            scheduled: shift.end_time.slice(0, 5),
           },
           checkin_source: evGroup.checkin_source ?? null,
         });
