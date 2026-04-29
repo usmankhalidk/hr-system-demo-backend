@@ -75,7 +75,8 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
 
   const companyFilter = targetId !== null ? [targetId] : allowedCompanyIds;
 
-  if (role === 'admin' || role === 'hr') {
+  const isSuperAdmin = req.user!.is_super_admin === true;
+  if (role === 'admin' || role === 'hr' || isSuperAdmin) {
     // Admin/HR can list stores inside the allowed companies scope
     stores = await query<StoreRow>(`
       SELECT s.*,

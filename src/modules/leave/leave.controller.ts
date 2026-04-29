@@ -437,6 +437,10 @@ async function findNextActiveApprover(
       if (supervisor) {
         users = [supervisor];
       } else {
+        // Cross-company support: lookup area manager in other companies if group visibility is potentially relevant
+        // However, the chain is company-specific, so we usually look in the request's company.
+        // For Area Manager, we might want to check if the caller is an AM in a different company of the same group.
+        // But findNextActiveApprover is used to find WHO SHOULD BE NEXT, not who IS ACTING.
         users = await query(`SELECT id FROM users WHERE role = 'area_manager' AND company_id = $1 AND status = 'active'`, [companyId]);
       }
     } else if (role === 'hr') {
@@ -719,7 +723,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 export const listLeaveRequests = asyncHandler(async (req: Request, res: Response) => {
-  const { role, userId, storeId } = req.user!;
+  const { role, userId, storeId, is_super_admin } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   // FIX 4: block terminal/system_admin
@@ -728,7 +732,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  const { status, leave_type, date_from, date_to, user_id, page: pageStr, limit: limitStr } =
+  const { status, leave_type, date_from, date_to, user_id, store_id, page: pageStr, limit: limitStr } =
     req.query as Record<string, string>;
 
   const page = Math.max(1, parseInt(pageStr ?? '1', 10) || 1);
@@ -741,45 +745,71 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   let scopeWhere: string;
   let scopeParams: any[];
 
-  const buildHierarchyFilter = (uIdIdx: number) => {
-    return `(lr.user_id = $${uIdIdx} OR ${isViewerAdmin} OR (${viewerRank} > ${TARGET_RANK_SQL}))`;
-  };
+  if (is_super_admin) {
+    // Super Admin: All leaves of all users across all companies (allowedCompanyIds handles all companies)
+    scopeWhere = `lr.company_id = ANY($1)`;
+    scopeParams = [allowedCompanyIds];
+  } else {
+    const buildHierarchyFilter = (uIdIdx: number) => {
+      return `(lr.user_id = $${uIdIdx} OR ${isViewerAdmin} OR (${viewerRank} > ${TARGET_RANK_SQL}))`;
+    };
 
-  switch (role) {
-    case 'employee':
-      scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2`;
-      scopeParams = [allowedCompanyIds, userId];
-      break;
-    case 'store_manager':
-      scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
-      scopeParams = [allowedCompanyIds, storeId, userId];
-      break;
-    case 'area_manager': {
-      const amStores = await query<{ store_id: number }>(
-        `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1
-           AND company_id = ANY($2) AND status = 'active' AND store_id IS NOT NULL`,
-        [userId, allowedCompanyIds],
-      );
-      const storeIds = amStores.map((s) => s.store_id);
-      if (storeIds.length === 0) {
-        scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2 AND ${buildHierarchyFilter(2)}`;
+    switch (role) {
+      case 'employee':
+        // Employee: Can view only their own leaves
+        scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2`;
         scopeParams = [allowedCompanyIds, userId];
-      } else {
-        scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
-        scopeParams = [allowedCompanyIds, storeIds, userId];
+        break;
+      case 'store_manager':
+        // Store Manager: Their own leaves + Leaves of employees assigned to their store
+        scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = $2) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
+        scopeParams = [allowedCompanyIds, storeId, userId];
+        break;
+      case 'area_manager': {
+        // Area Manager: Their own leaves + Leaves of store managers under them + Leaves of employees under those store managers
+        // If part of a group and cross-company is ON, they should see all companies in the group.
+        
+        // Check if the caller has cross-company access (more than one company in allowedCompanyIds)
+        const hasCrossCompany = allowedCompanyIds.length > 1;
+
+        if (hasCrossCompany) {
+          // If cross-company is ON, Area Manager sees:
+          // 1. All leaves across the group companies (but buildHierarchyFilter still restricts to lower ranks)
+          scopeWhere = `lr.company_id = ANY($1) AND ${buildHierarchyFilter(2)}`;
+          scopeParams = [allowedCompanyIds, userId];
+        } else {
+          // Standard local-only visibility: find managed stores in their own company
+          const amStores = await query<{ store_id: number }>(
+            `SELECT DISTINCT store_id FROM users
+             WHERE role = 'store_manager' AND supervisor_id = $1
+               AND company_id = $2 AND status = 'active' AND store_id IS NOT NULL`,
+            [userId, req.user!.companyId],
+          );
+          const storeIds = amStores.map((s) => s.store_id);
+          
+          if (storeIds.length === 0) {
+            scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2 AND ${buildHierarchyFilter(2)}`;
+            scopeParams = [allowedCompanyIds, userId];
+          } else {
+            scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
+            scopeParams = [allowedCompanyIds, storeIds, userId];
+          }
+        }
+        break;
       }
-      break;
+      case 'admin':
+        // Admin: All leaves of users within their associated company only
+        scopeWhere = `lr.company_id = ANY($1)`;
+        scopeParams = [allowedCompanyIds];
+        break;
+      case 'hr':
+      default:
+        // HR: Their own leaves + Leaves of area managers, store managers, and employees
+        // Updated: use ANY($1) to allow cross-company visibility if toggle is ON
+        scopeWhere = `lr.company_id = ANY($1) AND ${buildHierarchyFilter(2)}`;
+        scopeParams = [allowedCompanyIds, userId];
+        break;
     }
-    case 'admin':
-      scopeWhere = `lr.company_id = ANY($1)`;
-      scopeParams = [allowedCompanyIds];
-      break;
-    case 'hr':
-    default:
-      scopeWhere = `lr.company_id = ANY($1) AND ${buildHierarchyFilter(2)}`;
-      scopeParams = [allowedCompanyIds, userId];
-      break;
   }
 
   if (user_id) {
@@ -805,6 +835,9 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   }
   if (date_to) {
     extraWhere += ` AND lr.end_date <= $${paramIdx}`; extraParams.push(date_to); paramIdx++;
+  }
+  if (store_id) {
+    extraWhere += ` AND lr.store_id = $${paramIdx}`; extraParams.push(parseInt(store_id, 10)); paramIdx++;
   }
 
   const allParams = [...scopeParams, ...extraParams];
@@ -897,24 +930,33 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
         scopeParams = [allowedCompanyIds, storeId];
         break;
       case 'area_manager': {
-        const amStores = await query<{ store_id: number }>(
-          `SELECT DISTINCT store_id FROM users
-           WHERE role = 'store_manager' AND supervisor_id = $1
-             AND company_id = ANY($2) AND status = 'active' AND store_id IS NOT NULL`,
-          [userId, allowedCompanyIds],
-        );
-        const storeIds = amStores.map((s) => s.store_id);
-        if (storeIds.length === 0) {
-          ok(res, { requests: [], total: 0 });
-          return;
+        const hasCrossCompany = allowedCompanyIds.length > 1;
+
+        if (hasCrossCompany) {
+          // If cross-company is ON, allow Area Manager to see pending requests across all group companies
+          scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager'`;
+          scopeParams = [allowedCompanyIds];
+        } else {
+          const amStores = await query<{ store_id: number }>(
+            `SELECT DISTINCT store_id FROM users
+             WHERE role = 'store_manager' AND supervisor_id = $1
+               AND company_id = $2 AND status = 'active' AND store_id IS NOT NULL`,
+            [userId, req.user!.companyId],
+          );
+          const storeIds = amStores.map((s) => s.store_id);
+          if (storeIds.length === 0) {
+            ok(res, { requests: [], total: 0 });
+            return;
+          }
+          scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager' AND lr.store_id = ANY($2::int[])`;
+          scopeParams = [allowedCompanyIds, storeIds];
         }
-        scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager' AND lr.store_id = ANY($2::int[])`;
-        scopeParams = [allowedCompanyIds, storeIds];
         break;
       }
       case 'hr':
       case 'admin':
       default:
+        // Updated: allow HR/Admin to see pending requests across all allowed companies in group
         scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = $2`;
         scopeParams = [allowedCompanyIds, role];
         break;
@@ -1408,22 +1450,45 @@ export const getBalance = asyncHandler(async (req: Request, res: Response) => {
   let targetUserId: number;
 
   if (role === 'employee' || role === 'store_manager') {
-    targetUserId = userId;
+    targetUserId = user_id ? parseInt(user_id, 10) : userId;
+    if (user_id && targetUserId !== userId) {
+      // Employees/Store Managers can only see their own balance
+      forbidden(res, 'Non sei autorizzato a vedere il saldo di altri dipendenti');
+      return;
+    }
   } else if (role === 'area_manager' && user_id && !isSuperAdmin) {
     const requestedId = parseInt(user_id, 10);
     if (isNaN(requestedId) || requestedId < 1) {
       badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
     }
-    const allowed = await queryOne<{ id: number }>(
-      `SELECT u.id FROM users u
-       WHERE u.id = $1 AND u.company_id = ANY($2)
-         AND u.store_id IN (
-           SELECT DISTINCT store_id FROM users
-           WHERE role = 'store_manager' AND supervisor_id = $3
-             AND company_id = ANY($2) AND status = 'active' AND store_id IS NOT NULL
-         )`,
-      [requestedId, allowedCompanyIds, userId],
-    );
+    
+    const hasCrossCompany = allowedCompanyIds.length > 1;
+    let allowed: { id: number } | null;
+
+    if (hasCrossCompany) {
+      // If cross-company is ON, check if target is lower in rank across group
+      allowed = await queryOne<{ id: number }>(
+        `SELECT u.id FROM users u
+         WHERE u.id = $1 AND u.company_id = ANY($2)
+           AND ${TARGET_RANK_SQL} < ${getRoleRank('area_manager')}`,
+        [requestedId, allowedCompanyIds],
+      );
+    } else {
+      allowed = await queryOne<{ id: number }>(
+        `SELECT u.id FROM users u
+         WHERE u.id = $1 AND u.company_id = ANY($2)
+           AND (
+             u.store_id IN (
+               SELECT DISTINCT store_id FROM users
+               WHERE role = 'store_manager' AND supervisor_id = $3
+                 AND company_id = ANY($2) AND status = 'active' AND store_id IS NOT NULL
+             )
+             OR u.supervisor_id = $3 -- Direct subordinates (Store Managers)
+           )`,
+        [requestedId, allowedCompanyIds, userId],
+      );
+    }
+
     if (!allowed) {
       forbidden(res, 'Accesso negato a questo dipendente'); return;
     }

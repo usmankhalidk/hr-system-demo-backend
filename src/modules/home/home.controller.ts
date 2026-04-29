@@ -4,6 +4,21 @@ import { ok } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { coalescedShiftPointUtcSql } from '../../utils/shiftTimezone';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+
+function localToday(): string {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, '0');
+  const d = String(now.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function localDateStr(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
 export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId, storeId } = req.user!;
 
@@ -410,9 +425,10 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
     case 'store_manager': {
       if (!storeId) {
-        ok(res, { store: null, employeeCount: 0, todayShifts: [], todayAttendance: {}, upcomingWeekShiftsPlanned: true, upcomingWeekNumber: 0 });
+        ok(res, { store: null, employeeCount: 0, todayShifts: [], todayAttendance: {}, upcomingWeekShiftsPlanned: true, upcomingWeekNumber: 0, todayAnomalies: [] });
         break;
       }
+      const today = localToday();
       const [store, employeeCount, todayShifts, todayAttendanceSummary, upcomingWeekCheck] = await Promise.all([
         queryOne(
           `SELECT id, name, code, max_staff FROM stores WHERE id = $1 AND company_id = $2`,
@@ -461,10 +477,149 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           [storeId, companyId]
         ),
       ]);
+
+      // ── Anomalies calculation (mirrors attendance.controller.ts) ──────────
+      // 1. Fetch finished shifts for today
+      const finishedShifts = await query<{
+        id: number; company_id: number; user_id: number; store_id: number; date: string;
+        start_time: string; end_time: string;
+        break_start: string | null; break_end: string | null;
+        user_name: string; user_surname: string; store_name: string;
+        user_avatar_filename: string | null;
+      }>(
+        `SELECT s.id, s.company_id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+                s.start_time, s.end_time, s.break_start, s.break_end,
+                u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename,
+                st.name AS store_name
+         FROM shifts s
+         LEFT JOIN users u  ON u.id  = s.user_id
+         LEFT JOIN stores st ON st.id = s.store_id
+         WHERE s.company_id = $1
+           AND s.store_id = $2
+           AND s.date = $3
+           AND s.status != 'cancelled'
+           AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
+         ORDER BY s.user_id`,
+        [companyId, storeId, today],
+      );
+
+      // 2. Fetch events for today
+      const events = await query<{
+        user_id: number; event_type: string; event_time: string; source: string;
+      }>(
+        `SELECT ae.user_id, ae.event_type, ae.event_time, ae.source
+         FROM attendance_events ae
+         WHERE ae.company_id = $1
+           AND ae.store_id = $2
+           AND ae.event_time::DATE = $3
+         ORDER BY ae.user_id, ae.event_time`,
+        [companyId, storeId, today],
+      );
+
+      // 3. Process anomalies
+      type EventGroup = { checkin?: Date; checkout?: Date; break_start?: Date; break_end?: Date; checkin_source?: string };
+      const eventMap = new Map<string, EventGroup>();
+      for (const e of events) {
+        const date = localDateStr(new Date(e.event_time));
+        const key = `${e.user_id}:${date}`;
+        if (!eventMap.has(key)) eventMap.set(key, {});
+        const group = eventMap.get(key)!;
+        const t = new Date(e.event_time);
+        if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     { group.checkin = t; group.checkin_source = e.source; }
+        if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
+        if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
+        if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
+      }
+
+      const LATE_MS       = 1000;
+      const EARLY_EXIT_MS = 1000;
+      const LONG_BREAK_MS = 1000;
+      const OVERTIME_MS   = 1000;
+
+      const todayAnomalies: any[] = [];
+      const nowTs = new Date().getTime();
+      for (const shift of finishedShifts) {
+        const key      = `${shift.user_id}:${shift.date}`;
+        const evGroup  = eventMap.get(key);
+        const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
+        const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+
+        if (!evGroup?.checkin) {
+          if (shiftEnd.getTime() < nowTs) {
+            todayAnomalies.push({
+              anomaly_type: 'no_show', severity: 'high',
+              user_name: shift.user_name, user_surname: shift.user_surname,
+              user_avatar_filename: shift.user_avatar_filename,
+              details_key: 'attendance.detail_no_show',
+              details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
+            });
+          }
+          continue;
+        }
+
+        const { checkin, checkout, break_start: bStart, break_end: bEnd } = evGroup;
+        const lateMs = checkin.getTime() - shiftStart.getTime();
+        if (lateMs >= LATE_MS) {
+          const lateMin = Math.round(lateMs / 60000);
+          todayAnomalies.push({
+            anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
+            user_name: shift.user_name, user_surname: shift.user_surname,
+            user_avatar_filename: shift.user_avatar_filename,
+            details_key: 'attendance.detail_late_arrival',
+            details_params: { minutes: lateMin, entry: checkin.toTimeString().slice(0, 5), shift: shift.start_time.slice(0, 5) },
+          });
+        }
+        if (checkout) {
+          const earlyMs = shiftEnd.getTime() - checkout.getTime();
+          if (earlyMs >= EARLY_EXIT_MS) {
+            const earlyMin = Math.round(earlyMs / 60000);
+            todayAnomalies.push({
+              anomaly_type: 'early_exit', severity: earlyMin > 30 ? 'high' : 'medium',
+              user_name: shift.user_name, user_surname: shift.user_surname,
+              user_avatar_filename: shift.user_avatar_filename,
+              details_key: 'attendance.detail_early_exit',
+              details_params: { minutes: earlyMin, exit: checkout.toTimeString().slice(0, 5), shift: shift.end_time.slice(0, 5) },
+            });
+          }
+        }
+        if (bEnd && shift.break_end) {
+          const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
+          const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
+          if (breakLateMs >= LONG_BREAK_MS) {
+            const breakMin = Math.round(breakLateMs / 60000);
+            todayAnomalies.push({
+              anomaly_type: 'long_break', severity: breakMin > 30 ? 'high' : 'medium',
+              user_name: shift.user_name, user_surname: shift.user_surname,
+              user_avatar_filename: shift.user_avatar_filename,
+              details_key: 'attendance.detail_long_break',
+              details_params: { minutes: breakMin },
+            });
+          }
+        }
+        if (checkout) {
+          const overtimeMs = checkout.getTime() - shiftEnd.getTime();
+          if (overtimeMs >= OVERTIME_MS) {
+            const overtimeMin = Math.round(overtimeMs / 60000);
+            todayAnomalies.push({
+              anomaly_type: 'overtime', severity: overtimeMin > 30 ? 'high' : 'medium',
+              user_name: shift.user_name, user_surname: shift.user_surname,
+              user_avatar_filename: shift.user_avatar_filename,
+              details_key: 'attendance.detail_overtime',
+              details_params: {
+                minutes: overtimeMin,
+                actual: checkout.toTimeString().slice(0, 5),
+                scheduled: shift.end_time.slice(0, 5),
+              },
+            });
+          }
+        }
+      }
+
       ok(res, {
         store,
         employeeCount: parseInt(employeeCount?.count || '0', 10),
         todayShifts,
+        todayAnomalies,
         todayAttendance: Object.fromEntries(
           todayAttendanceSummary.map((r) => [r.event_type, parseInt(r.count, 10)])
         ),
