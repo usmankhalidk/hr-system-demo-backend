@@ -732,7 +732,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  const { status, leave_type, date_from, date_to, user_id, page: pageStr, limit: limitStr } =
+  const { status, leave_type, date_from, date_to, user_id, store_id, page: pageStr, limit: limitStr } =
     req.query as Record<string, string>;
 
   const page = Math.max(1, parseInt(pageStr ?? '1', 10) || 1);
@@ -835,6 +835,9 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   }
   if (date_to) {
     extraWhere += ` AND lr.end_date <= $${paramIdx}`; extraParams.push(date_to); paramIdx++;
+  }
+  if (store_id) {
+    extraWhere += ` AND lr.store_id = $${paramIdx}`; extraParams.push(parseInt(store_id, 10)); paramIdx++;
   }
 
   const allParams = [...scopeParams, ...extraParams];
