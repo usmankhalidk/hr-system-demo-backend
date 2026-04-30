@@ -13,18 +13,29 @@ WHERE i.candidate_id = c.id
 DELETE FROM interviews
 WHERE company_id IS NULL;
 
--- Make company_id NOT NULL after backfill and cleanup
-ALTER TABLE interviews ALTER COLUMN company_id SET NOT NULL;
+-- Only set NOT NULL if there are rows in the table
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM interviews LIMIT 1) THEN
+    ALTER TABLE interviews ALTER COLUMN company_id SET NOT NULL;
+  END IF;
+END $$;
 
--- Add foreign key constraint (use IF NOT EXISTS pattern)
+-- Add foreign key constraint only if it doesn't exist
+-- Use NOT VALID to skip validation on existing rows, then validate separately
 DO $$
 BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_constraint WHERE conname = 'fk_interviews_company'
   ) THEN
+    -- Add constraint without immediate validation
     ALTER TABLE interviews
     ADD CONSTRAINT fk_interviews_company
-    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE;
+    FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+    NOT VALID;
+    
+    -- Validate the constraint (will succeed if table is empty or all rows are valid)
+    ALTER TABLE interviews VALIDATE CONSTRAINT fk_interviews_company;
   END IF;
 END $$;
 
