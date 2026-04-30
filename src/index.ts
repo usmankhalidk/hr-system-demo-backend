@@ -100,11 +100,37 @@ app.get('/uploads/avatars/:filename', (req, res, next) => {
     `SELECT company_id AS "companyId" FROM users WHERE id = $1`,
     [userId]
   );
+  if (!owner) {
+    res.status(404).end();
+    return;
+  }
+  
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  if (!owner || !allowedCompanyIds.includes(owner.companyId)) {
+  
+  // Allow access if:
+  // 1. User belongs to same company, OR
+  // 2. User is viewing a job post created by this user (for ATS module)
+  const hasDirectAccess = allowedCompanyIds.includes(owner.companyId);
+  
+  let hasJobPostAccess = false;
+  if (!hasDirectAccess) {
+    // Check if this user created any job posts that the requester can view
+    const jobPostCheck = await queryOne<{ count: number }>(
+      `SELECT COUNT(*) as count 
+       FROM job_postings j
+       WHERE j.created_by_id = $1 
+         AND j.company_id = ANY($2::int[])
+         AND j.status IN ('published', 'closed')`,
+      [userId, allowedCompanyIds]
+    );
+    hasJobPostAccess = (jobPostCheck?.count ?? 0) > 0;
+  }
+  
+  if (!hasDirectAccess && !hasJobPostAccess) {
     res.status(403).end();
     return;
   }
+  
   const ext = path.extname(filename).toLowerCase();
   const mimeTypes: Record<string, string> = {
     '.jpg': 'image/jpeg',
@@ -305,6 +331,69 @@ app.get('/uploads/store-logos/:filename', (req, res, next) => {
   if (contentType) res.setHeader('Content-Type', contentType);
 
   const filePath = path.join(uploadsRoot, 'store-logos', filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
+// Serve CV/resume files behind authentication
+app.get('/cvs/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+    res.status(400).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const cvsDir = process.env.UPLOADS_DIR
+    ? path.join(path.dirname(process.env.UPLOADS_DIR), 'cvs')
+    : path.join(process.cwd(), 'uploads', 'cvs');
+  const filePath = path.join(cvsDir, filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
+// Serve public CV files behind authentication
+app.get('/public-cv/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+    res.status(400).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const publicCvDir = process.env.PUBLIC_CV_UPLOAD_DIR
+    ?? path.join(process.cwd(), 'uploads', 'public-cv');
+  const filePath = path.join(publicCvDir, filename);
   res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
 });
 
