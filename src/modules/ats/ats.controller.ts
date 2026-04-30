@@ -952,11 +952,25 @@ export const deleteCandidateHandler = asyncHandler(async (req: Request, res: Res
 // ---------------------------------------------------------------------------
 
 export const listInterviewsHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const candidateId = parseInt(req.params.candidateId, 10);
   if (Number.isNaN(candidateId)) { badRequest(res, 'ID candidato non valido'); return; }
+
+  // Get the candidate to determine the company_id
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const candidateRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId],
+  );
+  
+  if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(candidateRow.company_id)) { 
+    forbidden(res, 'Nessuna azienda valida selezionata'); 
+    return; 
+  }
+
+  const companyId = candidateRow.company_id;
 
   const storeIds = resolveStoreIds(req.user);
   const interviews = await listInterviews(candidateId, companyId, storeIds);
@@ -964,11 +978,27 @@ export const listInterviewsHandler = asyncHandler(async (req: Request, res: Resp
 });
 
 export const createInterviewHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId, userId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
+  const { userId } = req.user!;
+  
   const candidateId = parseInt(req.params.candidateId, 10);
   if (Number.isNaN(candidateId)) { badRequest(res, 'ID candidato non valido'); return; }
+
+  // First, get the candidate to determine the company_id
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const candidateRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId],
+  );
+  
+  if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(candidateRow.company_id)) { 
+    forbidden(res, 'Nessuna azienda valida selezionata'); 
+    return; 
+  }
+
+  const companyId = candidateRow.company_id;
 
   const { scheduled_at, location, notes, interviewer_id, send_ics } = req.body as Record<string, unknown>;
 
@@ -1037,11 +1067,25 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 });
 
 export const updateInterviewHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  // Get the interview to determine the company_id
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { 
+    forbidden(res, 'Nessuna azienda valida selezionata'); 
+    return; 
+  }
+
+  const companyId = interviewRow.company_id;
 
   const { scheduled_at, location, notes, feedback, interviewer_id } = req.body as Record<string, unknown>;
 
@@ -1081,11 +1125,25 @@ export const updateInterviewHandler = asyncHandler(async (req: Request, res: Res
 });
 
 export const deleteInterviewHandler = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) { forbidden(res, 'Nessuna azienda'); return; }
-
   const id = parseInt(req.params.id, 10);
   if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  // Get the interview to determine the company_id
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { 
+    forbidden(res, 'Nessuna azienda valida selezionata'); 
+    return; 
+  }
+
+  const companyId = interviewRow.company_id;
 
   const deleted = await deleteInterview(id, companyId);
   if (!deleted) { notFound(res, 'Colloquio non trovato'); return; }

@@ -30,9 +30,25 @@ export interface JobPosting {
   companySlug: string;
   companyName: string | null;
   companyLogoFilename: string | null;
+  companyGroupName: string | null;
+  companyCountry: string | null;
+  companyOwnerName: string | null;
+  companyOwnerSurname: string | null;
+  companyOwnerAvatarFilename: string | null;
+  companyStoreCount: number | null;
   storeId: number | null;
   storeName: string | null;
   storeLogoFilename: string | null;
+  storeCountry: string | null;
+  storeHrName: string | null;
+  storeHrSurname: string | null;
+  storeHrAvatarFilename: string | null;
+  storeAreaManagerName: string | null;
+  storeAreaManagerSurname: string | null;
+  storeAreaManagerAvatarFilename: string | null;
+  storeManagerName: string | null;
+  storeManagerSurname: string | null;
+  storeManagerAvatarFilename: string | null;
   location: string;
   city: string | null;
   state: string | null;
@@ -141,6 +157,7 @@ export interface Interview {
   id: number;
   candidateId: number;
   interviewerId: number | null;
+  storeId: number | null;
   scheduledAt: string;
   location: string | null;
   notes: string | null;
@@ -173,9 +190,25 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     companySlug: row.company_slug as string,
     companyName: (row.company_name as string | null) ?? null,
     companyLogoFilename: (row.company_logo_filename as string | null) ?? null,
+    companyGroupName: (row.company_group_name as string | null) ?? null,
+    companyCountry: (row.company_country as string | null) ?? null,
+    companyOwnerName: (row.company_owner_name as string | null) ?? null,
+    companyOwnerSurname: (row.company_owner_surname as string | null) ?? null,
+    companyOwnerAvatarFilename: (row.company_owner_avatar_filename as string | null) ?? null,
+    companyStoreCount: typeof row.company_store_count === 'number' ? (row.company_store_count as number) : null,
     storeId: row.store_id as number | null,
     storeName: (row.store_name as string | null) ?? null,
     storeLogoFilename: (row.store_logo_filename as string | null) ?? null,
+    storeCountry: (row.store_country as string | null) ?? null,
+    storeHrName: (row.store_hr_name as string | null) ?? null,
+    storeHrSurname: (row.store_hr_surname as string | null) ?? null,
+    storeHrAvatarFilename: (row.store_hr_avatar_filename as string | null) ?? null,
+    storeAreaManagerName: (row.store_area_manager_name as string | null) ?? null,
+    storeAreaManagerSurname: (row.store_area_manager_surname as string | null) ?? null,
+    storeAreaManagerAvatarFilename: (row.store_area_manager_avatar_filename as string | null) ?? null,
+    storeManagerName: (row.store_manager_name as string | null) ?? null,
+    storeManagerSurname: (row.store_manager_surname as string | null) ?? null,
+    storeManagerAvatarFilename: (row.store_manager_avatar_filename as string | null) ?? null,
     location: (row.location as string | null) ?? derivedLocation,
     city,
     state,
@@ -280,6 +313,7 @@ function mapInterview(row: Record<string, unknown>): Interview {
     id: row.id as number,
     candidateId: row.candidate_id as number,
     interviewerId: row.interviewer_id as number | null,
+    storeId: row.store_id as number | null,
     scheduledAt: row.scheduled_at as string,
     location: row.location as string | null,
     notes: row.notes as string | null,
@@ -321,8 +355,24 @@ export async function listJobs(
         c.slug AS company_slug,
             c.name AS company_name,
             c.logo_filename AS company_logo_filename,
+            c.country AS company_country,
+            cg.name AS company_group_name,
+            c_owner.name AS company_owner_name,
+            c_owner.surname AS company_owner_surname,
+            c_owner.avatar_filename AS company_owner_avatar_filename,
+            (SELECT COUNT(*) FROM stores WHERE company_id = c.id AND is_active = true)::int AS company_store_count,
             s.name AS store_name,
             s.logo_filename AS store_logo_filename,
+            s.country AS store_country,
+            (SELECT u.name FROM users u WHERE u.store_id = s.id AND u.role = 'hr' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_hr_name,
+            (SELECT u.surname FROM users u WHERE u.store_id = s.id AND u.role = 'hr' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_hr_surname,
+            (SELECT u.avatar_filename FROM users u WHERE u.store_id = s.id AND u.role = 'hr' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_hr_avatar_filename,
+            (SELECT u.name FROM users u WHERE u.store_id = s.id AND u.role = 'area_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_area_manager_name,
+            (SELECT u.surname FROM users u WHERE u.store_id = s.id AND u.role = 'area_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_area_manager_surname,
+            (SELECT u.avatar_filename FROM users u WHERE u.store_id = s.id AND u.role = 'area_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_area_manager_avatar_filename,
+            (SELECT u.name FROM users u WHERE u.store_id = s.id AND u.role = 'store_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_manager_name,
+            (SELECT u.surname FROM users u WHERE u.store_id = s.id AND u.role = 'store_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_manager_surname,
+            (SELECT u.avatar_filename FROM users u WHERE u.store_id = s.id AND u.role = 'store_manager' AND u.status = 'active' ORDER BY u.id LIMIT 1) AS store_manager_avatar_filename,
             creator.name AS created_by_name,
             creator.surname AS created_by_surname,
             creator.role::text AS created_by_role,
@@ -336,6 +386,8 @@ export async function listJobs(
                  CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
+     LEFT JOIN company_groups cg ON cg.id = c.group_id
+     LEFT JOIN users c_owner ON c_owner.id = c.owner_user_id
      LEFT JOIN stores s ON s.id = j.store_id
      LEFT JOIN users creator ON creator.id = j.created_by_id
      LEFT JOIN stores creator_store ON creator_store.id = creator.store_id
@@ -954,11 +1006,13 @@ export async function createInterview(
   if (!candidate) return null;
 
   const row = await queryOne<Record<string, unknown>>(
-    `INSERT INTO interviews (candidate_id, interviewer_id, scheduled_at, location, notes, ics_uid)
-     VALUES ($1, $2, $3, $4, $5, $6)
+    `INSERT INTO interviews (candidate_id, company_id, store_id, interviewer_id, scheduled_at, location, notes, ics_uid)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
      RETURNING *`,
     [
       candidateId,
+      companyId,
+      candidate.storeId ?? null,
       data.interviewerId ?? null,
       data.scheduledAt,
       data.location ?? null,
