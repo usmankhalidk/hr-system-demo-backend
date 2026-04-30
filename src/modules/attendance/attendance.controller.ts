@@ -533,7 +533,7 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
       checkin: 'Entrata', checkout: 'Uscita', break_start: 'Inizio Pausa', break_end: 'Fine Pausa',
     };
     const rowData = exportEvents.map((e: any) => [
-      new Date(e.event_time).toLocaleString('it-IT', { day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit' }),
+      new Date(e.event_time).toLocaleString('it-IT', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
       e.user_surname ?? '', e.user_name ?? '',
       e.store_name ?? '',
       EVENT_LABELS[e.event_type] ?? e.event_type,
@@ -554,7 +554,7 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
       if (capped) res.setHeader('X-Export-Capped', `true`);
       res.send(buf);
     } else {
-      const csvRows = rowData.map((r) => r.map((v) => `"${String(v).replace(/"/g,'""')}"`).join(','));
+      const csvRows = rowData.map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(','));
       res.setHeader('Content-Type', 'text/csv; charset=utf-8');
       res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
       if (capped) res.setHeader('X-Export-Capped', `true`);
@@ -670,7 +670,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     if (ev.unique_id) {
       resolvedUserId = uniqueIdMap.get(ev.unique_id.toLowerCase());
     }
-    
+
     // Fallback to user_id if unique_id didn't resolve or wasn't provided
     if (resolvedUserId == null && ev.user_id != null) {
       resolvedUserId = ev.user_id;
@@ -929,7 +929,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
   const today = localToday();
   const from = date_from || today;
-  const to   = date_to   || today;
+  const to = date_to || today;
 
   // Cap date range to 14 days to prevent expensive full-table scans
   const diffDays = (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24);
@@ -1001,7 +1001,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
      WHERE s.company_id = ANY($1)
        AND s.date BETWEEN $2 AND $3
        AND s.status != 'cancelled'
-       AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
+       AND s.date <= CURRENT_DATE
        ${shiftScope.clause}
        ${shiftExtraWhere}
      ORDER BY s.date, s.user_id`,
@@ -1045,16 +1045,16 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     if (!eventMap.has(key)) eventMap.set(key, {});
     const group = eventMap.get(key)!;
     const t = new Date(e.event_time);
-    if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     { group.checkin = t; group.checkin_source = e.source; }
-    if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
+    if (e.event_type === 'checkin' && (!group.checkin || t < group.checkin)) { group.checkin = t; group.checkin_source = e.source; }
+    if (e.event_type === 'checkout' && (!group.checkout || t > group.checkout)) group.checkout = t;
     if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
-    if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
+    if (e.event_type === 'break_end' && (!group.break_end || t > group.break_end)) group.break_end = t;
   }
 
-  const LATE_MS       = 1000;
+  const LATE_MS = 10 * 60 * 1000; // 10 minutes
   const EARLY_EXIT_MS = 1000;
-  const LONG_BREAK_MS = 1000;
-  const OVERTIME_MS   = 1000;
+  const LONG_BREAK_MS = 5 * 60 * 1000;  // 5 minutes
+  const OVERTIME_MS = 60 * 60 * 1000; // 1 hour
 
   const anomalies: Array<{
     shift_id: number; company_id: number; user_id: number; user_name: string; user_surname: string;
@@ -1070,10 +1070,14 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
   const nowTs = new Date().getTime();
   for (const shift of shifts) {
-    const key      = `${shift.user_id}:${shift.date}`;
-    const evGroup  = eventMap.get(key);
+    const key = `${shift.user_id}:${shift.date}`;
+    const evGroup = eventMap.get(key);
+    // Shift times are stored as server-local-time strings; parse them as local time.
+    // This is correct because shift times are entered in the same timezone as the server.
     const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
     const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+    // Only process shifts that have actually started (avoid future shifts loaded from today)
+    if (shiftStart.getTime() > nowTs) continue;
 
     if (!evGroup?.checkin) {
       if (shiftEnd.getTime() < nowTs) {
@@ -1096,7 +1100,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
 
     // Late arrival
     const lateMs = checkin.getTime() - shiftStart.getTime();
-    if (lateMs >= LATE_MS) {
+    if (lateMs > LATE_MS) {
       const lateMin = Math.round(lateMs / 60000);
       anomalies.push({
         shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1130,11 +1134,11 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
-    // Long break: actual break end > scheduled break end
+    // Long break: actual break end > scheduled break end + 5 min threshold
     if (bEnd && shift.break_end) {
       const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
       const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
-      if (breakLateMs >= LONG_BREAK_MS) {
+      if (breakLateMs > LONG_BREAK_MS) {
         const breakMin = Math.round(breakLateMs / 60000);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1153,7 +1157,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     // Overtime: check-out > scheduled end time
     if (checkout) {
       const overtimeMs = checkout.getTime() - shiftEnd.getTime();
-      if (overtimeMs >= OVERTIME_MS) {
+      if (overtimeMs > OVERTIME_MS) {
         const overtimeMin = Math.round(overtimeMs / 60000);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1370,7 +1374,7 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
   const today = localToday();
   const defaultFrom = localDateStr(new Date(Date.now() - 30 * 24 * 60 * 60 * 1000));
   const from = date_from || defaultFrom;
-  const to   = date_to   || today;
+  const to = date_to || today;
 
   const events = await query(
     `SELECT
@@ -1451,7 +1455,7 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
   // 2. Check for approved leave today
   const approvedLeave = todayShift
     ? await queryOne<{ id: number }>(
-        `SELECT id
+      `SELECT id
          FROM leave_requests
          WHERE company_id = $1
            AND user_id = $2
@@ -1459,8 +1463,8 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
            AND start_date <= $3::date
            AND end_date >= $3::date
          LIMIT 1`,
-        [companyId, userId, today],
-      )
+      [companyId, userId, today],
+    )
     : null;
 
   const hasShift = !!todayShift;
@@ -1489,10 +1493,10 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
 
   const types = dayEvents.map((e) => e.event_type);
   const state = {
-    checkedIn:    types.includes('checkin'),
+    checkedIn: types.includes('checkin'),
     breakStarted: types.includes('break_start'),
-    breakEnded:   types.includes('break_end'),
-    checkedOut:   types.includes('checkout'),
+    breakEnded: types.includes('break_end'),
+    checkedOut: types.includes('checkout'),
   };
 
   ok(res, { hasShift, hasLeave, state });

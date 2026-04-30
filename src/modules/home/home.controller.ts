@@ -147,7 +147,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
             AND s.date < $3
             AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
             AND first_checkin.event_time IS NOT NULL
-            AND first_checkin.event_time >= ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '1 second'`,
+            AND first_checkin.event_time > ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '10 minutes'`,
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ total: string; confirmed: string }>(
@@ -390,14 +390,14 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            ORDER BY s.name`,
           [userId, companyId]
         );
-        
+
         const amStores = await query<{ store_id: number }>(
           `SELECT DISTINCT store_id FROM users
            WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
              AND status = 'active' AND store_id IS NOT NULL`,
           [userId, companyId],
         );
-        
+
         visibleStoreIds = Array.from(new Set([
           ...assignedStores.map(s => s.id),
           ...amStores.map(r => r.store_id)
@@ -444,7 +444,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       let pendingShiftCount = 0;
       let pendingLeavePreview: unknown[] = [];
       let pendingLeaveCount = 0;
-      
+
       const storesForPending = hasCrossCompanyAccess ? visibleStoreIds : visibleStoreIds; // Both cases use visibleStoreIds now
 
       if (storesForPending.length > 0) {
@@ -512,10 +512,10 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       }
       const today = localToday();
       const [
-        store, 
-        employeeCount, 
-        todayShifts, 
-        todayAttendanceSummary, 
+        store,
+        employeeCount,
+        todayShifts,
+        todayAttendanceSummary,
         upcomingWeekCheck,
         activeEmpRes,
         presentEmpRes,
@@ -635,7 +635,6 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            AND s.store_id = $2
            AND s.date = $3
            AND s.status != 'cancelled'
-           AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
          ORDER BY s.user_id`,
         [companyId, storeId, today],
       );
@@ -662,24 +661,27 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         if (!eventMap.has(key)) eventMap.set(key, {});
         const group = eventMap.get(key)!;
         const t = new Date(e.event_time);
-        if (e.event_type === 'checkin'     && (!group.checkin     || t < group.checkin))     { group.checkin = t; group.checkin_source = e.source; }
-        if (e.event_type === 'checkout'    && (!group.checkout    || t > group.checkout))    group.checkout    = t;
+        if (e.event_type === 'checkin' && (!group.checkin || t < group.checkin)) { group.checkin = t; group.checkin_source = e.source; }
+        if (e.event_type === 'checkout' && (!group.checkout || t > group.checkout)) group.checkout = t;
         if (e.event_type === 'break_start' && (!group.break_start || t < group.break_start)) group.break_start = t;
-        if (e.event_type === 'break_end'   && (!group.break_end   || t > group.break_end))   group.break_end   = t;
+        if (e.event_type === 'break_end' && (!group.break_end || t > group.break_end)) group.break_end = t;
       }
 
-      const LATE_MS       = 1000;
+      const LATE_MS = 10 * 60 * 1000; // 10 minutes
       const EARLY_EXIT_MS = 1000;
-      const LONG_BREAK_MS = 1000;
-      const OVERTIME_MS   = 1000;
+      const LONG_BREAK_MS = 5 * 60 * 1000;  // 5 minutes
+      const OVERTIME_MS = 60 * 60 * 1000; // 1 hour
 
       const todayAnomalies: any[] = [];
       const nowTs = new Date().getTime();
       for (const shift of finishedShifts) {
-        const key      = `${shift.user_id}:${shift.date}`;
-        const evGroup  = eventMap.get(key);
+        const key = `${shift.user_id}:${shift.date}`;
+        const evGroup = eventMap.get(key);
+        // Parse shift times as server-local time (matches how shift times are entered)
         const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
         const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+        // Skip shifts that haven't started yet
+        if (shiftStart.getTime() > nowTs) continue;
 
         if (!evGroup?.checkin) {
           if (shiftEnd.getTime() < nowTs) {
@@ -696,7 +698,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
         const { checkin, checkout, break_start: bStart, break_end: bEnd } = evGroup;
         const lateMs = checkin.getTime() - shiftStart.getTime();
-        if (lateMs >= LATE_MS) {
+        if (lateMs > LATE_MS) {
           const lateMin = Math.round(lateMs / 60000);
           todayAnomalies.push({
             anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
@@ -722,7 +724,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         if (bEnd && shift.break_end) {
           const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
           const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
-          if (breakLateMs >= LONG_BREAK_MS) {
+          if (breakLateMs > LONG_BREAK_MS) {
             const breakMin = Math.round(breakLateMs / 60000);
             todayAnomalies.push({
               anomaly_type: 'long_break', severity: breakMin > 30 ? 'high' : 'medium',
@@ -735,7 +737,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         }
         if (checkout) {
           const overtimeMs = checkout.getTime() - shiftEnd.getTime();
-          if (overtimeMs >= OVERTIME_MS) {
+          if (overtimeMs > OVERTIME_MS) {
             const overtimeMin = Math.round(overtimeMs / 60000);
             todayAnomalies.push({
               anomaly_type: 'overtime', severity: overtimeMin > 30 ? 'high' : 'medium',
