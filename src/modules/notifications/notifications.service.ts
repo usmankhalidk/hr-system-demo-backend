@@ -242,6 +242,7 @@ export async function sendNotification(
 
         if (userRow?.email) {
           await sendNotificationEmail({
+            companyId,
             toEmail: userRow.email,
             eventKey: type,
             variables: {},

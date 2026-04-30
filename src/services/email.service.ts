@@ -12,15 +12,80 @@ export interface EmailOptions {
   text?: string;
 }
 
+interface CompanySmtpConfig {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_user: string;
+  smtp_pass: string;
+  smtp_from: string;
+}
+
 // ---------------------------------------------------------------------------
-// EmailService singleton
+// Per-company email sender (primary path)
+// ---------------------------------------------------------------------------
+
+/**
+ * Sends an email using the SMTP credentials configured for the given company.
+ *
+ * Rules:
+ *  - If no SMTP config exists in the DB for the company → silently skip (no error).
+ *  - If config exists but credentials are incomplete → silently skip.
+ *  - Never throws; always logs errors and returns gracefully.
+ */
+export async function sendEmailForCompany(
+  companyId: number,
+  options: EmailOptions,
+): Promise<void> {
+  try {
+    const cfg = await queryOne<CompanySmtpConfig>(
+      `SELECT smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from
+       FROM company_smtp_configs
+       WHERE company_id = $1
+       LIMIT 1`,
+      [companyId],
+    );
+
+    if (!cfg || !cfg.smtp_host || !cfg.smtp_user || !cfg.smtp_pass) {
+      // No config or incomplete config — silently skip, do NOT crash
+      console.log(
+        `[EMAIL] No SMTP config for company ${companyId} — email to ${options.to} skipped.`,
+      );
+      return;
+    }
+
+    const transporter = nodemailer.createTransport({
+      host: cfg.smtp_host,
+      port: cfg.smtp_port || 587,
+      secure: cfg.smtp_port === 465,
+      auth: {
+        user: cfg.smtp_user,
+        pass: cfg.smtp_pass,
+      },
+    });
+
+    await transporter.sendMail({
+      from: cfg.smtp_from || cfg.smtp_user,
+      to: options.to,
+      subject: options.subject,
+      html: options.html,
+      text: options.text,
+    });
+  } catch (err: unknown) {
+    // Never propagate — a failed email must not crash the system
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[EMAIL] Failed to send email for company ${companyId} to ${options.to}: ${msg}`);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy singleton (kept only for the /api/email/test endpoint)
+// Uses .env credentials. Not used for any notification flow.
 // ---------------------------------------------------------------------------
 
 class EmailService {
   private transporter: nodemailer.Transporter | null = null;
 
   constructor() {
-    // Only create transporter if SMTP config is available
     if (process.env.SMTP_HOST) {
       this.transporter = nodemailer.createTransport({
         host: process.env.SMTP_HOST,
@@ -34,10 +99,13 @@ class EmailService {
     }
   }
 
-  async send(options: EmailOptions): Promise<void> {
+  async send(options: EmailOptions & { companyId?: number }): Promise<void> {
+    if (options.companyId) {
+      return sendEmailForCompany(options.companyId, options);
+    }
+
     if (!this.transporter) {
-      // Dev mode: log email to console instead of sending
-      console.log('[EMAIL - dev mode]', {
+      console.log('[EMAIL - dev mode (no companyId)]', {
         to: options.to,
         subject: options.subject,
         text: options.text || options.html.replace(/<[^>]+>/g, ''),
@@ -69,18 +137,19 @@ interface NotificationTemplate {
 }
 
 /**
- * Sends a notification email using a stored Italian template for the given
- * event_key. If no template is found, falls back to the provided subject/body.
- * Variable placeholders in templates use {{key}} syntax.
+ * Sends a notification email using a stored template for the given event_key.
+ * Uses the company's DB-configured SMTP credentials.
+ * If the company has no SMTP config, the email is silently skipped.
  */
 export async function sendNotificationEmail(options: {
+  companyId: number;
   toEmail: string;
   eventKey: string;
   variables: Record<string, string>;
   fallbackSubject: string;
   fallbackBody: string;
 }): Promise<void> {
-  const { toEmail, eventKey, variables, fallbackSubject, fallbackBody } = options;
+  const { companyId, toEmail, eventKey, variables, fallbackSubject, fallbackBody } = options;
 
   // Attempt to load the template
   const template = await queryOne<NotificationTemplate>(
@@ -106,10 +175,10 @@ export async function sendNotificationEmail(options: {
   subject  = interpolate(subject);
   htmlBody = interpolate(htmlBody);
 
-  // Plain-text fallback strips HTML tags
   const plainText = htmlBody.replace(/<[^>]+>/g, '');
 
-  await emailService.send({
+  // Use the per-company sender — silently skips if no config exists
+  await sendEmailForCompany(companyId, {
     to: toEmail,
     subject,
     html: htmlBody,
