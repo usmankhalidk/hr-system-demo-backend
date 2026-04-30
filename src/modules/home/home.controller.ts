@@ -35,42 +35,31 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
       const now = new Date();
       let startDate: Date;
-      let endDate: Date;
+      let endDate: Date = new Date(now);
 
       if (timeRange === 'this_week') {
-        // Last 7 days to match anomalies default
+        // Monday → Current Day
         startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - 7);
+        const day = startDate.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+        const diffToMonday = (day === 0 ? -6 : 1) - day;
+        startDate.setDate(startDate.getDate() + diffToMonday);
         startDate.setHours(0, 0, 0, 0);
-        endDate = new Date(now);
-        endDate.setHours(23, 59, 59, 999);
       } else if (timeRange === 'three_months') {
-        // Last 3 months
+        // Start: 1st day of (current month - 2), End: Current date
         startDate = new Date(now);
-        startDate.setMonth(startDate.getMonth() - 3);
+        startDate.setMonth(startDate.getMonth() - 2);
+        startDate.setDate(1);
         startDate.setHours(0, 0, 0, 0);
-        endDate = new Date(now);
-        endDate.setHours(23, 59, 59, 999);
       } else {
-        // default: this_month (last 30 days)
+        // default: this_month (1st of current month → Current date)
         startDate = new Date(now);
-        startDate.setDate(startDate.getDate() - 30);
+        startDate.setDate(1);
         startDate.setHours(0, 0, 0, 0);
-        endDate = new Date(now);
-        endDate.setHours(23, 59, 59, 999);
       }
 
-      // Add one day to endDate for < comparison in SQL
-      const nextDay = new Date(endDate);
-      nextDay.setDate(nextDay.getDate() + 1);
-
-      startDate.setHours(0, 0, 0, 0);
-      // We look until end of today to include all potential events
-      endDate = new Date(now);
-      endDate.setHours(23, 59, 59, 999);
-
       const startStr = startDate.toISOString().split('T')[0];
-      const endStr = new Date(endDate.getTime() + 86400000).toISOString().split('T')[0];
+      // We look until end of today to include all potential events
+      const endStr = new Date(now.getTime() + 86400000).toISOString().split('T')[0];
 
       console.log(`[AdminHome] SQL Range: ${startStr} to ${endStr}`);
 
@@ -119,7 +108,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
             AND s.status != 'cancelled'
             AND s.date >= $2
             AND s.date < $3
-            AND s.date <= CURRENT_DATE`,
+            AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))`,
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ count: string }>(
@@ -136,12 +125,12 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
             AND s.date < $3
             AND (
               s.date < CURRENT_DATE 
-              OR (s.date = CURRENT_DATE AND s.start_time < LOCALTIME)
+              OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME)
             )`,
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*)::text AS count
+          `SELECT COUNT(DISTINCT s.id)::text AS count
           FROM shifts s
           LEFT JOIN LATERAL (
             SELECT ae.event_time
@@ -156,9 +145,9 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
             AND s.status != 'cancelled'
             AND s.date >= $2
             AND s.date < $3
-            AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.end_time < LOCALTIME))
+            AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
             AND first_checkin.event_time IS NOT NULL
-            AND first_checkin.event_time > ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '15 minutes'`,
+            AND first_checkin.event_time >= ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '1 second'`,
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ total: string; confirmed: string }>(
@@ -173,13 +162,23 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*)::text AS count
-          FROM employee_documents
-          WHERE company_id = ANY($1)
-            AND deleted_at IS NULL
-            AND (is_deleted = FALSE OR is_deleted IS NULL)
-            AND expires_at >= CURRENT_DATE
-            AND expires_at <= CURRENT_DATE + INTERVAL '60 days'`,
+          `SELECT COUNT(DISTINCT storage_path)::text AS count
+          FROM (
+            SELECT storage_path FROM employee_documents
+            WHERE company_id = ANY($1) 
+              AND deleted_at IS NULL 
+              AND (is_deleted = FALSE OR is_deleted IS NULL)
+              AND expires_at >= CURRENT_DATE 
+              AND expires_at <= CURRENT_DATE + INTERVAL '60 days'
+            UNION
+            SELECT d.file_url AS storage_path FROM documents d
+            LEFT JOIN users e ON e.id = d.employee_id
+            LEFT JOIN users u ON u.id = d.uploaded_by
+            WHERE (e.company_id = ANY($1) OR (e.id IS NULL AND u.company_id = ANY($1)))
+              AND d.is_deleted = false
+              AND d.expires_at >= CURRENT_DATE 
+              AND d.expires_at <= CURRENT_DATE + INTERVAL '60 days'
+          ) combined`,
           [allowedCompanyIds]
         ),
         queryOne<{ in_progress: string; avg_pct: string }>(
@@ -193,6 +192,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
               COUNT(t.id) FILTER (WHERE t.completed = TRUE) AS completed_tasks
             FROM users u
             LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
+            LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = u.company_id
             WHERE u.company_id = ANY($1)
               AND u.role = 'employee'
               AND u.status = 'active'
@@ -253,10 +253,11 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       const [
         expiringContracts, newHires, totalEmployeesRes, monthlyHires, statusBreakdown, expiringTrainings, expiringMedicals,
         pendingShiftPreview, pendingShiftCountRow, pendingLeavePreview, pendingLeaveCountRow,
+        totalStoresRes, expiringContractsCountRes,
       ] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, termination_date AS contract_end_date FROM users
-           WHERE company_id = ANY($1) AND status = 'active' AND termination_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
+           WHERE company_id = ANY($1) AND status = 'active' AND role != 'store_terminal' AND termination_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'
            ORDER BY termination_date LIMIT 10`,
           [allowedCompanyIds]
         ),
@@ -267,7 +268,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           [allowedCompanyIds]
         ),
         queryOne<{ count: string }>(
-          `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active'`,
+          `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active' AND role != 'store_terminal'`,
           [allowedCompanyIds]
         ),
         query<{ month: string; count: number }>(
@@ -333,6 +334,14 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            WHERE lr.company_id = ANY($1) AND lr.current_approver_role = 'hr'`,
           [allowedCompanyIds],
         ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM stores WHERE company_id = ANY($1) AND is_active = true`,
+          [allowedCompanyIds]
+        ),
+        queryOne<{ count: string }>(
+          `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active' AND role != 'store_terminal' AND termination_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
+          [allowedCompanyIds]
+        ),
       ]);
       ok(res, {
         expiringContracts,
@@ -346,33 +355,100 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         pendingShiftCount: parseInt(pendingShiftCountRow?.c ?? '0', 10),
         pendingLeavePreview,
         pendingLeaveCount: parseInt(pendingLeaveCountRow?.c ?? '0', 10),
+        totalStores: parseInt(totalStoresRes?.count || '0', 10),
+        expiringContractsCount: parseInt(expiringContractsCountRes?.count || '0', 10),
       });
       break;
     }
 
     case 'area_manager': {
       const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-      const assignedStores = await query(
-        `SELECT DISTINCT s.id, s.name, s.code,
-          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
-         FROM stores s
-         INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = ANY($2)
-         WHERE s.is_active = true AND s.company_id = ANY($2)`,
-        [userId, allowedCompanyIds]
-      );
-      const amStores = await query<{ store_id: number }>(
-        `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = ANY($2)
-           AND status = 'active' AND store_id IS NOT NULL`,
-        [userId, allowedCompanyIds],
-      );
-      const storeIds = amStores.map((r) => r.store_id);
+      const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
+
+      let visibleStoreIds: number[] = [];
+      let assignedStores: { id: number; name: string; code: string; employee_count: number }[] = [];
+
+      if (hasCrossCompanyAccess) {
+        // Toggle is ON: Include all stores in the group companies
+        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number }>(
+          `SELECT s.id, s.name, s.code,
+            (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+           FROM stores s
+           WHERE s.is_active = true AND s.company_id = ANY($1)
+           ORDER BY s.name`,
+          [allowedCompanyIds]
+        );
+        visibleStoreIds = assignedStores.map(s => s.id);
+      } else {
+        // Toggle is OFF: Only include stores assigned directly in own company
+        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number }>(
+          `SELECT DISTINCT s.id, s.name, s.code,
+            (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
+           FROM stores s
+           INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = $2
+           WHERE s.is_active = true
+           ORDER BY s.name`,
+          [userId, companyId]
+        );
+        
+        const amStores = await query<{ store_id: number }>(
+          `SELECT DISTINCT store_id FROM users
+           WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = $2
+             AND status = 'active' AND store_id IS NOT NULL`,
+          [userId, companyId],
+        );
+        
+        visibleStoreIds = Array.from(new Set([
+          ...assignedStores.map(s => s.id),
+          ...amStores.map(r => r.store_id)
+        ]));
+      }
+
+      // Metrics calculation
+      let activeEmployeesCount = 0;
+      let presentEmployeesCount = 0;
+      let weeklyHours = 0;
+
+      if (visibleStoreIds.length > 0) {
+        const [empRes, presRes, hoursRes] = await Promise.all([
+          queryOne<{ c: string }>(
+            `SELECT COUNT(*)::text AS c FROM users 
+             WHERE role = 'employee' AND status = 'active' AND store_id = ANY($1)`,
+            [visibleStoreIds]
+          ),
+          queryOne<{ c: string }>(
+            `SELECT COUNT(DISTINCT ae.user_id)::text AS c 
+             FROM attendance_events ae
+             JOIN users u ON u.id = ae.user_id
+             WHERE ae.event_type = 'checkin' 
+               AND ae.created_at::date = CURRENT_DATE
+               AND u.role = 'employee' AND u.status = 'active' 
+               AND u.store_id = ANY($1)`,
+            [visibleStoreIds]
+          ),
+          queryOne<{ total: string }>(
+            `SELECT COALESCE(SUM(weekly_hours), 0)::text AS total
+             FROM users
+             WHERE role = 'employee' AND status = 'active'
+               AND store_id = ANY($1)`,
+            [visibleStoreIds]
+          )
+        ]);
+
+        activeEmployeesCount = parseInt(empRes?.c ?? '0', 10);
+        presentEmployeesCount = parseInt(presRes?.c ?? '0', 10);
+        weeklyHours = Math.round(parseFloat(hoursRes?.total ?? '0'));
+      }
+
       let pendingShiftPreview: unknown[] = [];
       let pendingShiftCount = 0;
       let pendingLeavePreview: unknown[] = [];
       let pendingLeaveCount = 0;
-      if (storeIds.length > 0) {
-        const ph = storeIds.map((_, i) => `$${2 + i}`).join(', ');
+      
+      const storesForPending = hasCrossCompanyAccess ? visibleStoreIds : visibleStoreIds; // Both cases use visibleStoreIds now
+
+      if (storesForPending.length > 0) {
+        const ph = storesForPending.map((_, i) => `$${2 + i}`).join(', ');
         pendingShiftPreview = await query(
           `SELECT s.id, s.user_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
                   s.start_time, s.end_time, u.name AS user_name, u.surname AS user_surname, st.name AS store_name
@@ -384,14 +460,14 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
              AND s.date >= CURRENT_DATE AND s.date <= CURRENT_DATE + INTERVAL '60 days'
            ORDER BY s.date, s.start_time
            LIMIT 8`,
-          [allowedCompanyIds, ...storeIds],
+          [allowedCompanyIds, ...storesForPending],
         );
         const psc = await queryOne<{ c: string }>(
           `SELECT COUNT(*)::text AS c FROM shifts s
            WHERE s.company_id = ANY($1) AND s.store_id IN (${ph})
              AND s.status = 'scheduled'
              AND s.date >= CURRENT_DATE AND s.date <= CURRENT_DATE + INTERVAL '60 days'`,
-          [allowedCompanyIds, ...storeIds],
+          [allowedCompanyIds, ...storesForPending],
         );
         pendingShiftCount = parseInt(psc?.c ?? '0', 10);
         pendingLeavePreview = await query(
@@ -403,13 +479,13 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
              AND lr.store_id IN (${ph})
            ORDER BY lr.created_at ASC
            LIMIT 8`,
-          [allowedCompanyIds, ...storeIds],
+          [allowedCompanyIds, ...storesForPending],
         );
         const plc = await queryOne<{ c: string }>(
           `SELECT COUNT(*)::text AS c FROM leave_requests lr
            WHERE lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager'
              AND lr.store_id IN (${ph})`,
-          [allowedCompanyIds, ...storeIds],
+          [allowedCompanyIds, ...storesForPending],
         );
         pendingLeaveCount = parseInt(plc?.c ?? '0', 10);
       }
@@ -419,6 +495,12 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         pendingShiftCount,
         pendingLeavePreview,
         pendingLeaveCount,
+        stats: {
+          totalStores: visibleStoreIds.length,
+          activeEmployees: activeEmployeesCount,
+          presentEmployees: presentEmployeesCount,
+          weeklyHours: weeklyHours
+        }
       });
       break;
     }
@@ -429,7 +511,17 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         break;
       }
       const today = localToday();
-      const [store, employeeCount, todayShifts, todayAttendanceSummary, upcomingWeekCheck] = await Promise.all([
+      const [
+        store, 
+        employeeCount, 
+        todayShifts, 
+        todayAttendanceSummary, 
+        upcomingWeekCheck,
+        activeEmpRes,
+        presentEmpRes,
+        weeklyHoursRes,
+        overtimeRes
+      ] = await Promise.all([
         queryOne(
           `SELECT id, name, code, max_staff FROM stores WHERE id = $1 AND company_id = $2`,
           [storeId, companyId]
@@ -476,7 +568,52 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
              AND status != 'cancelled'`,
           [storeId, companyId]
         ),
+        // Active Employees Count
+        queryOne<{ c: string }>(
+          `SELECT COUNT(*)::text AS c FROM users 
+           WHERE store_id = $1 AND role = 'employee' AND status = 'active'`,
+          [storeId]
+        ),
+        // Present Employees Count (today)
+        queryOne<{ c: string }>(
+          `SELECT COUNT(DISTINCT user_id)::text AS c 
+           FROM attendance_events 
+           WHERE store_id = $1 AND event_type = 'checkin' AND event_time::date = CURRENT_DATE`,
+          [storeId]
+        ),
+        // Total Weekly Hours (sum of contractual weekly_hours)
+        queryOne<{ total: string }>(
+          `SELECT COALESCE(SUM(weekly_hours), 0)::text AS total
+           FROM users
+           WHERE store_id = $1 AND role = 'employee' AND status = 'active'`,
+          [storeId]
+        ),
+        // Total Overtime (this week)
+        queryOne<{ total: string }>(
+          `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (ae.event_time - (s.date + s.end_time))) / 3600.0), 0)::text AS total
+           FROM shifts s
+           JOIN LATERAL (
+             SELECT event_time 
+             FROM attendance_events 
+             WHERE user_id = s.user_id 
+               AND event_type = 'checkout' 
+               AND event_time::date = s.date
+             ORDER BY event_time DESC 
+             LIMIT 1
+           ) ae ON TRUE
+           WHERE s.store_id = $1 
+             AND s.status != 'cancelled'
+             AND s.date >= DATE_TRUNC('week', CURRENT_DATE)
+             AND s.date < DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'
+             AND ae.event_time > (s.date + s.end_time)`,
+          [storeId]
+        )
       ]);
+
+      const activeCount = parseInt(activeEmpRes?.c ?? '0', 10);
+      const presentCount = parseInt(presentEmpRes?.c ?? '0', 10);
+      const weeklyHours = Math.round(parseFloat(weeklyHoursRes?.total ?? '0'));
+      const overtimeHours = Math.round(parseFloat(overtimeRes?.total ?? '0'));
 
       // ── Anomalies calculation (mirrors attendance.controller.ts) ──────────
       // 1. Fetch finished shifts for today
@@ -625,6 +762,12 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         ),
         upcomingWeekShiftsPlanned: parseInt(upcomingWeekCheck?.count || '0', 10) > 0,
         upcomingWeekNumber: parseInt(upcomingWeekCheck?.week_number || '0', 10),
+        stats: {
+          activeEmployees: activeCount,
+          presentEmployees: presentCount,
+          weeklyHours: weeklyHours,
+          overtime: overtimeHours
+        }
       });
       break;
     }
