@@ -86,7 +86,6 @@ export const ROLE_HIERARCHY: Record<ManagedRole, number> = {
 
 export function canManageRole(currentUserRole: string, isSuperAdmin: boolean, targetRole: ManagedRole): boolean {
   if (isSuperAdmin) return true;
-  if (currentUserRole === 'admin') return true; // Admin can manage Admin and everything below
   
   const currentLevel = ROLE_HIERARCHY[currentUserRole as ManagedRole] ?? -1;
   const targetLevel = ROLE_HIERARCHY[targetRole] ?? -1;
@@ -111,7 +110,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   documenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   ats: ['admin', 'hr', 'area_manager'],
   onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
-  notifiche: ['admin', 'hr', 'store_manager'],
+  notifiche: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   report: [],
   gestione_accessi: ['admin', 'hr', 'area_manager'],
   terminali: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
@@ -134,6 +133,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager')) return true;
   if (moduleName === 'ats' && role === 'admin') return true;
   if (moduleName === 'onboarding') return true;
-  if (moduleName === 'notifiche' && (role === 'admin' || role === 'hr')) return true;
+  if (moduleName === 'notifiche') return true;
   return false;
 }
