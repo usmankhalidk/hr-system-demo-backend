@@ -56,12 +56,21 @@ export async function sendEmailForCompany(
     const transporter = nodemailer.createTransport({
       host: cfg.smtp_host,
       port: cfg.smtp_port || 587,
-      secure: cfg.smtp_port === 465,
+      secure: cfg.smtp_port === 465, // true for 465, false for others (STARTTLS)
       auth: {
         user: cfg.smtp_user,
         pass: cfg.smtp_pass,
       },
+      tls: {
+        // Ensure compatibility with modern SMTP servers like Office 365
+        ciphers: 'SSLv3',
+        rejectUnauthorized: false
+      },
+      debug: true, // Enable debug logs in the terminal
+      logger: true // Log the SMTP transaction
     });
+
+    console.log(`[EMAIL] Attempting to send email to ${options.to} via ${cfg.smtp_host}...`);
 
     await transporter.sendMail({
       from: cfg.smtp_from || cfg.smtp_user,
