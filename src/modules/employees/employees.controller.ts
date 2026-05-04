@@ -11,6 +11,8 @@ import {
   resolveGroupRoleVisibility,
 } from '../../utils/companyScope';
 import { emitToCompany } from '../../config/socket';
+import { emailService } from '../../services/email.service';
+import { sendWelcomeEmailAutomation } from '../automations/welcomeEmail';
 
 // Safe fields for list view (NO sensitive data)
 const LIST_FIELDS = `
@@ -945,6 +947,15 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.termination_type ?? null,
     ],
   );
+  // Check Welcome Email Automation (Background task, non-blocking)
+  if (body.personal_email && typeof body.personal_email === 'string') {
+    sendWelcomeEmailAutomation(
+      companyId,
+      body.personal_email,
+      { name: body.name, surname: body.surname, email: body.email },
+      tempPassword
+    ).catch(err => console.error('[AUTOMATION] Background welcome email error:', err));
+  }
 
   created(res, employee, 'Dipendente creato con successo');
 });

@@ -38,6 +38,7 @@ import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
 import terminalsRoutes from './modules/terminals/terminals.routes';
+import automationsRoutes from './modules/automations/automations.routes';
 import { processEscalationLogic } from './modules/leave/leave.controller';
 
 dotenv.config();
@@ -432,6 +433,7 @@ app.use('/api/ats', atsRoutes);
 app.use('/api/email', emailRoutes);
 app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/window-display', windowDisplayRoutes);
+app.use('/api/automations', automationsRoutes);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
