@@ -653,7 +653,8 @@ CREATE TABLE IF NOT EXISTS candidates (
   phone              TEXT,
   resume_path        TEXT,
   tags               TEXT[] NOT NULL DEFAULT '{}',
-  status             TEXT NOT NULL DEFAULT 'received', -- received | review | interview | hired | rejected
+  status             TEXT NOT NULL DEFAULT 'received', -- received | review | phone_interview | interview | hired | rejected
+  rejection_reason   TEXT,
   source             TEXT NOT NULL DEFAULT 'internal', -- internal | indeed
   source_ref         TEXT,
   unread             BOOLEAN NOT NULL DEFAULT TRUE,
@@ -672,9 +673,13 @@ CREATE TABLE IF NOT EXISTS interviews (
   id                 SERIAL PRIMARY KEY,
   candidate_id       INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
   interviewer_id     INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  interview_type     TEXT NOT NULL DEFAULT 'in_person'
+                     CHECK (interview_type IN ('phone','in_person')),
   scheduled_at       TIMESTAMPTZ NOT NULL,
   location           TEXT,
+  description        TEXT,
   notes              TEXT,
+  duration_minutes   INTEGER,
   ics_uid            TEXT,
   feedback           TEXT,
   created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -683,6 +688,38 @@ CREATE TABLE IF NOT EXISTS interviews (
 
 CREATE INDEX IF NOT EXISTS idx_interviews_candidate
   ON interviews (candidate_id);
+
+CREATE TABLE IF NOT EXISTS candidate_comments (
+  id              SERIAL PRIMARY KEY,
+  candidate_id    INTEGER NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  user_id         INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body            TEXT NOT NULL,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_candidate_comments_candidate
+  ON candidate_comments (candidate_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS interview_notification_logs (
+  id              SERIAL PRIMARY KEY,
+  interview_id    INTEGER NOT NULL REFERENCES interviews(id) ON DELETE CASCADE,
+  channel         TEXT NOT NULL CHECK (channel IN ('email','push','in_app')),
+  recipient_type  TEXT NOT NULL CHECK (recipient_type IN ('candidate','interviewer')),
+  recipient_email TEXT,
+  status          TEXT NOT NULL DEFAULT 'pending'
+                  CHECK (status IN ('pending','sending','done','error')),
+  error_message   TEXT,
+  attempts        INTEGER NOT NULL DEFAULT 0,
+  last_attempt_at TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_interview_notif_logs_interview
+  ON interview_notification_logs (interview_id);
+
+
 
 CREATE TABLE IF NOT EXISTS job_risk_snapshots (
   id              SERIAL PRIMARY KEY,

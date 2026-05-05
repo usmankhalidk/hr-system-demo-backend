@@ -89,10 +89,10 @@ export const ROLE_HIERARCHY: Record<ManagedRole, number> = {
 
 export function canManageRole(currentUserRole: string, isSuperAdmin: boolean, targetRole: ManagedRole): boolean {
   if (isSuperAdmin) return true;
-  
+
   const currentLevel = ROLE_HIERARCHY[currentUserRole as ManagedRole] ?? -1;
   const targetLevel = ROLE_HIERARCHY[targetRole] ?? -1;
-  
+
   // Lower roles can ONLY manage roles STRICTLY below them
   return currentLevel > targetLevel;
 }
@@ -117,7 +117,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   report: [],
   gestione_accessi: ['admin', 'hr', 'area_manager'],
   terminali: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
-  automazioni: ['admin', 'hr', 'area_manager'],
+  automazioni: ['admin', 'hr'],
 };
 
 export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleName): boolean {

@@ -1,10 +1,10 @@
 import { Router } from 'express';
 import { getAutomations, updateAutomation } from './automations.controller';
-import { authenticate, requireRole } from '../../middleware/auth';
+import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 
 const router = Router();
 
-router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), getAutomations);
-router.put('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), updateAutomation);
+router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, getAutomations);
+router.put('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, updateAutomation);
 
 export default router;

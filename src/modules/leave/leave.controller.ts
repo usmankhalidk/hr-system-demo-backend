@@ -7,6 +7,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { DEFAULT_SHIFT_TIMEZONE } from '../../utils/shiftTimezone';
 import { sendNotification } from '../notifications/notifications.service';
+import { sendLeaveResultAutomation } from '../automations/leaveNotification';
 import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
@@ -1203,6 +1204,14 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
         priority: 'high',
       }).catch(() => undefined);
 
+      // Trigger Leave Result Email Automation (Background task)
+      sendLeaveResultAutomation(
+        leaveRequest.company_id,
+        leaveId,
+        'approved',
+        userId
+      ).catch(err => console.error('[AUTOMATION] Background leave approval email error:', err));
+
       ok(res, updated.rows[0], 'Richiesta approvata');
     } catch (err: any) {
       await client.query('ROLLBACK');
@@ -1366,6 +1375,14 @@ export const rejectLeave = asyncHandler(async (req: Request, res: Response) => {
       message: `La tua richiesta di permesso dal ${leaveRequest.start_date} al ${leaveRequest.end_date} è stata rifiutata.`,
       priority: 'high',
     }).catch(() => undefined);
+
+    // Trigger Leave Result Email Automation (Background task)
+    sendLeaveResultAutomation(
+      leaveRequest.company_id,
+      leaveId,
+      'rejected',
+      userId
+    ).catch(err => console.error('[AUTOMATION] Background leave rejection email error:', err));
 
     ok(res, updatedResult.rows[0], 'Richiesta rifiutata');
   } catch (err) {
@@ -1711,6 +1728,17 @@ export const createLeaveAdmin = asyncHandler(async (req: Request, res: Response)
     }
 
     await dbClient.query('COMMIT');
+
+    // Trigger Leave Result Email Automation for Admin-created leave (Background task)
+    if (isAdminOrSuper) {
+      sendLeaveResultAutomation(
+        effectiveCompanyId,
+        inserted.rows[0].id,
+        'approved',
+        adminId
+      ).catch(err => console.error('[AUTOMATION] Background admin-created leave approval email error:', err));
+    }
+
     const msg = isAdminOrSuper ? 'Permesso creato e approvato' : 'Permesso creato (in attesa di approvazione Admin)';
     created(res, inserted.rows[0], msg);
   } catch (err: any) {
