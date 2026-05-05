@@ -1219,6 +1219,121 @@ export async function deleteCandidateComment(
 }
 
 // ---------------------------------------------------------------------------
+// Interview Feedback Comments
+// ---------------------------------------------------------------------------
+
+export interface InterviewFeedbackComment {
+  id: number;
+  interviewId: number;
+  authorId: number;
+  authorName: string | null;
+  authorSurname: string | null;
+  authorAvatarFilename: string | null;
+  authorRole: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listInterviewFeedbackComments(
+  interviewId: number,
+  companyId: number,
+  storeIds?: number[],
+): Promise<InterviewFeedbackComment[]> {
+  const interview = await getInterview(interviewId, companyId, storeIds);
+  if (!interview) return [];
+
+  const rows = await query<Record<string, unknown>>(
+    `SELECT ifc.*, u.name as author_name, u.surname as author_surname,
+            u.avatar_filename as author_avatar_filename, u.role as author_role
+     FROM interview_feedback_comments ifc
+     JOIN users u ON ifc.user_id = u.id
+     WHERE ifc.interview_id = $1
+     ORDER BY ifc.created_at ASC`,
+    [interviewId],
+  );
+
+  return rows.map((r) => ({
+    id: r.id as number,
+    interviewId: r.interview_id as number,
+    authorId: r.user_id as number,
+    authorName: (r.author_name as string | null) ?? null,
+    authorSurname: (r.author_surname as string | null) ?? null,
+    authorAvatarFilename: (r.author_avatar_filename as string | null) ?? null,
+    authorRole: (r.author_role as string | null) ?? null,
+    body: r.body as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  }));
+}
+
+export async function addInterviewFeedbackComment(
+  interviewId: number,
+  userId: number,
+  companyId: number,
+  body: string,
+  storeIds?: number[],
+): Promise<InterviewFeedbackComment | null> {
+  const interview = await getInterview(interviewId, companyId, storeIds);
+  if (!interview) return null;
+
+  const row = await queryOne<Record<string, unknown>>(
+    `INSERT INTO interview_feedback_comments (interview_id, user_id, body)
+     VALUES ($1, $2, $3)
+     RETURNING id`,
+    [interviewId, userId, body],
+  );
+  if (!row) return null;
+
+  const newComment = await queryOne<Record<string, unknown>>(
+    `SELECT ifc.*, u.name as author_name, u.surname as author_surname,
+            u.avatar_filename as author_avatar_filename, u.role as author_role
+     FROM interview_feedback_comments ifc
+     JOIN users u ON ifc.user_id = u.id
+     WHERE ifc.id = $1`,
+    [row.id],
+  );
+
+  return newComment ? {
+    id: newComment.id as number,
+    interviewId: newComment.interview_id as number,
+    authorId: newComment.user_id as number,
+    authorName: (newComment.author_name as string | null) ?? null,
+    authorSurname: (newComment.author_surname as string | null) ?? null,
+    authorAvatarFilename: (newComment.author_avatar_filename as string | null) ?? null,
+    authorRole: (newComment.author_role as string | null) ?? null,
+    body: newComment.body as string,
+    createdAt: newComment.created_at as string,
+    updatedAt: newComment.updated_at as string,
+  } : null;
+}
+
+export async function deleteInterviewFeedbackComment(
+  commentId: number,
+  companyId: number,
+  storeIds?: number[],
+): Promise<boolean> {
+  const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
+  const valid = await queryOne<{ id: number }>(
+    `SELECT ifc.id
+     FROM interview_feedback_comments ifc
+     JOIN interviews i ON i.id = ifc.interview_id
+     JOIN candidates c ON c.id = i.candidate_id
+     LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+     WHERE ifc.id = $1 AND c.company_id = $2
+     ${useStoreScope ? 'AND COALESCE(c.store_id, jp.store_id) = ANY($3::int[])' : ''}`,
+    useStoreScope ? [commentId, companyId, storeIds] : [commentId, companyId],
+  );
+  if (!valid) return false;
+
+  const row = await queryOne<{ id: number }>(
+    `DELETE FROM interview_feedback_comments WHERE id = $1 RETURNING id`,
+    [commentId],
+  );
+  return row !== null;
+}
+
+// ---------------------------------------------------------------------------
 // Interview Notification Logs
 // ---------------------------------------------------------------------------
 

@@ -10,6 +10,7 @@ import {
   updateCandidateStage, markCandidateRead, deleteCandidate,
   listInterviews, createInterview, updateInterview, deleteInterview,
   listCandidateComments, addCandidateComment, deleteCandidateComment,
+  listInterviewFeedbackComments, addInterviewFeedbackComment, deleteInterviewFeedbackComment,
   listInterviewNotificationLogs, createInterviewNotificationLog, updateInterviewNotificationLog,
   getPublishedJobsForFeed,
   CandidateStatus,
@@ -24,12 +25,43 @@ import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
-import { sendEmailForCompany } from '../../services/email.service';
 // Store managers only see their own store; other roles see everything
 function resolveStoreIds(user: Express.Request['user']): number[] | undefined {
   if (!user) return undefined;
   if (user.role === 'store_manager' && user.storeId) return [user.storeId];
   return undefined;
+}
+
+async function isNotificationEnabledForRole(
+  companyId: number,
+  eventKey: string,
+  role?: string | null,
+): Promise<boolean> {
+  const setting = await queryOne<{ enabled: boolean; roles: string[] }>(
+    `SELECT enabled, roles
+     FROM notification_settings
+     WHERE company_id = $1 AND event_key = $2
+     LIMIT 1`,
+    [companyId, eventKey],
+  );
+
+  if (!setting) return true;
+  if (!setting.enabled) return false;
+  if (role && Array.isArray(setting.roles) && setting.roles.length > 0) {
+    return setting.roles.includes(role);
+  }
+  return true;
+}
+
+async function isSmtpConfigured(companyId: number): Promise<boolean> {
+  const row = await queryOne<{ smtp_host: string | null; smtp_user: string | null; smtp_pass: string | null }>(
+    `SELECT smtp_host, smtp_user, smtp_pass
+     FROM company_smtp_configs
+     WHERE company_id = $1
+     LIMIT 1`,
+    [companyId],
+  );
+  return Boolean(row?.smtp_host && row?.smtp_user && row?.smtp_pass);
 }
 
 const VALID_JOB_STATUSES = new Set(['draft', 'published', 'closed']);
@@ -860,7 +892,7 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
     return;
   }
 
-  const validStatuses: CandidateStatus[] = ['received', 'review', 'interview', 'hired', 'rejected'];
+  const validStatuses: CandidateStatus[] = ['received', 'review', 'phone_interview', 'interview', 'hired', 'rejected'];
   if (!validStatuses.includes(status as CandidateStatus)) {
     badRequest(res, `Stato non valido. Valori ammessi: ${validStatuses.join(', ')}`, 'VALIDATION_ERROR');
     return;
@@ -934,6 +966,46 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
   }
 
   ok(res, { candidate }, 'Stato candidato aggiornato');
+});
+
+export const updateCandidateTagsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const owner = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [id],
+  );
+  if (!owner) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const { tags } = req.body as { tags?: unknown };
+
+  if (!Array.isArray(tags)) {
+    badRequest(res, 'Il campo "tags" deve essere un array', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Validate that all tags are strings
+  if (!tags.every(tag => typeof tag === 'string')) {
+    badRequest(res, 'Tutti i tag devono essere stringhe', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const candidateRow = await queryOne<Record<string, unknown>>(
+    `UPDATE candidates SET tags = $1, updated_at = NOW() WHERE id = $2 RETURNING id`,
+    [JSON.stringify(tags), id]
+  );
+
+  if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
+
+  const candidate = await getCandidate(id, owner.company_id);
+  if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
+
+  ok(res, { candidate }, 'Tag aggiornati');
 });
 
 export const deleteCandidateHandler = asyncHandler(async (req: Request, res: Response) => {
@@ -1021,12 +1093,20 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
     return;
   }
 
+  const normalizedInterviewType = interview_type === 'phone' || interview_type === 'in_person'
+    ? interview_type
+    : 'in_person';
+  const normalizedDescription =
+    typeof description === 'string' ? description :
+    typeof notes === 'string' ? notes :
+    undefined;
+
   let icsUid: string | undefined;
   if (send_ics === true) {
     try {
       const { uid } = generateICSEvent({
         title: 'Colloquio di lavoro',
-        description: typeof notes === 'string' ? notes : undefined,
+        description: normalizedDescription,
         location: typeof location === 'string' ? location : undefined,
         startDate: scheduledDate,
       });
@@ -1039,10 +1119,10 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
   const storeIds = resolveStoreIds(req.user);
   const interview = await createInterview(candidateId, companyId, {
     interviewerId: typeof interviewer_id === 'number' ? interviewer_id : undefined,
-    interviewType: interview_type === 'phone' || interview_type === 'in_person' ? interview_type : undefined,
+    interviewType: normalizedInterviewType,
     scheduledAt:   scheduledDate.toISOString(),
     location:      typeof location === 'string' ? location : undefined,
-    description:   typeof description === 'string' ? description : undefined,
+    description:   normalizedDescription,
     notes:         typeof notes === 'string' ? notes : undefined,
     durationMinutes: typeof duration_minutes === 'number' ? duration_minutes : undefined,
     icsUid,
@@ -1055,44 +1135,48 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   // Notify the assigned interviewer in their own locale (resolved inside sendNotification from DB)
   if (typeof interviewer_id === 'number' && interviewer_id !== userId) {
-    // We intentionally don't forward the *requester's* locale here — sendNotification
-    // will resolve the interviewer's own locale from the users table.
-    const interviewerLocaleRow = await import('../../config/database')
-      .then(({ queryOne }) =>
-        queryOne<{ locale?: string }>(`SELECT locale FROM users WHERE id = $1 LIMIT 1`, [interviewer_id])
-      ).catch(() => null);
-    const interviewerLocale = interviewerLocaleRow?.locale ?? 'it';
+    const interviewerRow = await queryOne<{ locale?: string | null; role?: string | null }>(
+      `SELECT locale, role FROM users WHERE id = $1 LIMIT 1`,
+      [interviewer_id],
+    );
+    const interviewerLocale = interviewerRow?.locale ?? 'it';
     const dateLocale = interviewerLocale === 'it' ? 'it-IT' : 'en-GB';
-
-    // Create notification log for interviewer
-    const interviewerNotifLog = await createInterviewNotificationLog(
-      interview.id,
-      'in_app',
-      'interviewer'
+    const inviteEnabled = await isNotificationEnabledForRole(
+      companyId,
+      'ats.interview_invite',
+      interviewerRow?.role ?? null,
     );
 
-    if (interviewerNotifLog) {
-      notificationPromises.push(
-        updateInterviewNotificationLog(interviewerNotifLog.id, 'sending')
-          .then(() => sendNotification({
-            companyId,
-            userId: interviewer_id,
-            type: 'ats.interview_invite',
-            title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
-            message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
-              date: scheduledDate.toLocaleDateString(dateLocale),
-            }),
-            priority: 'high',
-            locale: interviewerLocale,
-            channels: ['in_app', 'email'],
-          }))
-          .then(() => updateInterviewNotificationLog(interviewerNotifLog.id, 'done'))
-          .catch((err) => updateInterviewNotificationLog(
-            interviewerNotifLog.id, 
-            'error', 
-            err instanceof Error ? err.message : String(err)
-          ))
+    if (inviteEnabled) {
+      const interviewerNotifLog = await createInterviewNotificationLog(
+        interview.id,
+        'in_app',
+        'interviewer'
       );
+
+      if (interviewerNotifLog) {
+        notificationPromises.push(
+          updateInterviewNotificationLog(interviewerNotifLog.id, 'sending')
+            .then(() => sendNotification({
+              companyId,
+              userId: interviewer_id,
+              type: 'ats.interview_invite',
+              title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
+              message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+                date: scheduledDate.toLocaleDateString(dateLocale),
+              }),
+              priority: 'high',
+              locale: interviewerLocale,
+              channels: ['in_app', 'email'],
+            }))
+            .then(() => updateInterviewNotificationLog(interviewerNotifLog.id, 'done'))
+            .catch((err) => updateInterviewNotificationLog(
+              interviewerNotifLog.id,
+              'error',
+              err instanceof Error ? err.message : String(err)
+            ))
+        );
+      }
     }
   }
 
@@ -1102,7 +1186,8 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
     [candidateId]
   );
 
-  if (candidateEmailRow?.email) {
+  const smtpEnabled = await isSmtpConfigured(companyId);
+  if (candidateEmailRow?.email && smtpEnabled) {
     // Create notification log for candidate email
     const candidateEmailLog = await createInterviewNotificationLog(
       interview.id,
@@ -1123,16 +1208,16 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
               candidateName: candidateEmailRow.full_name,
               interviewDate: scheduledDate.toLocaleDateString('it-IT'),
               interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
-              interviewType: interview_type === 'phone' ? 'telefonico' : 'di persona',
+              interviewType: normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona',
               location: typeof location === 'string' ? location : '',
-              description: typeof description === 'string' ? description : '',
+              description: normalizedDescription ?? '',
             },
             fallbackSubject: 'Colloquio di lavoro programmato',
             fallbackBody: `
               <p>Gentile ${candidateEmailRow.full_name},</p>
-              <p>È stato programmato un colloquio ${interview_type === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
+              <p>È stato programmato un colloquio ${normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
               ${typeof location === 'string' && location ? `<p><strong>Luogo:</strong> ${location}</p>` : ''}
-              ${typeof description === 'string' && description ? `<p><strong>Dettagli:</strong> ${description}</p>` : ''}
+              ${normalizedDescription ? `<p><strong>Dettagli:</strong> ${normalizedDescription}</p>` : ''}
               <p>Cordiali saluti</p>
             `,
           }))
@@ -1614,6 +1699,90 @@ export const deleteCandidateCommentHandler = asyncHandler(async (req: Request, r
 });
 
 // ---------------------------------------------------------------------------
+// Interview Feedback Comments
+// ---------------------------------------------------------------------------
+
+export const listInterviewFeedbackCommentsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const interviewId = parseInt(req.params.interviewId, 10);
+  if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [interviewId],
+  );
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const comments = await listInterviewFeedbackComments(interviewId, interviewRow.company_id, storeIds);
+  ok(res, { comments });
+});
+
+export const addInterviewFeedbackCommentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const interviewId = parseInt(req.params.interviewId, 10);
+  if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
+
+  const { body } = req.body as Record<string, unknown>;
+  if (typeof body !== 'string' || !body.trim()) { badRequest(res, 'Il feedback è obbligatorio'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [interviewId],
+  );
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const comment = await addInterviewFeedbackComment(
+    interviewId,
+    req.user!.userId,
+    interviewRow.company_id,
+    body.trim(),
+    storeIds,
+  );
+  if (!comment) { notFound(res, 'Colloquio non trovato'); return; }
+
+  created(res, { comment }, 'Feedback aggiunto');
+});
+
+export const deleteInterviewFeedbackCommentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const commentRow = await queryOne<{ company_id: number; user_id: number }>(
+    `SELECT c.company_id, ifc.user_id
+     FROM interview_feedback_comments ifc
+     JOIN interviews i ON i.id = ifc.interview_id
+     JOIN candidates c ON c.id = i.candidate_id
+     WHERE ifc.id = $1
+     LIMIT 1`,
+    [id],
+  );
+  if (!commentRow) { notFound(res, 'Feedback non trovato'); return; }
+  if (!allowedCompanyIds.includes(commentRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  if (req.user?.role !== 'admin' && req.user?.role !== 'hr' && commentRow.user_id !== req.user?.userId) {
+    forbidden(res, 'Non puoi eliminare questo feedback');
+    return;
+  }
+
+  const deleted = await deleteInterviewFeedbackComment(id, commentRow.company_id, storeIds);
+  if (!deleted) { notFound(res, 'Feedback non trovato'); return; }
+
+  ok(res, {}, 'Feedback eliminato');
+});
+
+// ---------------------------------------------------------------------------
 // Notifications
 // ---------------------------------------------------------------------------
 
@@ -1643,8 +1812,17 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const interviewRow = await queryOne<{ company_id: number, candidate_id: number }>(
-    `SELECT company_id, candidate_id FROM interviews WHERE id = $1 LIMIT 1`,
+  const interviewRow = await queryOne<{
+    company_id: number;
+    candidate_id: number;
+    interviewer_id: number | null;
+    scheduled_at: string | null;
+    location: string | null;
+    description: string | null;
+    interview_type: string | null;
+  }>(
+    `SELECT company_id, candidate_id, interviewer_id, scheduled_at, location, description, interview_type
+     FROM interviews WHERE id = $1 LIMIT 1`,
     [interviewId],
   );
   if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
@@ -1653,36 +1831,105 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
   const { logId } = req.body as Record<string, unknown>;
   if (typeof logId !== 'number') { badRequest(res, 'ID log non valido'); return; }
 
-  const logRow = await queryOne<{ recipient_email: string, recipient_type: string, status: string }>(
-    `SELECT recipient_email, recipient_type, status FROM interview_notification_logs WHERE id = $1 AND interview_id = $2 LIMIT 1`,
+  const logRow = await queryOne<{
+    recipient_email: string | null;
+    recipient_type: string;
+    channel: string;
+    status: string;
+  }>(
+    `SELECT recipient_email, recipient_type, channel, status
+     FROM interview_notification_logs
+     WHERE id = $1 AND interview_id = $2
+     LIMIT 1`,
     [logId, interviewId]
   );
-  
+
   if (!logRow) { notFound(res, 'Log di notifica non trovato'); return; }
-  
+
   if (logRow.status === 'done') {
     badRequest(res, 'Questa notifica è già stata inviata con successo');
     return;
   }
 
-  if (!logRow.recipient_email) {
-    badRequest(res, 'Impossibile ritentare: indirizzo email mancante');
-    return;
-  }
-
-  // Update status to sending
   await updateInterviewNotificationLog(logId, 'sending');
 
   try {
-    const candidateRow = await queryOne<{ full_name: string }>(`SELECT full_name FROM candidates WHERE id = $1 LIMIT 1`, [interviewRow.candidate_id]);
-    
-    // Attempt send email
-    await sendEmailForCompany(interviewRow.company_id, {
-      to: logRow.recipient_email,
-      subject: 'Aggiornamento Colloquio', // We can improve templates later
-      html: `<p>Ciao, c'è un aggiornamento per il tuo colloquio per il candidato ${candidateRow?.full_name || ''}.</p>`,
-    });
-    
+    if (logRow.channel === 'in_app') {
+      if (!interviewRow.interviewer_id) {
+        throw new Error('Intervistatore non assegnato');
+      }
+
+      const interviewerRow = await queryOne<{ locale?: string | null; role?: string | null }>(
+        `SELECT locale, role FROM users WHERE id = $1 LIMIT 1`,
+        [interviewRow.interviewer_id],
+      );
+      const inviteEnabled = await isNotificationEnabledForRole(
+        interviewRow.company_id,
+        'ats.interview_invite',
+        interviewerRow?.role ?? null,
+      );
+      if (!inviteEnabled) {
+        throw new Error('Notifica disabilitata nelle impostazioni');
+      }
+
+      const interviewerLocale = interviewerRow?.locale ?? 'it';
+      const dateLocale = interviewerLocale === 'it' ? 'it-IT' : 'en-GB';
+      const scheduledDate = interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date();
+
+      await sendNotification({
+        companyId: interviewRow.company_id,
+        userId: interviewRow.interviewer_id,
+        type: 'ats.interview_invite',
+        title: t(interviewerLocale, 'notifications.ats_interview_invite.title'),
+        message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+          date: scheduledDate.toLocaleDateString(dateLocale),
+        }),
+        priority: 'high',
+        locale: interviewerLocale,
+        channels: ['in_app', 'email'],
+      });
+    } else {
+      if (!logRow.recipient_email) {
+        throw new Error('Indirizzo email mancante');
+      }
+
+      const smtpEnabled = await isSmtpConfigured(interviewRow.company_id);
+      if (!smtpEnabled) {
+        throw new Error('SMTP non configurato');
+      }
+
+      const candidateRow = await queryOne<{ full_name: string }>(
+        `SELECT full_name FROM candidates WHERE id = $1 LIMIT 1`,
+        [interviewRow.candidate_id],
+      );
+
+      const scheduledDate = interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date();
+      const interviewType = interviewRow.interview_type === 'phone' ? 'telefonico' : 'di persona';
+
+      const { sendNotificationEmail } = await import('../../services/email.service');
+      await sendNotificationEmail({
+        companyId: interviewRow.company_id,
+        toEmail: logRow.recipient_email,
+        eventKey: 'ats.interview_scheduled',
+        variables: {
+          candidateName: candidateRow?.full_name ?? '',
+          interviewDate: scheduledDate.toLocaleDateString('it-IT'),
+          interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
+          interviewType,
+          location: interviewRow.location ?? '',
+          description: interviewRow.description ?? '',
+        },
+        fallbackSubject: 'Colloquio di lavoro programmato',
+        fallbackBody: `
+          <p>Gentile ${candidateRow?.full_name ?? ''},</p>
+          <p>È stato programmato un colloquio ${interviewType} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
+          ${interviewRow.location ? `<p><strong>Luogo:</strong> ${interviewRow.location}</p>` : ''}
+          ${interviewRow.description ? `<p><strong>Dettagli:</strong> ${interviewRow.description}</p>` : ''}
+          <p>Cordiali saluti</p>
+        `,
+      });
+    }
+
     await updateInterviewNotificationLog(logId, 'done');
     ok(res, {}, 'Notifica reinviata con successo');
   } catch (error) {

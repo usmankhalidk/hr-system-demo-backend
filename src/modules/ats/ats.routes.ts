@@ -4,11 +4,12 @@ import {
   listJobsHandler, getJobHandler, createJobHandler, updateJobHandler,
   deleteJobHandler, publishJobHandler, syncJobHandler,
   listCandidatesHandler, getCandidateHandler, createCandidateHandler,
-  updateCandidateHandler, deleteCandidateHandler,
+  updateCandidateHandler, updateCandidateTagsHandler, deleteCandidateHandler,
   listInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
   jobFeedHandler,
   listCandidateCommentsHandler, addCandidateCommentHandler, deleteCandidateCommentHandler,
+  listInterviewFeedbackCommentsHandler, addInterviewFeedbackCommentHandler, deleteInterviewFeedbackCommentHandler,
   listInterviewNotificationsHandler, retryInterviewNotificationHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
@@ -37,6 +38,7 @@ router.get('/candidates',         listCandidatesHandler);
 router.post('/candidates',        optionalInternalResumeUpload, createCandidateHandler);
 router.get('/candidates/:id',     getCandidateHandler);
 router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);
+router.patch('/candidates/:id/tags', requireRole('admin', 'hr'), updateCandidateTagsHandler);
 router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHandler);
 
 // Candidate Comments
@@ -51,6 +53,10 @@ router.post('/candidates/:candidateId/interviews', requireRole('admin', 'hr', 'a
 // Interview updates by standalone ID
 router.patch('/interviews/:id',               requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateInterviewHandler);
 router.delete('/interviews/:id',              requireRole('admin', 'hr'), deleteInterviewHandler);
+// Interview feedback comments
+router.get('/interviews/:interviewId/feedback',  requireRole('admin', 'hr', 'area_manager', 'store_manager'), listInterviewFeedbackCommentsHandler);
+router.post('/interviews/:interviewId/feedback', requireRole('admin', 'hr', 'area_manager', 'store_manager'), addInterviewFeedbackCommentHandler);
+router.delete('/interviews/feedback/:id',        requireRole('admin', 'hr', 'area_manager', 'store_manager'), deleteInterviewFeedbackCommentHandler);
 router.get('/interviews/:id/notifications',   requireRole('admin', 'hr'), listInterviewNotificationsHandler);
 router.post('/interviews/:id/notifications/retry', requireRole('admin', 'hr'), retryInterviewNotificationHandler);
 
