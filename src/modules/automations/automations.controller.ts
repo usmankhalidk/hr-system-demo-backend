@@ -5,15 +5,17 @@ import { asyncHandler } from '../../utils/asyncHandler';
 
 // GET /api/automations
 export const getAutomations = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) {
+  const explicit = req.query.company_id || req.body.company_id;
+  const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
     notFound(res, 'Company not found');
     return;
   }
 
   const automations = await query<{ automation_id: string; is_enabled: boolean }>(
     `SELECT automation_id, is_enabled FROM company_automations WHERE company_id = $1`,
-    [companyId],
+    [targetCompanyId],
   );
 
   // Return a map of automation_id -> is_enabled
@@ -27,8 +29,10 @@ export const getAutomations = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/automations/:id
 export const updateAutomation = asyncHandler(async (req: Request, res: Response) => {
-  const { companyId } = req.user!;
-  if (!companyId) {
+  const explicit = req.body.company_id || req.query.company_id;
+  const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
     notFound(res, 'Company not found');
     return;
   }
@@ -47,7 +51,7 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
      ON CONFLICT (company_id, automation_id)
      DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = CURRENT_TIMESTAMP
      RETURNING automation_id, is_enabled`,
-    [companyId, id, is_enabled],
+    [targetCompanyId, id, is_enabled],
   );
 
   ok(res, result);
