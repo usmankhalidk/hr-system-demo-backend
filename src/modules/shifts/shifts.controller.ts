@@ -8,6 +8,7 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { validateShiftCrossFields } from './shifts.routes';
 import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
 import { sendNotification } from '../notifications/notifications.service';
+import { sendShiftCreatedAutomation } from '../automations/shiftNotification';
 import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
@@ -700,6 +701,20 @@ export const createShift = asyncHandler(async (req: Request, res: Response) => {
     priority: 'medium',
     locale: createdLocale,
   }).catch(() => undefined);
+
+  // Trigger Shift Created Email Automation (Background task)
+  if (shift) {
+    sendShiftCreatedAutomation(
+      effectiveCompanyId,
+      targetUser.id,
+      {
+        date: String(shift.date ?? nDate),
+        start_time: String(shift.start_time ?? ''),
+        end_time: String(shift.end_time ?? ''),
+        store_name: String(shift.store_name ?? ''),
+      }
+    ).catch(err => console.error('[AUTOMATION] Background shift email error:', err));
+  }
 
   created(res, shift, 'Turno creato');
 });

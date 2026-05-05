@@ -34,10 +34,10 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
   }
 
   const { id } = req.params;
-  const { isEnabled } = req.body;
+  const { is_enabled } = req.body;
 
-  if (typeof isEnabled !== 'boolean') {
-    badRequest(res, 'isEnabled must be a boolean');
+  if (typeof is_enabled !== 'boolean') {
+    badRequest(res, 'is_enabled must be a boolean');
     return;
   }
 
@@ -47,7 +47,7 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
      ON CONFLICT (company_id, automation_id)
      DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = CURRENT_TIMESTAMP
      RETURNING automation_id, is_enabled`,
-    [companyId, id, isEnabled],
+    [companyId, id, is_enabled],
   );
 
   ok(res, result);
