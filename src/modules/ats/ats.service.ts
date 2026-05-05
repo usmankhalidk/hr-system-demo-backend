@@ -9,15 +9,16 @@ export type JobStatus = 'draft' | 'published' | 'closed';
 export type JobLanguage = 'it' | 'en' | 'both';
 export type JobType = 'fulltime' | 'parttime' | 'contract' | 'internship';
 export type RemoteType = 'onsite' | 'hybrid' | 'remote';
-export type CandidateStatus = 'received' | 'review' | 'interview' | 'hired' | 'rejected';
+export type CandidateStatus = 'received' | 'review' | 'phone_interview' | 'interview' | 'hired' | 'rejected';
 
 // Valid forward stage transitions — backward moves are not allowed
 const FORWARD_TRANSITIONS: Record<CandidateStatus, CandidateStatus[]> = {
-  received:  ['review',    'rejected'],
-  review:    ['interview', 'rejected'],
-  interview: ['hired',     'rejected'],
-  hired:     [],
-  rejected:  [],
+  received:        ['review',          'rejected'],
+  review:          ['phone_interview', 'interview', 'rejected'],
+  phone_interview: ['interview',       'rejected'],
+  interview:       ['hired',           'rejected'],
+  hired:           [],
+  rejected:        [],
 };
 
 export function isValidTransition(from: CandidateStatus, to: CandidateStatus): boolean {
@@ -117,6 +118,7 @@ export interface Candidate {
   coverLetter: string | null;
   tags: string[];
   status: CandidateStatus;
+  rejectionReason: string | null;
   source: string;
   sourceRef: string | null;
   gdprConsent: boolean;
@@ -158,9 +160,12 @@ export interface Interview {
   candidateId: number;
   interviewerId: number | null;
   storeId: number | null;
+  interviewType: 'phone' | 'in_person';
   scheduledAt: string;
   location: string | null;
+  description: string | null;
   notes: string | null;
+  durationMinutes: number | null;
   icsUid: string | null;
   feedback: string | null;
   createdAt: string;
@@ -259,6 +264,7 @@ function mapCandidate(row: Record<string, unknown>): Candidate {
   const normalizedStatus: CandidateStatus = (
     rawStatus === 'received'
     || rawStatus === 'review'
+    || rawStatus === 'phone_interview'
     || rawStatus === 'interview'
     || rawStatus === 'hired'
     || rawStatus === 'rejected'
@@ -277,6 +283,7 @@ function mapCandidate(row: Record<string, unknown>): Candidate {
     coverLetter: row.cover_letter as string | null,
     tags: (row.tags as string[]) ?? [],
     status: normalizedStatus,
+    rejectionReason: row.rejection_reason as string | null,
     source: row.source as string,
     sourceRef: row.source_ref as string | null,
     gdprConsent: (row.gdpr_consent as boolean | null) ?? false,
@@ -314,9 +321,12 @@ function mapInterview(row: Record<string, unknown>): Interview {
     candidateId: row.candidate_id as number,
     interviewerId: row.interviewer_id as number | null,
     storeId: row.store_id as number | null,
+    interviewType: (row.interview_type as 'phone' | 'in_person') || 'in_person',
     scheduledAt: row.scheduled_at as string,
     location: row.location as string | null,
+    description: row.description as string | null,
     notes: row.notes as string | null,
+    durationMinutes: row.duration_minutes as number | null,
     icsUid: row.ics_uid as string | null,
     feedback: row.feedback as string | null,
     createdAt: row.created_at as string,
@@ -905,26 +915,33 @@ export async function updateCandidateStage(
   companyId: number,
   newStatus: CandidateStatus,
   storeIds?: number[],
+  rejectionReason?: string
 ): Promise<{ candidate: Candidate | null; error?: string }> {
   const candidate = await getCandidate(id, companyId, storeIds);
   if (!candidate) return { candidate: null };
 
-  if (candidate.status === newStatus) return { candidate };
+  if (candidate.status === newStatus && candidate.rejectionReason === (rejectionReason ?? null)) {
+    return { candidate };
+  }
 
-  if (!isValidTransition(candidate.status, newStatus)) {
+  if (candidate.status !== newStatus && !isValidTransition(candidate.status, newStatus)) {
     return {
       candidate: null,
       error: `Transizione di stato non valida: ${candidate.status} → ${newStatus}`,
     };
   }
 
-  const row = await queryOne<Record<string, unknown>>(
-    `UPDATE candidates
-     SET status = $1, last_stage_change = NOW(), updated_at = NOW()
-     WHERE id = $2 AND company_id = $3
-     RETURNING *`,
-    [newStatus, id, companyId],
-  );
+  let queryStr = `UPDATE candidates SET status = $1, last_stage_change = NOW(), updated_at = NOW()`;
+  const queryParams: unknown[] = [newStatus, id, companyId];
+
+  if (newStatus === 'rejected' && rejectionReason !== undefined) {
+    queryStr = `UPDATE candidates SET status = $1, rejection_reason = $4, last_stage_change = NOW(), updated_at = NOW()`;
+    queryParams.push(rejectionReason);
+  }
+
+  queryStr += ` WHERE id = $2 AND company_id = $3 RETURNING *`;
+
+  const row = await queryOne<Record<string, unknown>>(queryStr, queryParams);
   return { candidate: row ? mapCandidate(row) : null };
 }
 
@@ -995,9 +1012,12 @@ export async function createInterview(
   companyId: number,
   data: {
     interviewerId?: number;
+    interviewType?: 'phone' | 'in_person';
     scheduledAt: string;
     location?: string;
+    description?: string;
     notes?: string;
+    durationMinutes?: number;
     icsUid?: string;
   },
   storeIds?: number[],
@@ -1006,17 +1026,23 @@ export async function createInterview(
   if (!candidate) return null;
 
   const row = await queryOne<Record<string, unknown>>(
-    `INSERT INTO interviews (candidate_id, company_id, store_id, interviewer_id, scheduled_at, location, notes, ics_uid)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO interviews (
+       candidate_id, company_id, store_id, interviewer_id,
+       interview_type, scheduled_at, location, description, notes, duration_minutes, ics_uid
+     )
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      RETURNING *`,
     [
       candidateId,
       companyId,
       candidate.storeId ?? null,
       data.interviewerId ?? null,
+      data.interviewType || 'in_person',
       data.scheduledAt,
       data.location ?? null,
+      data.description ?? null,
       data.notes ?? null,
+      data.durationMinutes ?? null,
       data.icsUid ?? null,
     ],
   );
@@ -1028,8 +1054,11 @@ export async function updateInterview(
   companyId: number,
   data: {
     scheduledAt?: string;
+    interviewType?: 'phone' | 'in_person';
     location?: string;
+    description?: string;
     notes?: string;
+    durationMinutes?: number;
     feedback?: string;
     interviewerId?: number | null;
   },
@@ -1039,11 +1068,14 @@ export async function updateInterview(
   const params: unknown[] = [];
   let idx = 1;
 
-  if (data.scheduledAt !== undefined)   { setParts.push(`scheduled_at = $${idx++}`);  params.push(data.scheduledAt); }
-  if (data.location !== undefined)      { setParts.push(`location = $${idx++}`);       params.push(data.location); }
-  if (data.notes !== undefined)         { setParts.push(`notes = $${idx++}`);          params.push(data.notes); }
-  if (data.feedback !== undefined)      { setParts.push(`feedback = $${idx++}`);       params.push(data.feedback); }
-  if (data.interviewerId !== undefined) { setParts.push(`interviewer_id = $${idx++}`); params.push(data.interviewerId); }
+  if (data.scheduledAt !== undefined)    { setParts.push(`scheduled_at = $${idx++}`);     params.push(data.scheduledAt); }
+  if (data.interviewType !== undefined)  { setParts.push(`interview_type = $${idx++}`);   params.push(data.interviewType); }
+  if (data.location !== undefined)       { setParts.push(`location = $${idx++}`);         params.push(data.location); }
+  if (data.description !== undefined)    { setParts.push(`description = $${idx++}`);      params.push(data.description); }
+  if (data.notes !== undefined)          { setParts.push(`notes = $${idx++}`);            params.push(data.notes); }
+  if (data.durationMinutes !== undefined){ setParts.push(`duration_minutes = $${idx++}`); params.push(data.durationMinutes); }
+  if (data.feedback !== undefined)       { setParts.push(`feedback = $${idx++}`);         params.push(data.feedback); }
+  if (data.interviewerId !== undefined)  { setParts.push(`interviewer_id = $${idx++}`);   params.push(data.interviewerId); }
 
   if (setParts.length === 0) return getInterview(id, companyId, storeIds);
 
@@ -1080,4 +1112,201 @@ export async function deleteInterview(id: number, companyId: number): Promise<bo
     [id, companyId],
   );
   return row !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Candidate Comments
+// ---------------------------------------------------------------------------
+
+export interface CandidateComment {
+  id: number;
+  candidateId: number;
+  userId: number;
+  userFullName: string;
+  userAvatarFilename: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listCandidateComments(candidateId: number, companyId: number, storeIds?: number[]): Promise<CandidateComment[]> {
+  const candidate = await getCandidate(candidateId, companyId, storeIds);
+  if (!candidate) return [];
+
+  const rows = await query<Record<string, unknown>>(
+    `SELECT cc.*, u.name as user_name, u.surname as user_surname, u.avatar_filename as user_avatar_filename
+     FROM candidate_comments cc
+     JOIN users u ON cc.user_id = u.id
+     WHERE cc.candidate_id = $1
+     ORDER BY cc.created_at ASC`,
+    [candidateId],
+  );
+
+  return rows.map(r => ({
+    id: r.id as number,
+    candidateId: r.candidate_id as number,
+    userId: r.user_id as number,
+    userFullName: `${r.user_name} ${r.user_surname}`,
+    userAvatarFilename: r.user_avatar_filename as string | null,
+    body: r.body as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  }));
+}
+
+export async function addCandidateComment(
+  candidateId: number,
+  userId: number,
+  companyId: number,
+  body: string,
+  storeIds?: number[]
+): Promise<CandidateComment | null> {
+  const candidate = await getCandidate(candidateId, companyId, storeIds);
+  if (!candidate) return null;
+
+  const row = await queryOne<Record<string, unknown>>(
+    `INSERT INTO candidate_comments (candidate_id, user_id, body)
+     VALUES ($1, $2, $3)
+     RETURNING id`,
+    [candidateId, userId, body]
+  );
+  if (!row) return null;
+
+  const newComment = await queryOne<Record<string, unknown>>(
+    `SELECT cc.*, u.name as user_name, u.surname as user_surname, u.avatar_filename as user_avatar_filename
+     FROM candidate_comments cc
+     JOIN users u ON cc.user_id = u.id
+     WHERE cc.id = $1`,
+    [row.id]
+  );
+
+  return newComment ? {
+    id: newComment.id as number,
+    candidateId: newComment.candidate_id as number,
+    userId: newComment.user_id as number,
+    userFullName: `${newComment.user_name} ${newComment.user_surname}`,
+    userAvatarFilename: newComment.user_avatar_filename as string | null,
+    body: newComment.body as string,
+    createdAt: newComment.created_at as string,
+    updatedAt: newComment.updated_at as string,
+  } : null;
+}
+
+export async function deleteCandidateComment(
+  commentId: number,
+  companyId: number,
+  storeIds?: number[]
+): Promise<boolean> {
+  const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
+  
+  // Verify ownership/visibility first
+  const valid = await queryOne<{ id: number }>(
+    `SELECT cc.id FROM candidate_comments cc
+     JOIN candidates c ON c.id = cc.candidate_id
+     LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+     WHERE cc.id = $1 AND c.company_id = $2
+     ${useStoreScope ? 'AND COALESCE(c.store_id, jp.store_id) = ANY($3::int[])' : ''}`,
+     useStoreScope ? [commentId, companyId, storeIds] : [commentId, companyId]
+  );
+  
+  if (!valid) return false;
+
+  const row = await queryOne<{ id: number }>(
+    `DELETE FROM candidate_comments WHERE id = $1 RETURNING id`,
+    [commentId]
+  );
+  return row !== null;
+}
+
+// ---------------------------------------------------------------------------
+// Interview Notification Logs
+// ---------------------------------------------------------------------------
+
+export interface InterviewNotificationLog {
+  id: number;
+  interviewId: number;
+  channel: 'email' | 'push' | 'in_app';
+  recipientType: 'candidate' | 'interviewer';
+  recipientEmail: string | null;
+  status: 'pending' | 'sending' | 'done' | 'error';
+  errorMessage: string | null;
+  attempts: number;
+  lastAttemptAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listInterviewNotificationLogs(
+  interviewId: number,
+  companyId: number,
+  storeIds?: number[]
+): Promise<InterviewNotificationLog[]> {
+  const interview = await getInterview(interviewId, companyId, storeIds);
+  if (!interview) return [];
+
+  const rows = await query<Record<string, unknown>>(
+    `SELECT * FROM interview_notification_logs
+     WHERE interview_id = $1
+     ORDER BY created_at DESC`,
+    [interviewId],
+  );
+
+  return rows.map(r => ({
+    id: r.id as number,
+    interviewId: r.interview_id as number,
+    channel: r.channel as 'email' | 'push' | 'in_app',
+    recipientType: r.recipient_type as 'candidate' | 'interviewer',
+    recipientEmail: r.recipient_email as string | null,
+    status: r.status as 'pending' | 'sending' | 'done' | 'error',
+    errorMessage: r.error_message as string | null,
+    attempts: r.attempts as number,
+    lastAttemptAt: r.last_attempt_at as string | null,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  }));
+}
+
+export async function createInterviewNotificationLog(
+  interviewId: number,
+  channel: 'email' | 'push' | 'in_app',
+  recipientType: 'candidate' | 'interviewer',
+  recipientEmail?: string
+): Promise<InterviewNotificationLog | null> {
+  const row = await queryOne<Record<string, unknown>>(
+    `INSERT INTO interview_notification_logs (interview_id, channel, recipient_type, recipient_email)
+     VALUES ($1, $2, $3, $4)
+     RETURNING *`,
+    [interviewId, channel, recipientType, recipientEmail ?? null]
+  );
+  if (!row) return null;
+  return {
+    id: row.id as number,
+    interviewId: row.interview_id as number,
+    channel: row.channel as 'email' | 'push' | 'in_app',
+    recipientType: row.recipient_type as 'candidate' | 'interviewer',
+    recipientEmail: row.recipient_email as string | null,
+    status: row.status as 'pending' | 'sending' | 'done' | 'error',
+    errorMessage: row.error_message as string | null,
+    attempts: row.attempts as number,
+    lastAttemptAt: row.last_attempt_at as string | null,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
+  };
+}
+
+export async function updateInterviewNotificationLog(
+  id: number,
+  status: 'pending' | 'sending' | 'done' | 'error',
+  errorMessage?: string | null
+): Promise<void> {
+  await query(
+    `UPDATE interview_notification_logs
+     SET status = $2,
+         error_message = $3,
+         attempts = attempts + 1,
+         last_attempt_at = NOW(),
+         updated_at = NOW()
+     WHERE id = $1`,
+    [id, status, errorMessage ?? null]
+  );
 }

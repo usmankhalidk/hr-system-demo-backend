@@ -8,6 +8,8 @@ import {
   listInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
   jobFeedHandler,
+  listCandidateCommentsHandler, addCandidateCommentHandler, deleteCandidateCommentHandler,
+  listInterviewNotificationsHandler, retryInterviewNotificationHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
 
@@ -37,13 +39,20 @@ router.get('/candidates/:id',     getCandidateHandler);
 router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);
 router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHandler);
 
+// Candidate Comments
+router.get('/candidates/:candidateId/comments',  requireRole('admin', 'hr', 'area_manager', 'store_manager'), listCandidateCommentsHandler);
+router.post('/candidates/:candidateId/comments', requireRole('admin', 'hr'), addCandidateCommentHandler);
+router.delete('/comments/:id',                   requireRole('admin', 'hr'), deleteCandidateCommentHandler);
+
 // Interviews nested under candidates
 router.get('/candidates/:candidateId/interviews',  listInterviewsHandler);
 router.post('/candidates/:candidateId/interviews', requireRole('admin', 'hr', 'area_manager', 'store_manager'), createInterviewHandler);
 
 // Interview updates by standalone ID
-router.patch('/interviews/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateInterviewHandler);
-router.delete('/interviews/:id',  requireRole('admin', 'hr'), deleteInterviewHandler);
+router.patch('/interviews/:id',               requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateInterviewHandler);
+router.delete('/interviews/:id',              requireRole('admin', 'hr'), deleteInterviewHandler);
+router.get('/interviews/:id/notifications',   requireRole('admin', 'hr'), listInterviewNotificationsHandler);
+router.post('/interviews/:id/notifications/retry', requireRole('admin', 'hr'), retryInterviewNotificationHandler);
 
 // Alerts + Risks
 router.get('/alerts', requireRole('admin', 'hr', 'area_manager', 'store_manager'), getAlertsHandler);

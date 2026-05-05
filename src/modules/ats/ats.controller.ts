@@ -9,6 +9,8 @@ import {
   listCandidates, getCandidate, createCandidate,
   updateCandidateStage, markCandidateRead, deleteCandidate,
   listInterviews, createInterview, updateInterview, deleteInterview,
+  listCandidateComments, addCandidateComment, deleteCandidateComment,
+  listInterviewNotificationLogs, createInterviewNotificationLog, updateInterviewNotificationLog,
   getPublishedJobsForFeed,
   CandidateStatus,
   JobLanguage,
@@ -22,7 +24,7 @@ import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
-
+import { sendEmailForCompany } from '../../services/email.service';
 // Store managers only see their own store; other roles see everything
 function resolveStoreIds(user: Express.Request['user']): number[] | undefined {
   if (!user) return undefined;
@@ -851,7 +853,7 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
   if (!owner) { notFound(res, 'Candidato non trovato'); return; }
   if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const { status } = req.body as { status?: unknown };
+  const { status, rejection_reason } = req.body as { status?: unknown; rejection_reason?: unknown };
 
   if (!status || typeof status !== 'string') {
     badRequest(res, 'Il campo "status" è obbligatorio', 'VALIDATION_ERROR');
@@ -891,7 +893,13 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
     return;
   }
 
-  const { candidate, error } = await updateCandidateStage(id, owner.company_id, status as CandidateStatus, storeIds);
+  const { candidate, error } = await updateCandidateStage(
+    id, 
+    owner.company_id, 
+    status as CandidateStatus, 
+    storeIds, 
+    typeof rejection_reason === 'string' ? rejection_reason : undefined
+  );
   if (error) { badRequest(res, error, 'INVALID_TRANSITION'); return; }
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
 
@@ -1000,7 +1008,7 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   const companyId = candidateRow.company_id;
 
-  const { scheduled_at, location, notes, interviewer_id, send_ics } = req.body as Record<string, unknown>;
+  const { scheduled_at, interview_type, location, description, notes, duration_minutes, interviewer_id, send_ics } = req.body as Record<string, unknown>;
 
   if (!scheduled_at || typeof scheduled_at !== 'string') {
     badRequest(res, 'La data del colloquio è obbligatoria', 'VALIDATION_ERROR');
@@ -1031,13 +1039,19 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
   const storeIds = resolveStoreIds(req.user);
   const interview = await createInterview(candidateId, companyId, {
     interviewerId: typeof interviewer_id === 'number' ? interviewer_id : undefined,
+    interviewType: interview_type === 'phone' || interview_type === 'in_person' ? interview_type : undefined,
     scheduledAt:   scheduledDate.toISOString(),
     location:      typeof location === 'string' ? location : undefined,
+    description:   typeof description === 'string' ? description : undefined,
     notes:         typeof notes === 'string' ? notes : undefined,
+    durationMinutes: typeof duration_minutes === 'number' ? duration_minutes : undefined,
     icsUid,
   }, storeIds);
 
   if (!interview) { notFound(res, 'Candidato non trovato'); return; }
+
+  // Create notification logs for tracking
+  const notificationPromises: Promise<void>[] = [];
 
   // Notify the assigned interviewer in their own locale (resolved inside sendNotification from DB)
   if (typeof interviewer_id === 'number' && interviewer_id !== userId) {
@@ -1050,18 +1064,92 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
     const interviewerLocale = interviewerLocaleRow?.locale ?? 'it';
     const dateLocale = interviewerLocale === 'it' ? 'it-IT' : 'en-GB';
 
-    sendNotification({
-      companyId,
-      userId: interviewer_id,
-      type: 'ats.interview_invite',
-      title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
-      message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
-        date: scheduledDate.toLocaleDateString(dateLocale),
-      }),
-      priority: 'high',
-      locale: interviewerLocale,
-    }).catch(() => undefined);
+    // Create notification log for interviewer
+    const interviewerNotifLog = await createInterviewNotificationLog(
+      interview.id,
+      'in_app',
+      'interviewer'
+    );
+
+    if (interviewerNotifLog) {
+      notificationPromises.push(
+        updateInterviewNotificationLog(interviewerNotifLog.id, 'sending')
+          .then(() => sendNotification({
+            companyId,
+            userId: interviewer_id,
+            type: 'ats.interview_invite',
+            title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
+            message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+              date: scheduledDate.toLocaleDateString(dateLocale),
+            }),
+            priority: 'high',
+            locale: interviewerLocale,
+            channels: ['in_app', 'email'],
+          }))
+          .then(() => updateInterviewNotificationLog(interviewerNotifLog.id, 'done'))
+          .catch((err) => updateInterviewNotificationLog(
+            interviewerNotifLog.id, 
+            'error', 
+            err instanceof Error ? err.message : String(err)
+          ))
+      );
+    }
   }
+
+  // Send email notification to candidate
+  const candidateEmailRow = await queryOne<{ email: string | null; full_name: string }>(
+    `SELECT email, full_name FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId]
+  );
+
+  if (candidateEmailRow?.email) {
+    // Create notification log for candidate email
+    const candidateEmailLog = await createInterviewNotificationLog(
+      interview.id,
+      'email',
+      'candidate',
+      candidateEmailRow.email
+    );
+
+    if (candidateEmailLog) {
+      notificationPromises.push(
+        updateInterviewNotificationLog(candidateEmailLog.id, 'sending')
+          .then(() => import('../../services/email.service'))
+          .then(({ sendNotificationEmail }) => sendNotificationEmail({
+            companyId,
+            toEmail: candidateEmailRow.email!,
+            eventKey: 'ats.interview_scheduled',
+            variables: {
+              candidateName: candidateEmailRow.full_name,
+              interviewDate: scheduledDate.toLocaleDateString('it-IT'),
+              interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
+              interviewType: interview_type === 'phone' ? 'telefonico' : 'di persona',
+              location: typeof location === 'string' ? location : '',
+              description: typeof description === 'string' ? description : '',
+            },
+            fallbackSubject: 'Colloquio di lavoro programmato',
+            fallbackBody: `
+              <p>Gentile ${candidateEmailRow.full_name},</p>
+              <p>È stato programmato un colloquio ${interview_type === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
+              ${typeof location === 'string' && location ? `<p><strong>Luogo:</strong> ${location}</p>` : ''}
+              ${typeof description === 'string' && description ? `<p><strong>Dettagli:</strong> ${description}</p>` : ''}
+              <p>Cordiali saluti</p>
+            `,
+          }))
+          .then(() => updateInterviewNotificationLog(candidateEmailLog.id, 'done'))
+          .catch((err) => updateInterviewNotificationLog(
+            candidateEmailLog.id, 
+            'error', 
+            err instanceof Error ? err.message : String(err)
+          ))
+      );
+    }
+  }
+
+  // Execute all notifications in parallel (don't wait for completion)
+  Promise.allSettled(notificationPromises).catch(() => {
+    // Silently handle notification failures - they're logged in the notification_logs table
+  });
 
   created(res, { interview }, 'Colloquio programmato');
 });
@@ -1087,15 +1175,18 @@ export const updateInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   const companyId = interviewRow.company_id;
 
-  const { scheduled_at, location, notes, feedback, interviewer_id } = req.body as Record<string, unknown>;
+  const { scheduled_at, interview_type, location, description, notes, duration_minutes, feedback, interviewer_id } = req.body as Record<string, unknown>;
 
   const role = req.user?.role;
   const feedbackOnlyRole = role === 'area_manager' || role === 'store_manager';
   if (feedbackOnlyRole) {
     const hasRestrictedFields =
       scheduled_at !== undefined ||
+      interview_type !== undefined ||
       location !== undefined ||
+      description !== undefined ||
       notes !== undefined ||
+      duration_minutes !== undefined ||
       interviewer_id !== undefined;
 
     if (hasRestrictedFields) {
@@ -1112,8 +1203,11 @@ export const updateInterviewHandler = asyncHandler(async (req: Request, res: Res
   const storeIds = resolveStoreIds(req.user);
   const updated = await updateInterview(id, companyId, {
     scheduledAt:   typeof scheduled_at === 'string' ? new Date(scheduled_at).toISOString() : undefined,
+    interviewType: interview_type === 'phone' || interview_type === 'in_person' ? interview_type : undefined,
     location:      typeof location === 'string' ? location : undefined,
+    description:   typeof description === 'string' ? description : undefined,
     notes:         typeof notes === 'string' ? notes : undefined,
+    durationMinutes: typeof duration_minutes === 'number' ? duration_minutes : undefined,
     feedback:      typeof feedback === 'string' ? feedback : undefined,
     interviewerId:
       typeof interviewer_id === 'number' ? interviewer_id :
@@ -1442,3 +1536,158 @@ ${jobItems}
     res.status(500).type('text/plain').send('Internal server error');
   }
 };
+
+// ---------------------------------------------------------------------------
+// Candidate Comments
+// ---------------------------------------------------------------------------
+
+export const listCandidateCommentsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const candidateId = parseInt(req.params.candidateId, 10);
+  if (Number.isNaN(candidateId)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const candidateRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId],
+  );
+  if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(candidateRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const comments = await listCandidateComments(candidateId, candidateRow.company_id, storeIds);
+  ok(res, { comments });
+});
+
+export const addCandidateCommentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const candidateId = parseInt(req.params.candidateId, 10);
+  if (Number.isNaN(candidateId)) { badRequest(res, 'ID non valido'); return; }
+  
+  const { body } = req.body as Record<string, unknown>;
+  if (typeof body !== 'string' || !body.trim()) { badRequest(res, 'Il commento è obbligatorio'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const candidateRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId],
+  );
+  if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
+  if (!allowedCompanyIds.includes(candidateRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const comment = await addCandidateComment(candidateId, req.user!.userId, candidateRow.company_id, body.trim(), storeIds);
+  if (!comment) { notFound(res, 'Candidato non trovato'); return; }
+
+  created(res, { comment }, 'Commento aggiunto');
+});
+
+export const deleteCandidateCommentHandler = asyncHandler(async (req: Request, res: Response) => {
+  const id = parseInt(req.params.id, 10);
+  if (Number.isNaN(id)) { badRequest(res, 'ID non valido'); return; }
+
+  // HR or Admin check
+  if (req.user?.role !== 'admin' && req.user?.role !== 'hr') {
+    forbidden(res, 'Solo HR o Admin possono eliminare i commenti');
+    return;
+  }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const commentRow = await queryOne<{ company_id: number }>(
+    `SELECT c.company_id FROM candidate_comments cc
+     JOIN candidates c ON c.id = cc.candidate_id
+     WHERE cc.id = $1 LIMIT 1`,
+     [id]
+  );
+  if (!commentRow) { notFound(res, 'Commento non trovato'); return; }
+  if (!allowedCompanyIds.includes(commentRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const deleted = await deleteCandidateComment(id, commentRow.company_id, storeIds);
+  if (!deleted) { notFound(res, 'Commento non trovato'); return; }
+  
+  ok(res, {}, 'Commento eliminato');
+});
+
+// ---------------------------------------------------------------------------
+// Notifications
+// ---------------------------------------------------------------------------
+
+export const listInterviewNotificationsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const interviewId = parseInt(req.params.id, 10);
+  if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number }>(
+    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [interviewId],
+  );
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const logs = await listInterviewNotificationLogs(interviewId, interviewRow.company_id, storeIds);
+  ok(res, { logs });
+});
+
+export const retryInterviewNotificationHandler = asyncHandler(async (req: Request, res: Response) => {
+  const interviewId = parseInt(req.params.id, 10);
+  if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const interviewRow = await queryOne<{ company_id: number, candidate_id: number }>(
+    `SELECT company_id, candidate_id FROM interviews WHERE id = $1 LIMIT 1`,
+    [interviewId],
+  );
+  if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
+  if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
+
+  const { logId } = req.body as Record<string, unknown>;
+  if (typeof logId !== 'number') { badRequest(res, 'ID log non valido'); return; }
+
+  const logRow = await queryOne<{ recipient_email: string, recipient_type: string, status: string }>(
+    `SELECT recipient_email, recipient_type, status FROM interview_notification_logs WHERE id = $1 AND interview_id = $2 LIMIT 1`,
+    [logId, interviewId]
+  );
+  
+  if (!logRow) { notFound(res, 'Log di notifica non trovato'); return; }
+  
+  if (logRow.status === 'done') {
+    badRequest(res, 'Questa notifica è già stata inviata con successo');
+    return;
+  }
+
+  if (!logRow.recipient_email) {
+    badRequest(res, 'Impossibile ritentare: indirizzo email mancante');
+    return;
+  }
+
+  // Update status to sending
+  await updateInterviewNotificationLog(logId, 'sending');
+
+  try {
+    const candidateRow = await queryOne<{ full_name: string }>(`SELECT full_name FROM candidates WHERE id = $1 LIMIT 1`, [interviewRow.candidate_id]);
+    
+    // Attempt send email
+    await sendEmailForCompany(interviewRow.company_id, {
+      to: logRow.recipient_email,
+      subject: 'Aggiornamento Colloquio', // We can improve templates later
+      html: `<p>Ciao, c'è un aggiornamento per il tuo colloquio per il candidato ${candidateRow?.full_name || ''}.</p>`,
+    });
+    
+    await updateInterviewNotificationLog(logId, 'done');
+    ok(res, {}, 'Notifica reinviata con successo');
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    await updateInterviewNotificationLog(logId, 'error', message);
+    badRequest(res, 'Errore nell\'invio della notifica: ' + message);
+  }
+});
