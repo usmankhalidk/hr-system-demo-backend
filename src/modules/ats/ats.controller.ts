@@ -997,7 +997,7 @@ export const updateCandidateTagsHandler = asyncHandler(async (req: Request, res:
 
   const candidateRow = await queryOne<Record<string, unknown>>(
     `UPDATE candidates SET tags = $1, updated_at = NOW() WHERE id = $2 RETURNING id`,
-    [JSON.stringify(tags), id]
+    [tags, id]
   );
 
   if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
