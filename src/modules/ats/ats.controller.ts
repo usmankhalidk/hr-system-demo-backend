@@ -1828,10 +1828,15 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
   if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
   if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
 
-  const { logId } = req.body as Record<string, unknown>;
-  if (typeof logId !== 'number') { badRequest(res, 'ID log non valido'); return; }
+  const payload = req.body as Record<string, unknown>;
+  const requestedLogId = typeof payload.logId === 'number' ? payload.logId : null;
+  const requestedChannel = payload.channel === 'email' || payload.channel === 'in_app'
+    ? payload.channel
+    : null;
 
-  const logRow = await queryOne<{
+  let logId = requestedLogId;
+  let logRow = requestedLogId
+    ? await queryOne<{
     recipient_email: string | null;
     recipient_type: string;
     channel: string;
@@ -1841,10 +1846,56 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
      FROM interview_notification_logs
      WHERE id = $1 AND interview_id = $2
      LIMIT 1`,
-    [logId, interviewId]
-  );
+    [requestedLogId, interviewId]
+  )
+    : null;
 
-  if (!logRow) { notFound(res, 'Log di notifica non trovato'); return; }
+  if (!logRow) {
+    if (!requestedChannel) {
+      notFound(res, 'Log di notifica non trovato');
+      return;
+    }
+
+    if (!interviewRow.interviewer_id) {
+      badRequest(res, 'Intervistatore non assegnato');
+      return;
+    }
+
+    const interviewerRow = await queryOne<{ email: string | null }>(
+      `SELECT email FROM users WHERE id = $1 LIMIT 1`,
+      [interviewRow.interviewer_id],
+    );
+
+    if (requestedChannel === 'email' && !interviewerRow?.email) {
+      badRequest(res, 'Email intervistatore mancante');
+      return;
+    }
+
+    const createdLog = await createInterviewNotificationLog(
+      interviewId,
+      requestedChannel,
+      'interviewer',
+      requestedChannel === 'email' ? interviewerRow?.email ?? undefined : undefined,
+    );
+
+    if (!createdLog) {
+      badRequest(res, 'Impossibile creare il log di notifica');
+      return;
+    }
+
+    logId = createdLog.id;
+    logRow = {
+      recipient_email: createdLog.recipientEmail,
+      recipient_type: createdLog.recipientType,
+      channel: createdLog.channel,
+      status: createdLog.status,
+    };
+  }
+
+  if (!logId) {
+    badRequest(res, 'ID log non valido');
+    return;
+  }
 
   await updateInterviewNotificationLog(logId, 'sending');
 
@@ -1881,7 +1932,7 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
         }),
         priority: 'high',
         locale: interviewerLocale,
-        channels: ['in_app', 'email'],
+        channels: ['in_app'],
       });
     } else {
       if (!logRow.recipient_email) {
