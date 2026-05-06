@@ -1846,11 +1846,6 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
 
   if (!logRow) { notFound(res, 'Log di notifica non trovato'); return; }
 
-  if (logRow.status === 'done') {
-    badRequest(res, 'Questa notifica è già stata inviata con successo');
-    return;
-  }
-
   await updateInterviewNotificationLog(logId, 'sending');
 
   try {
