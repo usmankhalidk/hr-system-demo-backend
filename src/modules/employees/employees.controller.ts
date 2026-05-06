@@ -865,10 +865,33 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
 
   // M11: Validate store_id if provided
   if (body.store_id) {
-    const storeError = await validateStore(parseInt(body.store_id, 10), companyId!);
+    const storeIdInt = parseInt(body.store_id, 10);
+    const storeError = await validateStore(storeIdInt, companyId!);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
+    }
+
+    // Check store capacity limit
+    const storeInfo = await queryOne<{ max_staff: number }>(
+      `SELECT max_staff FROM stores WHERE id = $1`,
+      [storeIdInt]
+    );
+    if (storeInfo && storeInfo.max_staff > 0) {
+      const activeCountRes = await queryOne<{ count: number }>(
+        `SELECT COUNT(*)::int AS count FROM users WHERE store_id = $1 AND status = 'active' AND role != 'store_terminal'`,
+        [storeIdInt]
+      );
+      const activeCount = activeCountRes ? activeCountRes.count : 0;
+      if (activeCount >= storeInfo.max_staff) {
+        const lang = (req.headers['x-lang'] || req.headers['accept-language'] || 'it').toString().toLowerCase();
+        const isIt = lang.includes('it');
+        const errMsg = isIt 
+          ? 'La capienza del punto vendita è al completo' 
+          : 'Store capacity is full';
+        badRequest(res, errMsg, 'STORE_CAPACITY_FULL');
+        return;
+      }
     }
   }
 
