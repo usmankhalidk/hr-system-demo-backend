@@ -10,7 +10,7 @@ import {
   jobFeedHandler,
   listCandidateCommentsHandler, addCandidateCommentHandler, deleteCandidateCommentHandler,
   listInterviewFeedbackCommentsHandler, addInterviewFeedbackCommentHandler, deleteInterviewFeedbackCommentHandler,
-  listInterviewNotificationsHandler, retryInterviewNotificationHandler,
+  listInterviewNotificationsHandler, sendInterviewNotificationHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
 
@@ -58,7 +58,7 @@ router.get('/interviews/:interviewId/feedback',  requireRole('admin', 'hr', 'are
 router.post('/interviews/:interviewId/feedback', requireRole('admin', 'hr', 'area_manager', 'store_manager'), addInterviewFeedbackCommentHandler);
 router.delete('/interviews/feedback/:id',        requireRole('admin', 'hr', 'area_manager', 'store_manager'), deleteInterviewFeedbackCommentHandler);
 router.get('/interviews/:id/notifications',   requireRole('admin', 'hr'), listInterviewNotificationsHandler);
-router.post('/interviews/:id/notifications/retry', requireRole('admin', 'hr'), retryInterviewNotificationHandler);
+router.post('/interviews/:id/notifications/send', requireRole('admin', 'hr'), sendInterviewNotificationHandler);
 
 // Alerts + Risks
 router.get('/alerts', requireRole('admin', 'hr', 'area_manager', 'store_manager'), getAlertsHandler);

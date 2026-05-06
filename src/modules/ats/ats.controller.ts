@@ -1135,8 +1135,8 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   // Notify the assigned interviewer in their own locale (resolved inside sendNotification from DB)
   if (typeof interviewer_id === 'number' && interviewer_id !== userId) {
-    const interviewerRow = await queryOne<{ locale?: string | null; role?: string | null }>(
-      `SELECT locale, role FROM users WHERE id = $1 LIMIT 1`,
+    const interviewerRow = await queryOne<{ locale?: string | null; role?: string | null; email?: string | null; name?: string; surname?: string }>(
+      `SELECT locale, role, email, name, surname FROM users WHERE id = $1 LIMIT 1`,
       [interviewer_id],
     );
     const interviewerLocale = interviewerRow?.locale ?? 'it';
@@ -1147,6 +1147,7 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
       interviewerRow?.role ?? null,
     );
 
+    // Send in-app notification
     if (inviteEnabled) {
       const interviewerNotifLog = await createInterviewNotificationLog(
         interview.id,
@@ -1167,11 +1168,57 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
               }),
               priority: 'high',
               locale: interviewerLocale,
-              channels: ['in_app', 'email'],
+              channels: ['in_app'],
             }))
             .then(() => updateInterviewNotificationLog(interviewerNotifLog.id, 'done'))
             .catch((err) => updateInterviewNotificationLog(
               interviewerNotifLog.id,
+              'error',
+              err instanceof Error ? err.message : String(err)
+            ))
+        );
+      }
+    }
+
+    // Send email to interviewer
+    const smtpEnabled = await isSmtpConfigured(companyId);
+    if (interviewerRow?.email && smtpEnabled) {
+      const interviewerEmailLog = await createInterviewNotificationLog(
+        interview.id,
+        'email',
+        'interviewer',
+        interviewerRow.email
+      );
+
+      if (interviewerEmailLog) {
+        const interviewerName = `${interviewerRow.name ?? ''} ${interviewerRow.surname ?? ''}`.trim();
+        notificationPromises.push(
+          updateInterviewNotificationLog(interviewerEmailLog.id, 'sending')
+            .then(() => import('../../services/email.service'))
+            .then(({ sendNotificationEmail }) => sendNotificationEmail({
+              companyId,
+              toEmail: interviewerRow.email!,
+              eventKey: 'ats.interview_scheduled',
+              variables: {
+                candidateName: interviewerName,
+                interviewDate: scheduledDate.toLocaleDateString('it-IT'),
+                interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
+                interviewType: normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona',
+                location: typeof location === 'string' ? location : '',
+                description: normalizedDescription ?? '',
+              },
+              fallbackSubject: 'Colloquio di lavoro programmato',
+              fallbackBody: `
+                <p>Gentile ${interviewerName},</p>
+                <p>È stato programmato un colloquio ${normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
+                ${typeof location === 'string' && location ? `<p><strong>Luogo:</strong> ${location}</p>` : ''}
+                ${normalizedDescription ? `<p><strong>Dettagli:</strong> ${normalizedDescription}</p>` : ''}
+                <p>Cordiali saluti</p>
+              `,
+            }))
+            .then(() => updateInterviewNotificationLog(interviewerEmailLog.id, 'done'))
+            .catch((err) => updateInterviewNotificationLog(
+              interviewerEmailLog.id,
               'error',
               err instanceof Error ? err.message : String(err)
             ))
@@ -1805,7 +1852,7 @@ export const listInterviewNotificationsHandler = asyncHandler(async (req: Reques
   ok(res, { logs });
 });
 
-export const retryInterviewNotificationHandler = asyncHandler(async (req: Request, res: Response) => {
+export const sendInterviewNotificationHandler = asyncHandler(async (req: Request, res: Response) => {
   const interviewId = parseInt(req.params.id, 10);
   if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
 
@@ -1833,6 +1880,9 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
   const requestedChannel = payload.channel === 'email' || payload.channel === 'in_app'
     ? payload.channel
     : null;
+  const requestedRecipientType = payload.recipientType === 'candidate' || payload.recipientType === 'interviewer'
+    ? payload.recipientType
+    : 'interviewer';
 
   let logId = requestedLogId;
   let logRow = requestedLogId
@@ -1850,46 +1900,105 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
   )
     : null;
 
+  let recipientName = '';
+  let recipientEmail = '';
+
   if (!logRow) {
     if (!requestedChannel) {
       notFound(res, 'Log di notifica non trovato');
       return;
     }
 
-    if (!interviewRow.interviewer_id) {
-      badRequest(res, 'Intervistatore non assegnato');
-      return;
+    if (requestedRecipientType === 'interviewer') {
+      if (!interviewRow.interviewer_id) {
+        badRequest(res, 'Intervistatore non assegnato');
+        return;
+      }
+
+      const interviewerRow = await queryOne<{ email: string | null; name: string; surname: string }>(
+        `SELECT email, name, surname FROM users WHERE id = $1 LIMIT 1`,
+        [interviewRow.interviewer_id],
+      );
+
+      if (requestedChannel === 'email' && !interviewerRow?.email) {
+        badRequest(res, 'Email intervistatore mancante');
+        return;
+      }
+
+      recipientName = `${interviewerRow?.name ?? ''} ${interviewerRow?.surname ?? ''}`.trim();
+      recipientEmail = interviewerRow?.email ?? '';
+
+      const createdLog = await createInterviewNotificationLog(
+        interviewId,
+        requestedChannel,
+        'interviewer',
+        requestedChannel === 'email' ? interviewerRow?.email ?? undefined : undefined,
+      );
+
+      if (!createdLog) {
+        badRequest(res, 'Impossibile creare il log di notifica');
+        return;
+      }
+
+      logId = createdLog.id;
+      logRow = {
+        recipient_email: createdLog.recipientEmail,
+        recipient_type: createdLog.recipientType,
+        channel: createdLog.channel,
+        status: createdLog.status,
+      };
+    } else {
+      // Candidate
+      const candidateRow = await queryOne<{ email: string | null; full_name: string }>(
+        `SELECT email, full_name FROM candidates WHERE id = $1 LIMIT 1`,
+        [interviewRow.candidate_id],
+      );
+
+      if (requestedChannel === 'email' && !candidateRow?.email) {
+        badRequest(res, 'Email candidato mancante');
+        return;
+      }
+
+      recipientName = candidateRow?.full_name ?? '';
+      recipientEmail = candidateRow?.email ?? '';
+
+      const createdLog = await createInterviewNotificationLog(
+        interviewId,
+        requestedChannel,
+        'candidate',
+        requestedChannel === 'email' ? candidateRow?.email ?? undefined : undefined,
+      );
+
+      if (!createdLog) {
+        badRequest(res, 'Impossibile creare il log di notifica');
+        return;
+      }
+
+      logId = createdLog.id;
+      logRow = {
+        recipient_email: createdLog.recipientEmail,
+        recipient_type: createdLog.recipientType,
+        channel: createdLog.channel,
+        status: createdLog.status,
+      };
     }
-
-    const interviewerRow = await queryOne<{ email: string | null }>(
-      `SELECT email FROM users WHERE id = $1 LIMIT 1`,
-      [interviewRow.interviewer_id],
-    );
-
-    if (requestedChannel === 'email' && !interviewerRow?.email) {
-      badRequest(res, 'Email intervistatore mancante');
-      return;
+  } else {
+    // Get recipient info from existing log
+    if (logRow.recipient_type === 'interviewer' && interviewRow.interviewer_id) {
+      const interviewerRow = await queryOne<{ name: string; surname: string; email: string | null }>(
+        `SELECT name, surname, email FROM users WHERE id = $1 LIMIT 1`,
+        [interviewRow.interviewer_id],
+      );
+      recipientName = `${interviewerRow?.name ?? ''} ${interviewerRow?.surname ?? ''}`.trim();
+      recipientEmail = interviewerRow?.email ?? logRow.recipient_email ?? '';
+    } else if (logRow.recipient_type === 'candidate') {
+      const candidateRow = await queryOne<{ full_name: string; email: string | null }>(
+        `SELECT full_name, email FROM candidates WHERE id = $1 LIMIT 1`,
+        [interviewRow.candidate_id],
+      );
+      recipientName = candidateRow?.full_name ?? '';
+      recipientEmail = candidateRow?.email ?? logRow.recipient_email ?? '';
     }
-
-    const createdLog = await createInterviewNotificationLog(
-      interviewId,
-      requestedChannel,
-      'interviewer',
-      requestedChannel === 'email' ? interviewerRow?.email ?? undefined : undefined,
-    );
-
-    if (!createdLog) {
-      badRequest(res, 'Impossibile creare il log di notifica');
-      return;
-    }
-
-    logId = createdLog.id;
-    logRow = {
-      recipient_email: createdLog.recipientEmail,
-      recipient_type: createdLog.recipientType,
-      channel: createdLog.channel,
-      status: createdLog.status,
-    };
   }
 
   if (!logId) {
@@ -1977,7 +2086,11 @@ export const retryInterviewNotificationHandler = asyncHandler(async (req: Reques
     }
 
     await updateInterviewNotificationLog(logId, 'done');
-    ok(res, {}, 'Notifica reinviata con successo');
+    ok(res, { 
+      success: true, 
+      recipientName, 
+      recipientEmail: logRow.channel === 'email' ? recipientEmail : undefined 
+    }, 'Notifica inviata con successo');
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     await updateInterviewNotificationLog(logId, 'error', message);
