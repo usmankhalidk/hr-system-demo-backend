@@ -6,6 +6,7 @@ import { runDocumentExpiryJob } from './document-expiry.job';
 import { runSignatureReminderJob } from './signature-reminder.job';
 import { runAtsBottleneckJob } from './ats-bottleneck.job';
 import { runManagerAlertJob } from './manager-alert.job';
+import { runReportConfigurationsJob } from './reports.job';
 
 type JobKey =
   | 'welcome_email'
@@ -85,6 +86,11 @@ export function startScheduler(): void {
   cron.schedule('0 7 * * *', () => {
     console.log('[scheduler] manager-alert');
     runForAllCompanies('manager_alert', runManagerAlertJob).catch(console.error);
+  });
+
+  // Weekly report schedules — every minute
+  cron.schedule('* * * * *', () => {
+    runReportConfigurationsJob().catch(console.error);
   });
 
   console.log('[scheduler] All cron jobs registered');
