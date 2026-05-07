@@ -10,6 +10,11 @@ export interface EmailOptions {
   subject: string;
   html: string;
   text?: string;
+  attachments?: {
+    filename: string;
+    content: Buffer | string;
+    contentType?: string;
+  }[];
 }
 
 interface CompanySmtpConfig {
@@ -45,21 +50,37 @@ export async function sendEmailForCompany(
       [companyId],
     );
 
-    if (!cfg || !cfg.smtp_host || !cfg.smtp_user || !cfg.smtp_pass) {
-      // No config or incomplete config — silently skip, do NOT crash
-      console.log(
-        `[EMAIL] No SMTP config for company ${companyId} — email to ${options.to} skipped.`,
-      );
-      return;
+    let smtpHost = cfg?.smtp_host;
+    let smtpPort = cfg?.smtp_port || 587;
+    let smtpUser = cfg?.smtp_user;
+    let smtpPass = cfg?.smtp_pass;
+    let smtpFrom = cfg?.smtp_from;
+
+    if (!smtpHost || !smtpUser || !smtpPass) {
+      // Fallback to global/environment SMTP config if available
+      if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+        smtpHost = process.env.SMTP_HOST;
+        smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
+        smtpUser = process.env.SMTP_USER;
+        smtpPass = process.env.SMTP_PASS;
+        smtpFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
+        console.log(`[EMAIL] Fallback to global SMTP configurations for company ${companyId}.`);
+      } else {
+        // No config or incomplete config — silently skip, do NOT crash
+        console.log(
+          `[EMAIL] No SMTP config for company ${companyId} and no global SMTP variables — email to ${options.to} skipped.`,
+        );
+        return;
+      }
     }
 
     const transporter = nodemailer.createTransport({
-      host: cfg.smtp_host,
-      port: cfg.smtp_port || 587,
-      secure: cfg.smtp_port === 465, // true for 465, false for others (STARTTLS)
+      host: smtpHost,
+      port: smtpPort,
+      secure: smtpPort === 465, // true for 465, false for others (STARTTLS)
       auth: {
-        user: cfg.smtp_user,
-        pass: cfg.smtp_pass,
+        user: smtpUser,
+        pass: smtpPass,
       },
       tls: {
         // Ensure compatibility with modern SMTP servers like Office 365
@@ -70,14 +91,15 @@ export async function sendEmailForCompany(
       logger: true // Log the SMTP transaction
     });
 
-    console.log(`[EMAIL] Attempting to send email to ${options.to} via ${cfg.smtp_host}...`);
+    console.log(`[EMAIL] Attempting to send email to ${options.to} via ${smtpHost}...`);
 
     await transporter.sendMail({
-      from: cfg.smtp_from || cfg.smtp_user,
+      from: smtpFrom || smtpUser,
       to: options.to,
       subject: options.subject,
       html: options.html,
       text: options.text,
+      attachments: options.attachments,
     });
   } catch (err: unknown) {
     // Never propagate — a failed email must not crash the system
