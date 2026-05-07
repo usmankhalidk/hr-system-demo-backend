@@ -5,7 +5,7 @@ import {
   deleteJobHandler, publishJobHandler, syncJobHandler,
   listCandidatesHandler, getCandidateHandler, createCandidateHandler,
   updateCandidateHandler, updateCandidateTagsHandler, deleteCandidateHandler,
-  listInterviewsHandler, createInterviewHandler, updateInterviewHandler,
+  listInterviewsHandler, listAllInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
   jobFeedHandler,
   listCandidateCommentsHandler, addCandidateCommentHandler, deleteCandidateCommentHandler,
@@ -45,6 +45,9 @@ router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHan
 router.get('/candidates/:candidateId/comments',  requireRole('admin', 'hr', 'area_manager', 'store_manager'), listCandidateCommentsHandler);
 router.post('/candidates/:candidateId/comments', requireRole('admin', 'hr'), addCandidateCommentHandler);
 router.delete('/comments/:id',                   requireRole('admin', 'hr'), deleteCandidateCommentHandler);
+
+// Interviews - Get all interviews (for calendar view)
+router.get('/interviews', listAllInterviewsHandler);
 
 // Interviews nested under candidates
 router.get('/candidates/:candidateId/interviews',  listInterviewsHandler);

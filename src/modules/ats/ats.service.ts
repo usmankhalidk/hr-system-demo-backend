@@ -170,6 +170,15 @@ export interface Interview {
   feedback: string | null;
   createdAt: string;
   updatedAt: string;
+  // Extended fields for calendar view
+  candidateName?: string;
+  candidateSurname?: string;
+  candidateAvatarFilename?: string | null;
+  positionTitle?: string;
+  positionId?: number | null;
+  interviewerName?: string;
+  interviewerSurname?: string;
+  interviewerAvatarFilename?: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -331,6 +340,15 @@ function mapInterview(row: Record<string, unknown>): Interview {
     feedback: row.feedback as string | null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    // Extended fields for calendar view
+    candidateName: row.candidate_name as string | undefined,
+    candidateSurname: row.candidate_surname as string | undefined,
+    candidateAvatarFilename: row.candidate_avatar_filename as string | null | undefined,
+    positionTitle: row.position_title as string | undefined,
+    positionId: row.position_id as number | null | undefined,
+    interviewerName: row.interviewer_name as string | undefined,
+    interviewerSurname: row.interviewer_surname as string | undefined,
+    interviewerAvatarFilename: row.interviewer_avatar_filename as string | null | undefined,
   };
 }
 
@@ -986,6 +1004,103 @@ export async function listInterviews(candidateId: number, companyId: number, sto
     useStoreScope ? [candidateId, companyId, storeIds] : [candidateId, companyId],
   );
   return rows.map(mapInterview);
+}
+
+export async function listAllInterviews(
+  companyIds: number[],
+  filters: {
+    dateFrom?: string;
+    dateTo?: string;
+    positionId?: number;
+    candidateId?: number;
+    interviewerId?: number;
+  },
+  storeIds?: number[]
+): Promise<Interview[]> {
+  const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
+  
+  // Build WHERE conditions
+  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const params: any[] = [companyIds];
+  let paramIndex = 2;
+
+  if (useStoreScope) {
+    // Check interview store_id, candidate store_id, or job_posting store_id
+    conditions.push(`COALESCE(i.store_id, c.store_id, jp.store_id) = ANY($${paramIndex}::int[])`);
+    params.push(storeIds);
+    paramIndex++;
+  }
+
+  if (filters.dateFrom) {
+    conditions.push(`i.scheduled_at >= $${paramIndex}`);
+    params.push(filters.dateFrom);
+    paramIndex++;
+  }
+
+  if (filters.dateTo) {
+    conditions.push(`i.scheduled_at <= $${paramIndex}`);
+    params.push(filters.dateTo);
+    paramIndex++;
+  }
+
+  if (filters.positionId) {
+    conditions.push(`c.job_posting_id = $${paramIndex}`);
+    params.push(filters.positionId);
+    paramIndex++;
+  }
+
+  if (filters.candidateId) {
+    conditions.push(`i.candidate_id = $${paramIndex}`);
+    params.push(filters.candidateId);
+    paramIndex++;
+  }
+
+  if (filters.interviewerId) {
+    conditions.push(`i.interviewer_id = $${paramIndex}`);
+    params.push(filters.interviewerId);
+    paramIndex++;
+  }
+
+  const whereClause = conditions.join(' AND ');
+
+  const sql = `
+    SELECT 
+      i.*,
+      c.full_name as candidate_full_name,
+      jp.id as position_id,
+      jp.title as position_title,
+      u.name as interviewer_name,
+      u.surname as interviewer_surname,
+      u.avatar_filename as interviewer_avatar_filename
+    FROM interviews i
+    JOIN candidates c ON c.id = i.candidate_id
+    LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+    LEFT JOIN users u ON u.id = i.interviewer_id
+    WHERE ${whereClause}
+    ORDER BY i.scheduled_at ASC
+  `;
+
+  const rows = await query<Record<string, unknown>>(sql, params);
+  
+  // Map rows and split full_name into name and surname
+  return rows.map((row) => {
+    const fullName = row.candidate_full_name as string || '';
+    const nameParts = fullName.trim().split(/\s+/);
+    const candidateName = nameParts[0] || '';
+    const candidateSurname = nameParts.slice(1).join(' ') || '';
+    
+    return {
+      ...mapInterview(row),
+      candidateName,
+      candidateSurname,
+      candidateAvatarFilename: null, // Candidates don't have avatars in this system
+      positionId: row.position_id as number | null,
+      positionTitle: row.position_title as string | undefined,
+      interviewerName: row.interviewer_name as string | undefined,
+      interviewerSurname: row.interviewer_surname as string | undefined,
+      interviewerAvatarFilename: row.interviewer_avatar_filename as string | null | undefined,
+    };
+  });
 }
 
 export async function getInterview(id: number, companyId: number, storeIds?: number[]): Promise<Interview | null> {
