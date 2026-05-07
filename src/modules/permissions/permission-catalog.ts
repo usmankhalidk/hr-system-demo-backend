@@ -113,7 +113,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   messaggi: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   impostazioni: ['admin', 'hr', 'area_manager'],
   documenti: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
-  ats: ['admin', 'hr', 'area_manager'],
+  ats: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   onboarding: ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'],
   notifiche: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   report: ['admin', 'hr'],
