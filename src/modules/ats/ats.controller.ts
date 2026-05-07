@@ -8,7 +8,7 @@ import {
   publishJobToIndeed, syncIndeedApplications,
   listCandidates, getCandidate, createCandidate,
   updateCandidateStage, markCandidateRead, deleteCandidate,
-  listInterviews, createInterview, updateInterview, deleteInterview,
+  listInterviews, listAllInterviews, createInterview, updateInterview, deleteInterview,
   listCandidateComments, addCandidateComment, deleteCandidateComment,
   listInterviewFeedbackComments, addInterviewFeedbackComment, deleteInterviewFeedbackComment,
   listInterviewNotificationLogs, createInterviewNotificationLog, updateInterviewNotificationLog,
@@ -1054,6 +1054,58 @@ export const listInterviewsHandler = asyncHandler(async (req: Request, res: Resp
 
   const storeIds = resolveStoreIds(req.user);
   const interviews = await listInterviews(candidateId, companyId, storeIds);
+  ok(res, { interviews });
+});
+
+export const listAllInterviewsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { 
+    forbidden(res, 'Nessuna azienda valida selezionata'); 
+    return; 
+  }
+
+  const filters: {
+    dateFrom?: string;
+    dateTo?: string;
+    positionId?: number;
+    candidateId?: number;
+    interviewerId?: number;
+  } = {};
+
+  // Parse query parameters
+  if (req.query.date_from && typeof req.query.date_from === 'string') {
+    filters.dateFrom = req.query.date_from;
+  }
+
+  if (req.query.date_to && typeof req.query.date_to === 'string') {
+    filters.dateTo = req.query.date_to;
+  }
+
+  if (req.query.position_id) {
+    const positionId = parseInt(req.query.position_id as string, 10);
+    if (!Number.isNaN(positionId)) {
+      filters.positionId = positionId;
+    }
+  }
+
+  if (req.query.candidate_id) {
+    const candidateId = parseInt(req.query.candidate_id as string, 10);
+    if (!Number.isNaN(candidateId)) {
+      filters.candidateId = candidateId;
+    }
+  }
+
+  if (req.query.interviewer_id) {
+    const interviewerId = parseInt(req.query.interviewer_id as string, 10);
+    if (!Number.isNaN(interviewerId)) {
+      filters.interviewerId = interviewerId;
+    }
+  }
+
+  const storeIds = resolveStoreIds(req.user);
+  
+  // Fetch interviews for ALL allowed companies, not just the first one
+  const interviews = await listAllInterviews(allowedCompanyIds, filters, storeIds);
   ok(res, { interviews });
 });
 
