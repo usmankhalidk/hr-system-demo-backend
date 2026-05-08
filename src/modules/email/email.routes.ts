@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { emailService } from '../../services/email.service';
+import { emailService, verifySmtpConfig } from '../../services/email.service';
 import { authenticate, requireRole } from '../../middleware/auth';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { badRequest, ok, notFound } from '../../utils/response';
@@ -51,18 +51,22 @@ router.post('/test', authenticate, requireRole('admin', 'hr'), asyncHandler(asyn
 // ---------------------------------------------------------------------------
 // GET /api/email/config
 // Returns the SMTP config for the logged-in user's company.
-// Super Admins have no company → return { superAdmin: true }.
+// Super Admins have no company → returns basic flag unless company_id is provided.
 // ---------------------------------------------------------------------------
 
 router.get('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
   const user = req.user!;
+  const targetCompanyIdStr = req.query.company_id as string | undefined;
 
-  if (user.is_super_admin) {
-    ok(res, { superAdmin: true });
+  if (user.is_super_admin && !targetCompanyIdStr) {
+    ok(res, { superAdmin: true, company: null, config: null });
     return;
   }
 
-  const companyId = user.companyId;
+  const companyId = user.is_super_admin && targetCompanyIdStr
+    ? parseInt(targetCompanyIdStr, 10)
+    : user.companyId;
+
   if (!companyId) {
     notFound(res, 'Company not found');
     return;
@@ -89,7 +93,7 @@ router.get('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
   );
 
   ok(res, {
-    superAdmin: false,
+    superAdmin: !!user.is_super_admin,
     company: company ? { id: company.id, name: company.name } : null,
     config: cfg ?? null,
   });
@@ -102,19 +106,20 @@ router.get('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
 
 router.put('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
   const user = req.user!;
-
-  if (user.is_super_admin) {
-    badRequest(res, 'Super Admin cannot set company SMTP config', 'FORBIDDEN');
-    return;
-  }
-
-  const companyId = user.companyId;
-  if (!companyId) {
-    notFound(res, 'Company not found');
-    return;
-  }
-
   const body = req.body as any;
+
+  const targetCompanyId = user.is_super_admin
+    ? (body.companyId || body.company_id || (req.query.company_id ? parseInt(req.query.company_id as string, 10) : null))
+    : user.companyId;
+
+  if (!targetCompanyId) {
+    badRequest(res, 'Company ID is required', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const companyId = typeof targetCompanyId === 'string' ? parseInt(targetCompanyId, 10) : targetCompanyId;
+
+
   const smtp_host = (body.smtp_host || body.smtpHost) as string | undefined;
   const smtp_port = body.smtp_port ?? body.smtpPort;
   const smtp_user = (body.smtp_user || body.smtpUser) as string | undefined;
@@ -157,6 +162,54 @@ router.put('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
   );
 
   ok(res, { saved: true }, 'SMTP configuration saved');
+}));
+
+// ---------------------------------------------------------------------------
+// POST /api/email/verify
+// Verifies connection and authentication for the saved configuration.
+// ---------------------------------------------------------------------------
+
+router.post('/verify', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
+  const user = req.user!;
+  const body = req.body as any;
+
+  const targetCompanyId = user.is_super_admin
+    ? (body.companyId || body.company_id || (req.query.company_id ? parseInt(req.query.company_id as string, 10) : null))
+    : user.companyId;
+
+  if (!targetCompanyId) {
+    badRequest(res, 'Company ID is required', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const companyId = typeof targetCompanyId === 'string' ? parseInt(targetCompanyId, 10) : targetCompanyId;
+
+  const cfg = await queryOne<{
+    smtp_host: string;
+    smtp_port: number;
+    smtp_user: string;
+    smtp_pass: string;
+  }>(
+    `SELECT smtp_host, smtp_port, smtp_user, smtp_pass
+     FROM company_smtp_configs
+     WHERE company_id = $1
+     LIMIT 1`,
+    [companyId],
+  );
+
+  if (!cfg) {
+    badRequest(res, 'No saved SMTP configuration found for this company', 'VALIDATION_ERROR');
+    return;
+  }
+
+  const isValid = await verifySmtpConfig({
+    smtpHost: cfg.smtp_host,
+    smtpPort: cfg.smtp_port,
+    smtpUser: cfg.smtp_user,
+    smtpPass: cfg.smtp_pass,
+  });
+
+  ok(res, { success: isValid });
 }));
 
 export default router;
