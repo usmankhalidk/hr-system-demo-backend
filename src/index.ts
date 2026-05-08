@@ -41,6 +41,7 @@ import terminalsRoutes from './modules/terminals/terminals.routes';
 import automationsRoutes from './modules/automations/automations.routes';
 import reportsRoutes from './modules/reports/reports.routes';
 import { processEscalationLogic } from './modules/leave/leave.controller';
+import locationRoutes from './modules/location/location.routes';
 
 dotenv.config();
 
@@ -436,6 +437,7 @@ app.use('/api/onboarding', onboardingRoutes);
 app.use('/api/window-display', windowDisplayRoutes);
 app.use('/api/automations', automationsRoutes);
 app.use('/api/reports', reportsRoutes);
+app.use('/api/location', locationRoutes);
 
 // Global error handler
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
