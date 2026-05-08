@@ -50,6 +50,14 @@ const DETAIL_FIELDS = `
   u.registered_device_registered_at AS device_registered_at
 `;
 
+// Extended detail fields including company name (for exporting sensitive data by authorized managers)
+const DETAIL_FIELDS_WITH_COMPANY = `
+  ${DETAIL_FIELDS.trim()},
+  c.name AS company_name,
+  cg.name AS company_group_name
+`;
+
+
 // Base joins
 const BASE_JOINS = `
   FROM users u
@@ -191,6 +199,7 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
     page = '1',
     limit = '20',
     for_shift_planning,
+    include_sensitive,
   } = req.query as Record<string, string>;
 
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
@@ -204,11 +213,16 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   // Cross-company with no target: query all allowed companies
   const crossCompany = hasCrossCompanyAccess && !targetCompanyId;
 
-  // H8: cross-company queries allow up to 500 rows; normal queries cap at 100
+  const canSeeSensitive = ['admin', 'hr', 'area_manager'].includes(role);
+  const includeSensitive = include_sensitive === 'true' || include_sensitive === '1';
+
+  // H8: cross-company queries allow up to 500 rows; normal queries cap at 100.
+  // When authorized manager exports sensitive data, allow up to 10000.
   const pageNum = Math.max(1, parseInt(page, 10) || 1);
-  const maxLimit = crossCompany ? 500 : 100;
+  const maxLimit = (includeSensitive && canSeeSensitive) ? 10000 : (crossCompany ? 500 : 100);
   const limitNum = Math.min(maxLimit, Math.max(1, parseInt(limit, 10) || 20));
   const offset = (pageNum - 1) * limitNum;
+
 
   let where: string;
   let params: any[];
@@ -300,8 +314,9 @@ export const listEmployees = asyncHandler(async (req: Request, res: Response) =>
   }
 
   const allParams = [...params, ...extraParams];
-  const selectFields = LIST_FIELDS_WITH_COMPANY;
+  const selectFields = (includeSensitive && canSeeSensitive) ? DETAIL_FIELDS_WITH_COMPANY : LIST_FIELDS_WITH_COMPANY;
   const joins = BASE_JOINS_WITH_COMPANY;
+
 
   const countResult = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count ${joins} WHERE ${where}${extraWhere}`,
