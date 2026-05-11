@@ -281,8 +281,6 @@ function getExternalPool(): Pool {
     connectionLimit: 8,
     queueLimit: 0,
     connectTimeout: 30000, // Increased to 30 seconds
-    acquireTimeout: 30000, // Added acquire timeout
-    timeout: 30000, // Added query timeout
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
     dateStrings: true,

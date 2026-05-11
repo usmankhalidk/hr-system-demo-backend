@@ -221,8 +221,8 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
     it: 'Colloquio programmato',
   },
   'notifications.ats_interview_invite.message': {
-    en: 'You have been assigned as an interviewer for {{date}}.',
-    it: 'Sei stato assegnato come intervistatore per il {{date}}.',
+    en: 'Interview with {{candidate}} on {{date}} at {{time}}{{location}}.',
+    it: 'Colloquio con {{candidate}} il {{date}} alle {{time}}{{location}}.',
   },
 
   // ── ats.outcome ─────────────────────────────────────────────────────────

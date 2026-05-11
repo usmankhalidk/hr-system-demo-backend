@@ -710,6 +710,9 @@ export const getCandidateHandler = asyncHandler(async (req: Request, res: Respon
   if (!allowedCompanyIds.includes(owner.company_id)) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
   const storeIds = resolveStoreIds(req.user);
+  const scopedCandidate = await getCandidate(id, owner.company_id, storeIds);
+  if (!scopedCandidate) { notFound(res, 'Candidato non trovato'); return; }
+
   const candidate = await getCandidate(id, owner.company_id, storeIds);
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
 
@@ -740,6 +743,24 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     cover_letter,
     source,
     source_ref,
+    availability,
+    gender,
+    nationality,
+    country,
+    state,
+    city,
+    date_of_birth,
+    current_employer,
+    current_role,
+    marital_status,
+    has_current_employer,
+    unique_id,
+    password,
+    hire_date,
+    contract_type,
+    application_date,
+    application_source,
+    application_channel,
     gdpr_consent,
     applicant_locale,
     consent_accepted_at,
@@ -835,6 +856,29 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     }
   }
 
+  const sourceRefResolved = typeof source_ref === 'string' && source_ref.trim() !== ''
+    ? source_ref
+    : JSON.stringify({
+      availability: typeof availability === 'string' ? availability : undefined,
+      gender: typeof gender === 'string' ? gender : undefined,
+      nationality: typeof nationality === 'string' ? nationality : undefined,
+      country: typeof country === 'string' ? country : undefined,
+      state: typeof state === 'string' ? state : undefined,
+      city: typeof city === 'string' ? city : undefined,
+      dateOfBirth: typeof date_of_birth === 'string' ? date_of_birth : undefined,
+      currentEmployer: typeof current_employer === 'string' ? current_employer : undefined,
+      currentRole: typeof current_role === 'string' ? current_role : undefined,
+      maritalStatus: typeof marital_status === 'string' ? marital_status : undefined,
+      hasCurrentEmployer: typeof has_current_employer === 'string' ? has_current_employer : undefined,
+      uniqueId: typeof unique_id === 'string' ? unique_id : undefined,
+      password: typeof password === 'string' ? password : undefined,
+      hireDate: typeof hire_date === 'string' ? hire_date : undefined,
+      contractType: typeof contract_type === 'string' ? contract_type : undefined,
+      applicationDate: typeof application_date === 'string' ? application_date : undefined,
+      applicationSource: typeof application_source === 'string' ? application_source : undefined,
+      applicationChannel: typeof application_channel === 'string' ? application_channel : undefined,
+    });
+
   const candidate = await createCandidate(targetCompanyId, {
     fullName:     full_name.trim(),
     email:        typeof email === 'string' ? email : undefined,
@@ -847,7 +891,7 @@ export const createCandidateHandler = asyncHandler(async (req: Request, res: Res
     linkedinUrl:  typeof linkedin_url === 'string' ? linkedin_url : undefined,
     coverLetter:  typeof cover_letter === 'string' ? cover_letter : undefined,
     source:       typeof source === 'string' ? source : undefined,
-    sourceRef:    typeof source_ref === 'string' ? source_ref : undefined,
+    sourceRef:    sourceRefResolved,
     gdprConsent:  gdprConsentParsed,
     applicantLocale: typeof applicant_locale === 'string' ? applicant_locale : undefined,
     consentAcceptedAt: typeof consent_accepted_at === 'string' ? consent_accepted_at : undefined,
@@ -1002,7 +1046,8 @@ export const updateCandidateTagsHandler = asyncHandler(async (req: Request, res:
 
   if (!candidateRow) { notFound(res, 'Candidato non trovato'); return; }
 
-  const candidate = await getCandidate(id, owner.company_id);
+  const storeIds = resolveStoreIds(req.user);
+  const candidate = await getCandidate(id, owner.company_id, storeIds);
   if (!candidate) { notFound(res, 'Candidato non trovato'); return; }
 
   ok(res, { candidate }, 'Tag aggiornati');
@@ -1182,6 +1227,11 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
 
   if (!interview) { notFound(res, 'Candidato non trovato'); return; }
 
+  const candidateDetails = await queryOne<{ email: string | null; full_name: string | null }>(
+    `SELECT email, full_name FROM candidates WHERE id = $1 LIMIT 1`,
+    [candidateId]
+  );
+
   // Create notification logs for tracking
   const notificationPromises: Promise<void>[] = [];
 
@@ -1208,6 +1258,13 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
       );
 
       if (interviewerNotifLog) {
+        const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+        const candidateName = candidateDetails?.full_name?.trim()
+          || (interviewerLocale === 'it' ? 'il candidato' : 'the candidate');
+        const locationSuffix = typeof location === 'string' && location.trim()
+          ? (interviewerLocale === 'it' ? ` presso ${location.trim()}` : ` at ${location.trim()}`)
+          : '';
+
         notificationPromises.push(
           updateInterviewNotificationLog(interviewerNotifLog.id, 'sending')
             .then(() => sendNotification({
@@ -1216,7 +1273,10 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
               type: 'ats.interview_invite',
               title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
               message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+                candidate: candidateName,
                 date: scheduledDate.toLocaleDateString(dateLocale),
+                time: scheduledTime,
+                location: locationSuffix,
               }),
               priority: 'high',
               locale: interviewerLocale,
@@ -1279,20 +1339,14 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
     }
   }
 
-  // Send email notification to candidate
-  const candidateEmailRow = await queryOne<{ email: string | null; full_name: string }>(
-    `SELECT email, full_name FROM candidates WHERE id = $1 LIMIT 1`,
-    [candidateId]
-  );
-
   const smtpEnabled = await isSmtpConfigured(companyId);
-  if (candidateEmailRow?.email && smtpEnabled) {
+  if (candidateDetails?.email && smtpEnabled) {
     // Create notification log for candidate email
     const candidateEmailLog = await createInterviewNotificationLog(
       interview.id,
       'email',
       'candidate',
-      candidateEmailRow.email
+      candidateDetails.email
     );
 
     if (candidateEmailLog) {
@@ -1301,10 +1355,10 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
           .then(() => import('../../services/email.service'))
           .then(({ sendNotificationEmail }) => sendNotificationEmail({
             companyId,
-            toEmail: candidateEmailRow.email!,
+            toEmail: candidateDetails.email!,
             eventKey: 'ats.interview_scheduled',
             variables: {
-              candidateName: candidateEmailRow.full_name,
+              candidateName: candidateDetails.full_name ?? '',
               interviewDate: scheduledDate.toLocaleDateString('it-IT'),
               interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
               interviewType: normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona',
@@ -1313,7 +1367,7 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
             },
             fallbackSubject: 'Colloquio di lavoro programmato',
             fallbackBody: `
-              <p>Gentile ${candidateEmailRow.full_name},</p>
+              <p>Gentile ${candidateDetails.full_name ?? ''},</p>
               <p>È stato programmato un colloquio ${normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
               ${typeof location === 'string' && location ? `<p><strong>Luogo:</strong> ${location}</p>` : ''}
               ${normalizedDescription ? `<p><strong>Dettagli:</strong> ${normalizedDescription}</p>` : ''}
@@ -2083,13 +2137,27 @@ export const sendInterviewNotificationHandler = asyncHandler(async (req: Request
       const dateLocale = interviewerLocale === 'it' ? 'it-IT' : 'en-GB';
       const scheduledDate = interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date();
 
+      const candidateRow = await queryOne<{ full_name: string | null }>(
+        `SELECT full_name FROM candidates WHERE id = $1 LIMIT 1`,
+        [interviewRow.candidate_id],
+      );
+      const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+      const candidateName = candidateRow?.full_name?.trim()
+        || (interviewerLocale === 'it' ? 'il candidato' : 'the candidate');
+      const locationSuffix = interviewRow.location && interviewRow.location.trim()
+        ? (interviewerLocale === 'it' ? ` presso ${interviewRow.location.trim()}` : ` at ${interviewRow.location.trim()}`)
+        : '';
+
       await sendNotification({
         companyId: interviewRow.company_id,
         userId: interviewRow.interviewer_id,
         type: 'ats.interview_invite',
         title: t(interviewerLocale, 'notifications.ats_interview_invite.title'),
         message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
+          candidate: candidateName,
           date: scheduledDate.toLocaleDateString(dateLocale),
+          time: scheduledTime,
+          location: locationSuffix,
         }),
         priority: 'high',
         locale: interviewerLocale,
