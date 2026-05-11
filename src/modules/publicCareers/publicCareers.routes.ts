@@ -12,6 +12,7 @@ type PublicJobRow = {
   company_id: number;
   company_name: string;
   company_slug: string;
+  company_country: string | null;
   store_id: number | null;
   store_name: string | null;
   title: string;
@@ -209,6 +210,7 @@ function mapPublicJob(row: PublicJobRow): Record<string, unknown> {
     company_id: row.company_id,
     company_name: row.company_name,
     company_slug: row.company_slug,
+      company_country: row.company_country,
     store_id: row.store_id,
     store_name: row.store_name,
     title: row.title,
@@ -364,6 +366,7 @@ async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
             j.company_id,
             c.name AS company_name,
             c.slug AS company_slug,
+            c.country AS company_country,
             j.store_id,
             s.name AS store_name,
             j.title,
@@ -604,6 +607,18 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
   const linkedinUrl = normalizeOptionalText(body.linkedin_url ?? body.linkedinUrl, 255);
   const coverLetter = normalizeOptionalText(body.cover_letter ?? body.coverLetter, 1000);
   const applicantLocale = normalizeOptionalText(body.applicant_locale ?? body.applicantLocale, 10) ?? 'it';
+  const availability = normalizeOptionalText(body.availability, 120);
+  const gender = normalizeOptionalText(body.gender, 30);
+  const nationality = normalizeOptionalText(body.nationality, 120);
+  const country = normalizeOptionalText(body.country, 120);
+  const state = normalizeOptionalText(body.state, 120);
+  const city = normalizeOptionalText(body.city, 120);
+  const dateOfBirth = normalizeOptionalText(body.date_of_birth ?? body.dateOfBirth, 32);
+  const currentEmployer = normalizeOptionalText(body.current_employer ?? body.currentEmployer, 255);
+  const currentRole = normalizeOptionalText(body.current_role ?? body.currentRole, 255);
+  const maritalStatus = normalizeOptionalText(body.marital_status ?? body.maritalStatus, 50);
+  const hasCurrentEmployer = normalizeOptionalText(body.has_current_employer ?? body.hasCurrentEmployer, 12);
+  const applicationDate = normalizeOptionalText(body.application_date ?? body.applicationDate, 32);
   const gdprConsent = parseBooleanInput(body.gdpr_consent ?? body.gdprConsent);
   const utmSource = normalizeOptionalText(req.query.utm_source, 100) ?? 'direct';
 
@@ -668,10 +683,24 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
 
   const sourceRef = JSON.stringify({
     channel: 'public-careers',
+    application_source: 'public-careers',
+    application_channel: 'public',
     utm_source: utmSource,
     applicant_locale: applicantLocale,
     linkedin_url: linkedinUrl,
     cover_letter: coverLetter,
+    availability,
+    gender,
+    nationality,
+    country,
+    state,
+    city,
+    date_of_birth: dateOfBirth,
+    current_employer: currentEmployer,
+    current_role: currentRole,
+    marital_status: maritalStatus,
+    has_current_employer: hasCurrentEmployer,
+    application_date: applicationDate,
     uploaded_filename: req.file.filename,
   });
 

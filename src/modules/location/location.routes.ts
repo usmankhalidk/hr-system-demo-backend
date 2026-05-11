@@ -1,4 +1,5 @@
 import { Router, Request, Response } from 'express';
+// @ts-ignore - country-state-city types may not be available
 import { Country, State, City } from 'country-state-city';
 
 const router = Router();
@@ -6,7 +7,7 @@ const router = Router();
 // GET /api/location/countries
 router.get('/countries', (req: Request, res: Response) => {
   try {
-    const countries = Country.getAllCountries().map((c) => ({
+    const countries = Country.getAllCountries().map((c: any) => ({
       value: c.isoCode,
       label: c.name,
       phonecode: c.phonecode,
@@ -26,7 +27,7 @@ router.get('/states', (req: Request, res: Response) => {
       res.status(400).json({ success: false, error: 'countryCode query parameter is required' });
       return;
     }
-    const states = State.getStatesOfCountry(countryCode.toUpperCase()).map((s) => ({
+    const states = State.getStatesOfCountry(countryCode.toUpperCase()).map((s: any) => ({
       value: s.isoCode,
       label: s.name,
     }));
@@ -49,12 +50,12 @@ router.get('/cities', (req: Request, res: Response) => {
     
     let cities;
     if (stateCode && typeof stateCode === 'string') {
-      cities = (City.getCitiesOfState(countryCode.toUpperCase(), stateCode) || []).map((c) => ({
+      cities = (City.getCitiesOfState(countryCode.toUpperCase(), stateCode) || []).map((c: any) => ({
         value: c.name,
         label: c.name,
       }));
     } else {
-      cities = (City.getCitiesOfCountry(countryCode.toUpperCase()) || []).map((c) => ({
+      cities = (City.getCitiesOfCountry(countryCode.toUpperCase()) || []).map((c: any) => ({
         value: c.name,
         label: c.name,
       }));

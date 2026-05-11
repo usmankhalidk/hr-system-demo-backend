@@ -38,12 +38,12 @@ router.get('/candidates',         listCandidatesHandler);
 router.post('/candidates',        optionalInternalResumeUpload, createCandidateHandler);
 router.get('/candidates/:id',     getCandidateHandler);
 router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);
-router.patch('/candidates/:id/tags', requireRole('admin', 'hr'), updateCandidateTagsHandler);
+router.patch('/candidates/:id/tags', requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateTagsHandler);
 router.delete('/candidates/:id',  requireRole('admin', 'hr'), deleteCandidateHandler);
 
 // Candidate Comments
 router.get('/candidates/:candidateId/comments',  requireRole('admin', 'hr', 'area_manager', 'store_manager'), listCandidateCommentsHandler);
-router.post('/candidates/:candidateId/comments', requireRole('admin', 'hr'), addCandidateCommentHandler);
+router.post('/candidates/:candidateId/comments', requireRole('admin', 'hr', 'area_manager', 'store_manager'), addCandidateCommentHandler);
 router.delete('/comments/:id',                   requireRole('admin', 'hr'), deleteCandidateCommentHandler);
 
 // Interviews - Get all interviews (for calendar view)

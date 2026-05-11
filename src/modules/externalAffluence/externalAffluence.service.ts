@@ -280,7 +280,7 @@ function getExternalPool(): Pool {
     waitForConnections: true,
     connectionLimit: 8,
     queueLimit: 0,
-    connectTimeout: 15000,
+    connectTimeout: 30000, // Increased to 30 seconds
     enableKeepAlive: true,
     keepAliveInitialDelay: 10000,
     dateStrings: true,
@@ -309,7 +309,16 @@ export async function checkExternalConnection(): Promise<ExternalDbConnectionSta
 
   try {
     const pool = getExternalPool();
-    await pool.query('SELECT 1');
+    
+    // Add a timeout wrapper for the connection check
+    const timeoutPromise = new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('Connection check timed out after 30 seconds')), 30000);
+    });
+    
+    const queryPromise = pool.query('SELECT 1');
+    
+    await Promise.race([queryPromise, timeoutPromise]);
+    
     return {
       configured: true,
       ok: true,
@@ -320,15 +329,18 @@ export async function checkExternalConnection(): Promise<ExternalDbConnectionSta
       checkedAt,
     };
   } catch (err: any) {
+    const isTimeout = err?.code === 'ETIMEDOUT' || err?.message?.includes('timed out');
     return {
       configured: true,
       ok: false,
       host: cfg.host,
       database: cfg.database,
       port: cfg.port,
-      message: err?.message || 'Unable to connect to external MySQL',
+      message: isTimeout 
+        ? `Connection timeout: Unable to reach ${cfg.host}:${cfg.port}. Please check network connectivity and firewall settings.`
+        : (err?.message || 'Unable to connect to external MySQL'),
       checkedAt,
-      code: 'EXTERNAL_DB_CONNECTION_FAILED',
+      code: isTimeout ? 'EXTERNAL_DB_TIMEOUT' : 'EXTERNAL_DB_CONNECTION_FAILED',
     };
   }
 }
