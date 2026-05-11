@@ -62,6 +62,33 @@ export async function enforceCompany(req: Request, res: Response, next: NextFunc
     return;
   }
 
+  // Check user's own company expiration first to reject immediately with COMPANY_ACCESS_EXPIRED
+  if (req.user.is_super_admin !== true && req.user.companyId !== null) {
+    const ownComp = await queryOne<{ is_active: boolean; access_valid_from: string | null; access_valid_to: string | null }>(
+      `SELECT is_active, access_valid_from, access_valid_to FROM companies WHERE id = $1`,
+      [req.user.companyId]
+    );
+    if (ownComp) {
+      if (ownComp.is_active === false) {
+        res.status(403).json({ success: false, error: 'Azienda disattivata.', code: 'COMPANY_INACTIVE' });
+        return;
+      }
+      const now = new Date();
+      if (ownComp.access_valid_from && now < new Date(ownComp.access_valid_from)) {
+        res.status(403).json({ success: false, error: 'Accesso non ancora attivo per questa azienda.', code: 'COMPANY_ACCESS_NOT_ACTIVE' });
+        return;
+      }
+      if (ownComp.access_valid_to) {
+        const toDate = new Date(ownComp.access_valid_to);
+        toDate.setHours(23, 59, 59, 999);
+        if (now > toDate) {
+          res.status(403).json({ success: false, error: 'Il periodo di accesso per questa azienda è scaduto.', code: 'COMPANY_ACCESS_EXPIRED' });
+          return;
+        }
+      }
+    }
+  }
+
   // If the request does not explicitly specify a company_id, we let the
   // controller decide based on the user's role/group scope.
   const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
@@ -86,6 +113,29 @@ export async function enforceCompany(req: Request, res: Response, next: NextFunc
   if (!allowedCompanyIds.includes(targetCompanyId)) {
     res.status(403).json({ success: false, error: 'Accesso negato: azienda non valida', code: 'COMPANY_MISMATCH' });
     return;
+  }
+
+  // Enforce company access validity for non-super-admins
+  if (req.user.is_super_admin !== true) {
+    const comp = await queryOne<{ access_valid_from: string | null; access_valid_to: string | null }>(
+      `SELECT access_valid_from, access_valid_to FROM companies WHERE id = $1`,
+      [targetCompanyId]
+    );
+    if (comp) {
+      const now = new Date();
+      if (comp.access_valid_from && now < new Date(comp.access_valid_from)) {
+        res.status(403).json({ success: false, error: 'Accesso non ancora attivo per questa azienda.', code: 'COMPANY_ACCESS_NOT_ACTIVE' });
+        return;
+      }
+      if (comp.access_valid_to) {
+        const toDate = new Date(comp.access_valid_to);
+        toDate.setHours(23, 59, 59, 999);
+        if (now > toDate) {
+          res.status(403).json({ success: false, error: 'Il periodo di accesso per questa azienda è scaduto.', code: 'COMPANY_ACCESS_EXPIRED' });
+          return;
+        }
+      }
+    }
   }
 
   next();

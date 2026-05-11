@@ -38,6 +38,15 @@ const updateCompanySchema = z.object({
   state: z.string().max(100).nullable().optional(),
   address: z.string().max(500).nullable().optional(),
   currency: z.string().max(50).nullable().optional(),
+  price_per_employee: z.number().nullable().optional(),
+  price_per_device: z.number().nullable().optional(),
+  extra_storage_price_per_gb: z.number().nullable().optional(),
+  storage_limit_gb: z.number().nullable().optional(),
+  access_valid_from: z.string().nullable().optional(),
+  access_valid_to: z.string().nullable().optional(),
+  discount_percent: z.number().min(0).max(100).nullable().optional(),
+  discount_valid_from: z.string().nullable().optional(),
+  discount_valid_to: z.string().nullable().optional(),
 });
 
 const createCompanySchema = z.object({
@@ -52,6 +61,15 @@ const createCompanySchema = z.object({
   state: z.string().max(100).nullable().optional(),
   address: z.string().max(500).nullable().optional(),
   currency: z.string().max(50).nullable().optional(),
+  price_per_employee: z.number().nullable().optional(),
+  price_per_device: z.number().nullable().optional(),
+  extra_storage_price_per_gb: z.number().nullable().optional(),
+  storage_limit_gb: z.number().nullable().optional(),
+  access_valid_from: z.string().nullable().optional(),
+  access_valid_to: z.string().nullable().optional(),
+  discount_percent: z.number().min(0).max(100).nullable().optional(),
+  discount_valid_from: z.string().nullable().optional(),
+  discount_valid_to: z.string().nullable().optional(),
 });
 
 const transferOwnershipSchema = z.object({

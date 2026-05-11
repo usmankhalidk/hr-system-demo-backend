@@ -83,6 +83,31 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
+  // Check company access validity for non-super-admins
+  if (user.is_super_admin !== true && user.company_id !== null) {
+    const comp = await queryOne<{ access_valid_from: string | null; access_valid_to: string | null }>(
+      `SELECT access_valid_from, access_valid_to FROM companies WHERE id = $1`,
+      [user.company_id]
+    );
+    if (comp) {
+      const now = new Date();
+      if (comp.access_valid_from && now < new Date(comp.access_valid_from)) {
+        await recordLoginAttempt(email, ip);
+        forbidden(res, 'Accesso non ancora attivo per questa azienda.', 'COMPANY_ACCESS_NOT_ACTIVE');
+        return;
+      }
+      if (comp.access_valid_to) {
+        const toDate = new Date(comp.access_valid_to);
+        toDate.setHours(23, 59, 59, 999);
+        if (now > toDate) {
+          await recordLoginAttempt(email, ip);
+          forbidden(res, 'Il periodo di accesso per questa azienda è scaduto.', 'COMPANY_ACCESS_EXPIRED');
+          return;
+        }
+      }
+    }
+  }
+
   // Log successful login to audit_logs
   await query(
     `INSERT INTO audit_logs (company_id, user_id, action, entity_type, entity_id, ip_address)
