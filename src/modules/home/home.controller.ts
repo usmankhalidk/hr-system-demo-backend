@@ -65,7 +65,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
       const [
         companiesRes, storesRes, employeesRes, roleBreakdown, storeBreakdown,
-        attendanceRes, absencesRes, delaysRes, coverageRes,
+        attendanceRes, coverageRes,
         documentExpiryRes, onboardingRes, atsRes
       ] = await Promise.all([
         queryOne<{ count: string }>(
@@ -109,45 +109,6 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
             AND s.date >= $2
             AND s.date < $3
             AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))`,
-          [allowedCompanyIds, startStr, endStr]
-        ),
-        queryOne<{ count: string }>(
-          `SELECT COUNT(DISTINCT s.id)::text AS count
-          FROM shifts s
-          LEFT JOIN attendance_events ae 
-            ON ae.user_id = s.user_id 
-            AND ae.event_time::DATE = s.date 
-            AND ae.event_type = 'checkin'
-          WHERE s.company_id = ANY($1) 
-            AND s.status != 'cancelled'
-            AND ae.id IS NULL
-            AND s.date >= $2
-            AND s.date < $3
-            AND (
-              s.date < CURRENT_DATE 
-              OR (s.date = CURRENT_DATE AND s.end_time < CURRENT_TIME)
-            )`,
-          [allowedCompanyIds, startStr, endStr]
-        ),
-        queryOne<{ count: string }>(
-          `SELECT COUNT(DISTINCT s.id)::text AS count
-          FROM shifts s
-          LEFT JOIN LATERAL (
-            SELECT ae.event_time
-            FROM attendance_events ae
-            WHERE ae.user_id = s.user_id
-              AND ae.event_time::DATE = s.date
-              AND ae.event_type = 'checkin'
-            ORDER BY ae.event_time ASC
-            LIMIT 1
-          ) first_checkin ON true
-          WHERE s.company_id = ANY($1) 
-            AND s.status != 'cancelled'
-            AND s.date >= $2
-            AND s.date < $3
-            AND (s.date < CURRENT_DATE OR (s.date = CURRENT_DATE AND s.start_time <= CURRENT_TIME))
-            AND first_checkin.event_time IS NOT NULL
-            AND first_checkin.event_time > ${coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone')} + INTERVAL '10 minutes'`,
           [allowedCompanyIds, startStr, endStr]
         ),
         queryOne<{ total: string; confirmed: string }>(
@@ -210,6 +171,101 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         )
       ]);
 
+      // Calculate backward date boundaries specifically for anomalies: No Show and Late Arrival
+      let anomalyStartDate = new Date(now);
+      if (timeRange === 'this_week') {
+        anomalyStartDate.setDate(now.getDate() - 6);
+      } else if (timeRange === 'three_months') {
+        anomalyStartDate.setDate(now.getDate() - 89);
+      } else {
+        // default: this_month (last 30 days)
+        anomalyStartDate.setDate(now.getDate() - 29);
+      }
+      const anomalyStartStr = localDateStr(anomalyStartDate);
+      const anomalyEndStr = localDateStr(now);
+
+      console.log(`[AdminHome] Anomalies calculation backward range: ${anomalyStartStr} to ${anomalyEndStr}`);
+
+      // Fetch active non-cancelled shifts in date range
+      const anomalyShifts = await query<{
+        id: number;
+        company_id: number;
+        user_id: number;
+        store_id: number;
+        date: string;
+        start_time: string;
+        end_time: string;
+      }>(
+        `SELECT s.id, s.company_id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+                s.start_time, s.end_time
+         FROM shifts s
+         WHERE s.company_id = ANY($1)
+           AND s.date BETWEEN $2 AND $3
+           AND s.status != 'cancelled'
+           AND s.date <= CURRENT_DATE
+         ORDER BY s.date, s.user_id`,
+        [allowedCompanyIds, anomalyStartStr, anomalyEndStr]
+      );
+
+      // Fetch attendance check-ins/checkouts for the same period + scope
+      const anomalyEvents = await query<{
+        user_id: number;
+        event_type: string;
+        event_time: string;
+      }>(
+        `SELECT ae.user_id, ae.event_type, ae.event_time
+         FROM attendance_events ae
+         WHERE ae.company_id = ANY($1)
+           AND ae.event_time::DATE BETWEEN $2 AND $3
+         ORDER BY ae.user_id, ae.event_time`,
+        [allowedCompanyIds, anomalyStartStr, anomalyEndStr]
+      );
+
+      // Group events by (user_id, date)
+      type EventGroup = { checkin?: Date; checkout?: Date };
+      const eventMap = new Map<string, EventGroup>();
+      for (const e of anomalyEvents) {
+        const date = localDateStr(new Date(e.event_time));
+        const key = `${e.user_id}:${date}`;
+        if (!eventMap.has(key)) eventMap.set(key, {});
+        const group = eventMap.get(key)!;
+        const t = new Date(e.event_time);
+        if (e.event_type === 'checkin' && (!group.checkin || t < group.checkin)) {
+          group.checkin = t;
+        }
+        if (e.event_type === 'checkout' && (!group.checkout || t > group.checkout)) {
+          group.checkout = t;
+        }
+      }
+
+      const LATE_MS = 10 * 60 * 1000; // 10 minutes
+      let totalAbsences = 0;
+      let delays = 0;
+      const nowTs = now.getTime();
+
+      for (const shift of anomalyShifts) {
+        const key = `${shift.user_id}:${shift.date}`;
+        const evGroup = eventMap.get(key);
+        const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
+        const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+
+        // Only process shifts that have actually started (avoid future shifts)
+        if (shiftStart.getTime() > nowTs) continue;
+
+        if (!evGroup?.checkin) {
+          if (shiftEnd.getTime() < nowTs) {
+            totalAbsences++;
+          }
+          continue;
+        }
+
+        const { checkin } = evGroup;
+        const lateMs = checkin.getTime() - shiftStart.getTime();
+        if (lateMs > LATE_MS) {
+          delays++;
+        }
+      }
+
       const expectedAtt = parseInt(attendanceRes?.expected || '0', 10);
       const presentAtt = parseInt(attendanceRes?.present || '0', 10);
       const attendanceRate = expectedAtt > 0 ? Math.round((presentAtt / expectedAtt) * 100) : 0;
@@ -218,7 +274,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       const confirmedShiftsCov = parseInt(coverageRes?.confirmed || '0', 10);
       const shiftCoverage = totalShiftsCov > 0 ? Math.round((confirmedShiftsCov / totalShiftsCov) * 100) : 0;
 
-      console.log(`[AdminHome] Results - AttRate: ${attendanceRate}% (${presentAtt}/${expectedAtt}), Absences: ${absencesRes?.count}, Delays: ${delaysRes?.count}, Coverage: ${shiftCoverage}%`);
+      console.log(`[AdminHome] Results - AttRate: ${attendanceRate}% (${presentAtt}/${expectedAtt}), Absences: ${totalAbsences}, Delays: ${delays}, Coverage: ${shiftCoverage}%`);
 
       const onboardingInProgress = parseInt(onboardingRes?.in_progress || '0', 10);
       const onboardingCompletionRate = Math.round(parseFloat(onboardingRes?.avg_pct || '0'));
@@ -231,8 +287,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         },
         dashboardStats: {
           attendanceRate,
-          totalAbsences: parseInt(absencesRes?.count || '0', 10),
-          delays: parseInt(delaysRes?.count || '0', 10),
+          totalAbsences,
+          delays,
           shiftCoverage,
         },
         staticStats: {

@@ -26,6 +26,15 @@ interface CompanyRow {
   state: string | null;
   address: string | null;
   currency: string | null;
+  price_per_employee: number | null;
+  price_per_device: number | null;
+  extra_storage_price_per_gb: number | null;
+  storage_limit_gb: number | null;
+  access_valid_from: string | null;
+  access_valid_to: string | null;
+  discount_percent: number | null;
+  discount_valid_from: string | null;
+  discount_valid_to: string | null;
   store_count: number;
   employee_count: number;
   created_at: string;
@@ -41,6 +50,15 @@ type CompanyProfileInput = {
   state?: string | null;
   address?: string | null;
   currency?: string | null;
+  price_per_employee?: number | null;
+  price_per_device?: number | null;
+  extra_storage_price_per_gb?: number | null;
+  storage_limit_gb?: number | null;
+  access_valid_from?: string | null;
+  access_valid_to?: string | null;
+  discount_percent?: number | null;
+  discount_valid_from?: string | null;
+  discount_valid_to?: string | null;
 };
 
 function normalizeOptionalString(value: unknown): string | null | undefined {
@@ -48,6 +66,13 @@ function normalizeOptionalString(value: unknown): string | null | undefined {
   if (value === null) return null;
   const normalized = String(value).trim();
   return normalized.length > 0 ? normalized : null;
+}
+
+function normalizeOptionalNumber(value: unknown): number | null | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || value === '') return null;
+  const num = Number(value);
+  return isNaN(num) ? null : num;
 }
 
 function extractCompanyProfileInput(payload: Record<string, unknown>): CompanyProfileInput {
@@ -61,6 +86,15 @@ function extractCompanyProfileInput(payload: Record<string, unknown>): CompanyPr
     state: normalizeOptionalString(payload.state),
     address: normalizeOptionalString(payload.address),
     currency: normalizeOptionalString(payload.currency),
+    price_per_employee: normalizeOptionalNumber(payload.price_per_employee),
+    price_per_device: normalizeOptionalNumber(payload.price_per_device),
+    extra_storage_price_per_gb: normalizeOptionalNumber(payload.extra_storage_price_per_gb),
+    storage_limit_gb: normalizeOptionalNumber(payload.storage_limit_gb),
+    access_valid_from: normalizeOptionalString(payload.access_valid_from),
+    access_valid_to: normalizeOptionalString(payload.access_valid_to),
+    discount_percent: normalizeOptionalNumber(payload.discount_percent),
+    discount_valid_from: normalizeOptionalString(payload.discount_valid_from),
+    discount_valid_to: normalizeOptionalString(payload.discount_valid_to),
   };
 }
 
@@ -84,19 +118,55 @@ const COMPANY_LIST_SELECT = `
     c.state,
     c.address,
     c.currency,
+    c.price_per_employee::float,
+    c.price_per_device::float,
+    c.extra_storage_price_per_gb::float,
+    c.storage_limit_gb::float AS storage_limit_gb,
+    c.access_valid_from,
+    c.access_valid_to,
+    c.discount_percent::float AS discount_percent,
+    c.discount_valid_from,
+    c.discount_valid_to,
     (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
-    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
+    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count,
+    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.registered_device_token IS NOT NULL)::int AS active_devices_count
   FROM companies c
   LEFT JOIN company_groups cg ON cg.id = c.group_id
   LEFT JOIN users owner ON owner.id = c.owner_user_id
 `;
 
 async function getCompanyCardById(companyId: number): Promise<CompanyRow | null> {
-  return queryOne<CompanyRow>(
+  const row = await queryOne<CompanyRow>(
     `${COMPANY_LIST_SELECT}
      WHERE c.id = $1`,
     [companyId],
   );
+  if (row) {
+    (row as any).storage_used_bytes = await calculateCompanyStorage(companyId);
+  }
+  return row;
+}
+
+async function calculateCompanyStorage(companyId: number): Promise<number> {
+  const genericDocs = await query<{ file_url: string }>(`SELECT file_url FROM documents WHERE company_id = $1`, [companyId]);
+  const employeeDocs = await query<{ storage_path: string }>(`SELECT storage_path FROM employee_documents WHERE company_id = $1`, [companyId]);
+
+  const allPaths = new Set<string>();
+  genericDocs.forEach(d => { if (d.file_url) allPaths.add(d.file_url); });
+  employeeDocs.forEach(d => { if (d.storage_path) allPaths.add(d.storage_path); });
+
+  const fs = require('fs');
+  const path = require('path');
+  let totalBytes = 0;
+  for (const p of allPaths) {
+    try {
+      const stat = fs.statSync(path.resolve(p));
+      totalBytes += stat.size;
+    } catch {
+      // Ignore if file doesn't exist
+    }
+  }
+  return totalBytes;
 }
 
 // GET /api/companies — scoped by group visibility rules
@@ -109,6 +179,10 @@ export const listCompanies = asyncHandler(async (req: Request, res: Response) =>
      ORDER BY c.id`,
     [allowedCompanyIds],
   );
+
+  for (const c of companies) {
+    (c as any).storage_used_bytes = await calculateCompanyStorage(c.id);
+  }
 
   ok(res, companies);
 });
@@ -211,7 +285,7 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
     nextParam += 1;
   }
 
-  const profileEntries: Array<[keyof CompanyProfileInput, string | null | undefined]> = [
+  const profileEntries: Array<[keyof CompanyProfileInput, string | number | null | undefined]> = [
     ['registration_number', profile.registration_number],
     ['company_email', profile.company_email],
     ['company_phone_numbers', profile.company_phone_numbers],
@@ -221,6 +295,15 @@ export const updateCompany = asyncHandler(async (req: Request, res: Response) =>
     ['state', profile.state],
     ['address', profile.address],
     ['currency', profile.currency],
+    ['price_per_employee', profile.price_per_employee],
+    ['price_per_device', profile.price_per_device],
+    ['extra_storage_price_per_gb', profile.extra_storage_price_per_gb],
+    ['storage_limit_gb', profile.storage_limit_gb],
+    ['access_valid_from', profile.access_valid_from],
+    ['access_valid_to', profile.access_valid_to],
+    ['discount_percent', profile.discount_percent],
+    ['discount_valid_from', profile.discount_valid_from],
+    ['discount_valid_to', profile.discount_valid_to],
   ];
 
   for (const [column, value] of profileEntries) {
@@ -313,9 +396,18 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
        city,
        state,
        address,
-       currency
+       currency,
+       price_per_employee,
+       price_per_device,
+       extra_storage_price_per_gb,
+       storage_limit_gb,
+       access_valid_from,
+       access_valid_to,
+       discount_percent,
+       discount_valid_from,
+       discount_valid_to
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
      RETURNING id`,
     [
       name,
@@ -331,6 +423,15 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
       profile.state ?? null,
       profile.address ?? null,
       profile.currency ?? null,
+      profile.price_per_employee ?? 0,
+      profile.price_per_device ?? 0,
+      profile.extra_storage_price_per_gb ?? 0,
+      profile.storage_limit_gb ?? 500,
+      profile.access_valid_from ?? null,
+      profile.access_valid_to ?? null,
+      profile.discount_percent ?? 0,
+      profile.discount_valid_from ?? null,
+      profile.discount_valid_to ?? null,
     ]
   );
   if (!createdCompanyId) {

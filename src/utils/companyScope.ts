@@ -75,12 +75,27 @@ export async function resolveAllowedCompanyIds(user: JwtPayload): Promise<number
     allowedIds = [user.companyId];
   }
 
-  // Non-super-admin users can only operate on active companies.
-  const activeRows = await query<{ id: number }>(
-    `SELECT id FROM companies WHERE id = ANY($1) AND is_active = true`,
+  // Non-super-admin users can only operate on active, non-expired companies.
+  const activeRows = await query<{ id: number; access_valid_to: string | null }>(
+    `SELECT id, access_valid_to FROM companies WHERE id = ANY($1) AND is_active = true`,
     [allowedIds],
   );
-  return activeRows.map((r) => r.id);
+
+  const now = new Date();
+  const validIds = activeRows
+    .filter((row) => {
+      if (row.access_valid_to) {
+        const toDate = new Date(row.access_valid_to);
+        toDate.setHours(23, 59, 59, 999);
+        if (now > toDate) {
+          return false; // Expired, treat as inactive/hidden
+        }
+      }
+      return true;
+    })
+    .map((row) => row.id);
+
+  return validIds;
 }
 
 export function isCrossCompanyRole(role: UserRole): role is CrossRole {
