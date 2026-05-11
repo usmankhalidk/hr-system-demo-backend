@@ -216,3 +216,37 @@ export async function sendNotificationEmail(options: {
     text: plainText,
   });
 }
+
+/**
+ * Verifies if the given SMTP configuration is valid.
+ * Confirms that credentials are correct, the host is reachable, and authentication succeeds.
+ */
+export async function verifySmtpConfig(config: {
+  smtpHost: string;
+  smtpPort: number;
+  smtpUser: string;
+  smtpPass: string;
+}): Promise<boolean> {
+  try {
+    const transporter = nodemailer.createTransport({
+      host: config.smtpHost,
+      port: config.smtpPort,
+      secure: config.smtpPort === 465,
+      auth: {
+        user: config.smtpUser,
+        pass: config.smtpPass,
+      },
+      tls: {
+        ciphers: 'SSLv3',
+        rejectUnauthorized: false
+      },
+    });
+
+    await transporter.verify();
+    return true;
+  } catch (err: unknown) {
+    console.error('[EMAIL_VERIFY] SMTP verification failed:', err);
+    return false;
+  }
+}
+
