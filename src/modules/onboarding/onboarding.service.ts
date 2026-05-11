@@ -453,49 +453,65 @@ export async function completeTask(
 ): Promise<OnboardingTask | null> {
   let row: Record<string, unknown> | null;
 
-  const assignerSql = `CASE
-              WHEN assigner.id IS NULL THEN NULL
-              WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
-              ELSE assigner.name || ' ' || assigner.surname
-            END AS assigned_by_name,
-            assigner.avatar_filename AS assigned_by_avatar_filename`;
-
   if (employeeId) {
     // Employee completing their own task — filter by employee_id
+    // Use CTE to avoid referencing the update-target alias in FROM-clause JOINs
     row = await queryOne<Record<string, unknown>>(
-      `UPDATE employee_onboarding_tasks t
-       SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
-       FROM onboarding_templates tmpl
-       LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
-       WHERE t.id = $1 AND t.employee_id = $2 AND t.template_id = tmpl.id AND t.completed = FALSE
-       RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-                 t.completion_note, t.due_date, t.created_at, t.updated_at, t.assigned_by_user_id,
-                 tmpl.name AS template_name, tmpl.description AS template_description,
-                 tmpl.task_type AS template_task_type,
-                 tmpl.category AS template_category, tmpl.link_url AS template_link_url,
-                 tmpl.priority AS template_priority,
-                 ${assignerSql}`,
+      `WITH updated AS (
+         UPDATE employee_onboarding_tasks
+         SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
+         WHERE id = $1 AND employee_id = $2 AND completed = FALSE
+         RETURNING *
+       )
+       SELECT
+         u.id, u.employee_id, u.template_id, u.completed, u.completed_at,
+         u.completion_note, u.due_date, u.created_at, u.updated_at, u.assigned_by_user_id,
+         tmpl.name AS template_name, tmpl.description AS template_description,
+         tmpl.task_type AS template_task_type,
+         tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+         tmpl.priority AS template_priority,
+         CASE
+           WHEN assigner.id IS NULL THEN NULL
+           WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
+           ELSE assigner.name || ' ' || assigner.surname
+         END AS assigned_by_name,
+         assigner.avatar_filename AS assigned_by_avatar_filename
+       FROM updated u
+       JOIN onboarding_templates tmpl ON tmpl.id = u.template_id
+       LEFT JOIN users assigner ON assigner.id = u.assigned_by_user_id`,
       [taskId, employeeId, note ?? null],
     );
     if (row) return mapTask(row);
   } else if (companyId) {
     // Admin completing on behalf — verify company ownership via template
+    // Use CTE to avoid referencing the update-target alias in FROM-clause JOINs
     row = await queryOne<Record<string, unknown>>(
-      `UPDATE employee_onboarding_tasks t
-       SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
-       FROM onboarding_templates tmpl
-       LEFT JOIN users assigner ON assigner.id = t.assigned_by_user_id
-       WHERE t.id = $1
-         AND t.template_id = tmpl.id
-         AND tmpl.company_id = $2
-         AND t.completed = FALSE
-       RETURNING t.id, t.employee_id, t.template_id, t.completed, t.completed_at,
-                 t.completion_note, t.due_date, t.created_at, t.updated_at, t.assigned_by_user_id,
-                 tmpl.name AS template_name, tmpl.description AS template_description,
-                 tmpl.task_type AS template_task_type,
-                 tmpl.category AS template_category, tmpl.link_url AS template_link_url,
-                 tmpl.priority AS template_priority,
-                 ${assignerSql}`,
+      `WITH updated AS (
+         UPDATE employee_onboarding_tasks
+         SET completed = TRUE, completed_at = NOW(), updated_at = NOW(), completion_note = $3
+         WHERE id = $1
+           AND completed = FALSE
+           AND template_id IN (
+             SELECT id FROM onboarding_templates WHERE company_id = $2
+           )
+         RETURNING *
+       )
+       SELECT
+         u.id, u.employee_id, u.template_id, u.completed, u.completed_at,
+         u.completion_note, u.due_date, u.created_at, u.updated_at, u.assigned_by_user_id,
+         tmpl.name AS template_name, tmpl.description AS template_description,
+         tmpl.task_type AS template_task_type,
+         tmpl.category AS template_category, tmpl.link_url AS template_link_url,
+         tmpl.priority AS template_priority,
+         CASE
+           WHEN assigner.id IS NULL THEN NULL
+           WHEN COALESCE(assigner.surname, '') = '' THEN assigner.name
+           ELSE assigner.name || ' ' || assigner.surname
+         END AS assigned_by_name,
+         assigner.avatar_filename AS assigned_by_avatar_filename
+       FROM updated u
+       JOIN onboarding_templates tmpl ON tmpl.id = u.template_id
+       LEFT JOIN users assigner ON assigner.id = u.assigned_by_user_id`,
       [taskId, companyId, note ?? null],
     );
     if (row) return mapTask(row);
