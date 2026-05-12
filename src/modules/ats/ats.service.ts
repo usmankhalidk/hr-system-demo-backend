@@ -190,7 +190,6 @@ export interface Interview {
   companyName?: string;
   companyLogoFilename?: string | null;
   companyGroupName?: string | null;
-  storeId?: number | null;
   storeName?: string | null;
   storeLogoFilename?: string | null;
   interviewerName?: string;
@@ -1168,7 +1167,6 @@ export async function listAllInterviews(
       companyName: row.company_name as string | undefined,
       companyLogoFilename: row.company_logo_filename as string | null | undefined,
       companyGroupName: row.company_group_name as string | null | undefined,
-      storeId: row.store_id as number | null | undefined,
       storeName: row.store_name as string | null | undefined,
       storeLogoFilename: row.store_logo_filename as string | null | undefined,
       interviewerName: row.interviewer_name as string | undefined,
