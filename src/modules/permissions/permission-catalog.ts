@@ -19,6 +19,7 @@ export const ALL_MODULES = [
   'gestione_accessi',
   'terminali',
   'automazioni',
+  'team_documents',
 ] as const;
 
 export type ModuleName = typeof ALL_MODULES[number];
@@ -42,6 +43,7 @@ export const ACTIVE_MODULES = [
   'terminali',
   'automazioni',
   'report',
+  'team_documents',
 ] as const;
 
 export const ACTIVE_MODULE_SET: ReadonlySet<ModuleName> = new Set(ACTIVE_MODULES);
@@ -57,6 +59,7 @@ export const SYSTEM_MODULES = [
   'dipendenti',
   'messaggi',
   'documenti',
+  'team_documents',
   'impostazioni',
   'gestione_accessi',
   'terminali',
@@ -65,7 +68,7 @@ export const SYSTEM_MODULES = [
   'notifiche',
   'automazioni',
   'report',
-] as const;
+ ] as const;
 
 export type SystemModuleName = typeof SYSTEM_MODULES[number];
 
@@ -120,6 +123,7 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   gestione_accessi: ['admin', 'hr', 'area_manager'],
   terminali: ['admin', 'hr', 'area_manager', 'store_manager', 'employee'],
   automazioni: ['admin', 'hr'],
+  team_documents: ['admin', 'hr', 'area_manager', 'store_manager'],
 };
 
 export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleName): boolean {
@@ -142,5 +146,6 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'notifiche') return true;
   if (moduleName === 'automazioni' && (role === 'admin' || role === 'hr')) return true;
   if (moduleName === 'report' && (role === 'admin' || role === 'hr')) return true;
+  if (moduleName === 'team_documents' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
   return false;
 }

@@ -732,13 +732,26 @@ export async function restoreDocument(
 }
 
 
-export async function getDeletedDocuments(companyIds: number[], employeeId?: number): Promise<DocumentRecord[]> {
+export async function getDeletedDocuments(
+  companyIds: number[],
+  employeeId?: number,
+  tab?: 'my' | 'team',
+  loggedInUserId?: number
+): Promise<DocumentRecord[]> {
   // 1. Fetch from employee_documents
   let empWhere = 'd.company_id = ANY($1) AND d.is_deleted = true';
   const empParams: any[] = [companyIds];
   if (employeeId) {
     empWhere += ' AND d.employee_id = $2';
     empParams.push(employeeId);
+  }
+
+  if (tab === 'my' && loggedInUserId) {
+    empWhere += ` AND d.employee_id = $${empParams.length + 1}`;
+    empParams.push(loggedInUserId);
+  } else if (tab === 'team' && loggedInUserId) {
+    empWhere += ` AND (d.employee_id IS NULL OR d.employee_id <> $${empParams.length + 1})`;
+    empParams.push(loggedInUserId);
   }
 
   const empRows = await query<any>(
@@ -755,6 +768,14 @@ export async function getDeletedDocuments(companyIds: number[], employeeId?: num
   if (employeeId) {
     genWhere += ' AND d.employee_id = $2';
     genParams.push(employeeId);
+  }
+
+  if (tab === 'my' && loggedInUserId) {
+    genWhere += ` AND d.employee_id = $${genParams.length + 1}`;
+    genParams.push(loggedInUserId);
+  } else if (tab === 'team' && loggedInUserId) {
+    genWhere += ` AND (d.employee_id IS NULL OR d.employee_id <> $${genParams.length + 1})`;
+    genParams.push(loggedInUserId);
   }
 
   const genRows = await query<any>(
@@ -1010,6 +1031,7 @@ export async function getGenericDocuments(options: {
   isSuperAdmin?: boolean;
   storeId?: number | null;
   allowedCompanyIds?: number[];
+  tab?: 'my' | 'team';
 }): Promise<(GenericDocument & { employeeName?: string })[]> {
   let where = '1=1';
   const params: any[] = [];
@@ -1018,48 +1040,119 @@ export async function getGenericDocuments(options: {
   // but if specified (e.g., "Only HR"), we must strictly check the role.
   const visibilityFilter = `($roleIndex = ANY(COALESCE(d.is_visible_to_roles, ARRAY['admin','hr','area_manager','store_manager','employee']::text[])))`;
 
-  // Scoping logic based on role hierarchy
-  if (options.role === 'admin' || options.isSuperAdmin) {
-    // Admin: see all documents in allowed companies
-    const ids = options.allowedCompanyIds || [options.companyId];
-    where = 'd.company_id = ANY($1) AND d.is_deleted = false';
-    params.push(ids);
-  } else if (options.role === 'hr') {
-    // HR: see all documents in allowed companies
-    const ids = options.allowedCompanyIds || [options.companyId];
-    where = 'd.company_id = ANY($1) AND d.is_deleted = false';
-    params.push(ids);
-  } else if (options.role === 'area_manager') {
-    // Area Manager: See AM, SM and Employee docs within same company
-    const ids = options.allowedCompanyIds || [options.companyId];
-    where = `d.company_id = ANY($1) 
-             AND ${visibilityFilter.replace('$roleIndex', '$2')} 
-             AND (d.employee_id = $3 OR e.role IN ('store_manager', 'employee')) 
-             AND d.is_deleted = false`;
-    params.push(ids, options.role, options.employeeId);
-  } else if (options.role === 'store_manager' && options.storeId) {
-    // Store Manager: See own docs and Employee docs in their store
-    where = `(
-      d.company_id = $4
-      AND ${visibilityFilter.replace('$roleIndex', '$3')}
-      AND (d.employee_id = $2 OR (e.store_id = $1 AND e.role = 'employee'))
-      AND d.is_deleted = false
-    )`;
-    params.push(options.storeId, options.employeeId, options.role, options.companyId);
-  } else if (options.role === 'employee' && options.employeeId) {
-    // Employee:
-    // 1. Must pass visibility check
-    // 2. See ONLY their own assigned documents
-    where = `(
-      d.company_id = $3
-      AND ${visibilityFilter.replace('$roleIndex', '$2')}
-      AND d.employee_id = $1
-      AND d.is_deleted = false
-    )`;
-    params.push(options.employeeId, options.role, options.companyId);
-  } else {
-    // Default safe state: no documents
-    where = '1=0';
+  const tab = options.tab;
+
+  // Scoping logic based on role hierarchy and tab filtering
+  if (tab === undefined) {
+    // --- ORIGINAL BACKWARDS-COMPATIBLE BEHAVIOR ---
+    if (options.role === 'admin' || options.isSuperAdmin) {
+      // Admin: see all documents in allowed companies
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND d.is_deleted = false';
+      params.push(ids);
+    } else if (options.role === 'hr') {
+      // HR: see all documents in allowed companies
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND d.is_deleted = false';
+      params.push(ids);
+    } else if (options.role === 'area_manager') {
+      // Area Manager: See AM, SM and Employee docs within same company
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = `d.company_id = ANY($1) 
+               AND ${visibilityFilter.replace('$roleIndex', '$2')} 
+               AND (d.employee_id = $3 OR e.role IN ('store_manager', 'employee')) 
+               AND d.is_deleted = false`;
+      params.push(ids, options.role, options.employeeId);
+    } else if (options.role === 'store_manager' && options.storeId) {
+      // Store Manager: See own docs and Employee docs in their store
+      where = `(
+        d.company_id = $4
+        AND ${visibilityFilter.replace('$roleIndex', '$3')}
+        AND (d.employee_id = $2 OR (e.store_id = $1 AND e.role = 'employee'))
+        AND d.is_deleted = false
+      )`;
+      params.push(options.storeId, options.employeeId, options.role, options.companyId);
+    } else if (options.role === 'employee' && options.employeeId) {
+      // Employee:
+      // 1. Must pass visibility check
+      // 2. See ONLY their own assigned documents
+      where = `(
+        d.company_id = $3
+        AND ${visibilityFilter.replace('$roleIndex', '$2')}
+        AND d.employee_id = $1
+        AND d.is_deleted = false
+      )`;
+      params.push(options.employeeId, options.role, options.companyId);
+    } else {
+      // Default safe state: no documents
+      where = '1=0';
+    }
+  } else if (tab === 'my') {
+    // --- MY DOCUMENTS TAB ---
+    // Displays ONLY documents assigned directly to the logged-in user.
+    if (options.role === 'admin' || options.isSuperAdmin) {
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND d.employee_id = $2 AND d.is_deleted = false';
+      params.push(ids, options.employeeId);
+    } else if (options.role === 'hr') {
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND d.employee_id = $2 AND d.is_deleted = false';
+      params.push(ids, options.employeeId);
+    } else if (options.role === 'area_manager') {
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = `d.company_id = ANY($1) 
+               AND d.employee_id = $2 
+               AND ${visibilityFilter.replace('$roleIndex', '$3')} 
+               AND d.is_deleted = false`;
+      params.push(ids, options.employeeId, options.role);
+    } else if (options.role === 'store_manager') {
+      where = `d.company_id = $1 
+               AND d.employee_id = $2 
+               AND ${visibilityFilter.replace('$roleIndex', '$3')} 
+               AND d.is_deleted = false`;
+      params.push(options.companyId, options.employeeId, options.role);
+    } else if (options.role === 'employee') {
+      where = `d.company_id = $1 
+               AND d.employee_id = $2 
+               AND ${visibilityFilter.replace('$roleIndex', '$3')} 
+               AND d.is_deleted = false`;
+      params.push(options.companyId, options.employeeId, options.role);
+    } else {
+      where = '1=0';
+    }
+  } else if (tab === 'team') {
+    // --- TEAM DOCUMENTS TAB ---
+    // Displays ONLY documents belonging to lower-level managed team members.
+    if (options.role === 'admin' || options.isSuperAdmin) {
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND (d.employee_id IS NULL OR d.employee_id <> $2) AND d.is_deleted = false';
+      params.push(ids, options.employeeId);
+    } else if (options.role === 'hr') {
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = 'd.company_id = ANY($1) AND (d.employee_id IS NULL OR d.employee_id <> $2) AND d.is_deleted = false';
+      params.push(ids, options.employeeId);
+    } else if (options.role === 'area_manager') {
+      // Area Manager views Store Managers and Employees (excluding own)
+      const ids = options.allowedCompanyIds || [options.companyId];
+      where = `d.company_id = ANY($1) 
+               AND ${visibilityFilter.replace('$roleIndex', '$2')} 
+               AND e.role IN ('store_manager', 'employee') 
+               AND d.is_deleted = false`;
+      params.push(ids, options.role);
+    } else if (options.role === 'store_manager' && options.storeId) {
+      // Store Manager views Employees in their store (excluding own)
+      where = `d.company_id = $1 
+               AND e.store_id = $2 
+               AND e.role = 'employee' 
+               AND ${visibilityFilter.replace('$roleIndex', '$3')} 
+               AND d.is_deleted = false`;
+      params.push(options.companyId, options.storeId, options.role);
+    } else if (options.role === 'employee') {
+      // Employee has no managed roles; Team Documents tab hidden/unauthorized
+      where = '1=0';
+    } else {
+      where = '1=0';
+    }
   }
 
   const rows = await query<{
