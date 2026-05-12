@@ -174,11 +174,28 @@ export interface Interview {
   candidateName?: string;
   candidateSurname?: string;
   candidateAvatarFilename?: string | null;
+  candidateEmail?: string | null;
+  candidatePhone?: string | null;
+  candidateLinkedinUrl?: string | null;
+  resumePath?: string | null;
+  cvPath?: string | null;
   positionTitle?: string;
   positionId?: number | null;
+  positionJobType?: string;
+  positionWeeklyHours?: number;
+  positionSalaryMin?: number;
+  positionSalaryMax?: number;
+  positionLocation?: string;
+  companyId?: number;
+  companyName?: string;
+  companyLogoFilename?: string | null;
+  companyGroupName?: string | null;
+  storeName?: string | null;
+  storeLogoFilename?: string | null;
   interviewerName?: string;
   interviewerSurname?: string;
   interviewerAvatarFilename?: string | null;
+  interviewerRole?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -340,15 +357,32 @@ function mapInterview(row: Record<string, unknown>): Interview {
     feedback: row.feedback as string | null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
-    // Extended fields for calendar view
+    // Extended fields for calendar view - these will be overwritten by listAllInterviews
     candidateName: row.candidate_name as string | undefined,
     candidateSurname: row.candidate_surname as string | undefined,
     candidateAvatarFilename: row.candidate_avatar_filename as string | null | undefined,
+    candidateEmail: row.candidate_email as string | null | undefined,
+    candidatePhone: row.candidate_phone as string | null | undefined,
+    candidateLinkedinUrl: row.candidate_linkedin_url as string | null | undefined,
+    resumePath: row.resume_path as string | null | undefined,
+    cvPath: row.cv_path as string | null | undefined,
     positionTitle: row.position_title as string | undefined,
     positionId: row.position_id as number | null | undefined,
+    positionJobType: row.position_job_type as string | undefined,
+    positionWeeklyHours: row.position_weekly_hours as number | undefined,
+    positionSalaryMin: row.position_salary_min as number | undefined,
+    positionSalaryMax: row.position_salary_max as number | undefined,
+    positionLocation: row.position_location as string | undefined,
+    companyId: row.company_id as number | undefined,
+    companyName: row.company_name as string | undefined,
+    companyLogoFilename: row.company_logo_filename as string | null | undefined,
+    companyGroupName: row.company_group_name as string | null | undefined,
+    storeName: row.store_name as string | null | undefined,
+    storeLogoFilename: row.store_logo_filename as string | null | undefined,
     interviewerName: row.interviewer_name as string | undefined,
     interviewerSurname: row.interviewer_surname as string | undefined,
     interviewerAvatarFilename: row.interviewer_avatar_filename as string | null | undefined,
+    interviewerRole: row.interviewer_role as string | undefined,
   };
 }
 
@@ -1067,14 +1101,37 @@ export async function listAllInterviews(
     SELECT 
       i.*,
       c.full_name as candidate_full_name,
+      c.email as candidate_email,
+      c.phone as candidate_phone,
+      c.linkedin_url as candidate_linkedin_url,
+      c.resume_path as candidate_resume_path,
       jp.id as position_id,
       jp.title as position_title,
+      jp.job_type as position_job_type,
+      jp.weekly_hours as position_weekly_hours,
+      jp.salary_min as position_salary_min,
+      jp.salary_max as position_salary_max,
+      COALESCE(
+        NULLIF(TRIM(CONCAT_WS(', ', jp.job_city, jp.job_state, jp.job_country)), ''),
+        NULL
+      ) as position_location,
+      jp.company_id as company_id,
+      co.name as company_name,
+      co.logo_filename as company_logo_filename,
+      cg.name as company_group_name,
+      jp.store_id as store_id,
+      s.name as store_name,
+      s.logo_filename as store_logo_filename,
       u.name as interviewer_name,
       u.surname as interviewer_surname,
-      u.avatar_filename as interviewer_avatar_filename
+      u.avatar_filename as interviewer_avatar_filename,
+      u.role as interviewer_role
     FROM interviews i
     JOIN candidates c ON c.id = i.candidate_id
     LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+    LEFT JOIN companies co ON co.id = jp.company_id
+    LEFT JOIN company_groups cg ON cg.id = co.group_id
+    LEFT JOIN stores s ON s.id = jp.store_id
     LEFT JOIN users u ON u.id = i.interviewer_id
     WHERE ${whereClause}
     ORDER BY i.scheduled_at ASC
@@ -1094,11 +1151,28 @@ export async function listAllInterviews(
       candidateName,
       candidateSurname,
       candidateAvatarFilename: null, // Candidates don't have avatars in this system
+      candidateEmail: row.candidate_email as string | null,
+      candidatePhone: row.candidate_phone as string | null,
+      candidateLinkedinUrl: row.candidate_linkedin_url as string | null,
+      resumePath: row.candidate_resume_path as string | null,
+      cvPath: row.candidate_resume_path as string | null, // Use resume_path as cv_path
       positionId: row.position_id as number | null,
       positionTitle: row.position_title as string | undefined,
+      positionJobType: row.position_job_type as string | undefined,
+      positionWeeklyHours: row.position_weekly_hours as number | undefined,
+      positionSalaryMin: row.position_salary_min as number | undefined,
+      positionSalaryMax: row.position_salary_max as number | undefined,
+      positionLocation: row.position_location as string | undefined,
+      companyId: row.company_id as number | undefined,
+      companyName: row.company_name as string | undefined,
+      companyLogoFilename: row.company_logo_filename as string | null | undefined,
+      companyGroupName: row.company_group_name as string | null | undefined,
+      storeName: row.store_name as string | null | undefined,
+      storeLogoFilename: row.store_logo_filename as string | null | undefined,
       interviewerName: row.interviewer_name as string | undefined,
       interviewerSurname: row.interviewer_surname as string | undefined,
       interviewerAvatarFilename: row.interviewer_avatar_filename as string | null | undefined,
+      interviewerRole: row.interviewer_role as string | undefined,
     };
   });
 }
