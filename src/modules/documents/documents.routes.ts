@@ -548,6 +548,25 @@ router.put(
 
 
 
+import { isRoleEligibleForModule, isDefaultEnabledForModule } from '../permissions/permission-catalog';
+
+async function hasTeamDocumentsPermission(user: any, companyId: number): Promise<boolean> {
+  if (user.is_super_admin) return true;
+  if (!isRoleEligibleForModule(user.role, 'team_documents')) return false;
+
+  const row = await queryOne<{ is_enabled: boolean }>(
+    `SELECT is_enabled
+     FROM role_module_permissions
+     WHERE company_id = $1 AND role = $2 AND module_name = 'team_documents'
+     LIMIT 1`,
+    [companyId, user.role]
+  );
+  if (!row) {
+    return isDefaultEnabledForModule(user.role, 'team_documents');
+  }
+  return row.is_enabled === true;
+}
+
 // ---------------------------------------------------------------------------
 // Routes
 // ---------------------------------------------------------------------------
@@ -558,6 +577,15 @@ router.get(
   asyncHandler(async (req: Request, res: Response) => {
     const { companyId, userId, role, storeId, is_super_admin } = req.user!;
     const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+    const tab = req.query.tab as 'my' | 'team' | undefined;
+
+    if (tab === 'team') {
+      const hasPerm = await hasTeamDocumentsPermission(req.user!, companyId!);
+      if (!hasPerm) {
+        res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
+        return;
+      }
+    }
 
     const docs = await getGenericDocuments({
       companyId: companyId!,
@@ -566,6 +594,7 @@ router.get(
       storeId,
       allowedCompanyIds,
       isSuperAdmin: is_super_admin,
+      tab,
     });
     ok(res, docs);
   }),
@@ -1447,8 +1476,16 @@ router.get(
       return;
     }
 
+    const tab = req.query.tab as 'my' | 'team' | undefined;
+    if (tab === 'team') {
+      const hasPerm = await hasTeamDocumentsPermission(user, user.companyId!);
+      if (!hasPerm) {
+        res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
+        return;
+      }
+    }
     const employeeId = req.query.employee_id ? parseInt(req.query.employee_id as string, 10) : undefined;
-    const docs = await getDeletedDocuments(allowedCompanyIds, employeeId);
+    const docs = await getDeletedDocuments(allowedCompanyIds, employeeId, tab, user.userId);
     ok(res, docs);
   }),
 );
