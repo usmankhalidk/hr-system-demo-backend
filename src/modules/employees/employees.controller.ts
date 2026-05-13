@@ -43,7 +43,7 @@ const LIST_FIELDS_WITH_COMPANY = `
 const DETAIL_FIELDS = `
   ${LIST_FIELDS},
   u.personal_email, u.date_of_birth, u.nationality, u.gender,
-  u.iban, u.address, u.cap,
+  u.iban, u.address, u.cap, u.phone, u.country, u.state, u.city,
   u.contract_type, u.probation_months,
   u.device_reset_pending,
   (u.registered_device_token IS NOT NULL) AS device_registered,
@@ -134,9 +134,8 @@ function buildScopeWhere(
   switch (role) {
     case 'admin':
     case 'hr':
-      return { where: base, params: [companyId] };
     case 'area_manager':
-      return { where: `${base} AND u.supervisor_id = $2`, params: [companyId, userId] };
+      return { where: base, params: [companyId] };
     case 'store_manager':
       return { where: `${base} AND u.store_id = $2`, params: [companyId, storeId] };
     case 'employee':
@@ -947,13 +946,16 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       role, unique_id, department, hire_date, contract_end_date,
       working_type, weekly_hours, off_days, personal_email, date_of_birth, nationality,
       gender, iban, address, cap, first_aid_flag, marital_status, status,
-      contract_type, probation_months, termination_type
+      contract_type, probation_months, termination_type, termination_date, phone,
+      country, state, city
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+      $31, $32, $33
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
-        contract_type, probation_months, termination_type`,
+        contract_type, probation_months, termination_type, termination_date, phone,
+        country, state, city`,
     [
       companyId,
       body.store_id ?? null,
@@ -983,6 +985,11 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.contract_type ?? null,
       body.probation_months ?? null,
       body.termination_type ?? null,
+      body.termination_date ?? null,
+      body.phone ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
     ],
   );
   // Check Welcome Email Automation (Background task, non-blocking)
@@ -1097,12 +1104,17 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       contract_type = $23, probation_months = $24,
       termination_date = $25, termination_type = $26,
       password_hash = COALESCE($27, password_hash),
+      phone = $30,
+      country = $31,
+      state = $32,
+      city = $33,
       updated_at = NOW()
     WHERE id = $28 AND company_id = $29
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
         nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
-        contract_type, probation_months, termination_date, termination_type`,
+        contract_type, probation_months, termination_date, termination_type, phone,
+        country, state, city`,
     [
       body.store_id ?? null,
       body.supervisor_id ?? null,
@@ -1133,6 +1145,10 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       passwordHash,
       empId,
       companyId,
+      body.phone ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
     ],
   );
 
