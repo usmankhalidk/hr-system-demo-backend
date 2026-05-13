@@ -1470,7 +1470,7 @@ export const updateInterviewHandler = asyncHandler(async (req: Request, res: Res
   const { scheduled_at, interview_type, location, description, notes, duration_minutes, feedback, interviewer_id } = req.body as Record<string, unknown>;
 
   const role = req.user?.role;
-  const feedbackOnlyRole = role === 'area_manager' || role === 'store_manager';
+  const feedbackOnlyRole = role === 'store_manager';
   if (feedbackOnlyRole) {
     const hasRestrictedFields =
       scheduled_at !== undefined ||
@@ -1482,7 +1482,7 @@ export const updateInterviewHandler = asyncHandler(async (req: Request, res: Res
       interviewer_id !== undefined;
 
     if (hasRestrictedFields) {
-      forbidden(res, 'Area manager e store manager possono aggiornare solo il feedback del colloquio');
+      forbidden(res, 'Store manager può aggiornare solo il feedback del colloquio');
       return;
     }
 
