@@ -14,6 +14,7 @@ export interface EmailOptions {
     filename: string;
     content: Buffer | string;
     contentType?: string;
+    cid?: string;
   }[];
 }
 

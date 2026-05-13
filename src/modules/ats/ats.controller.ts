@@ -1,7 +1,10 @@
 import { Request, Response } from 'express';
+import fs from 'fs';
+import path from 'path';
 import sanitizeHtml from 'sanitize-html';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound } from '../../utils/response';
+import { sendEmailForCompany } from '../../services/email.service';
 import { query, queryOne } from '../../config/database';
 import {
   listJobs, getJob, createJob, updateJob, deleteJob,
@@ -11,6 +14,7 @@ import {
   listInterviews, listAllInterviews, createInterview, updateInterview, deleteInterview,
   listCandidateComments, addCandidateComment, deleteCandidateComment,
   listInterviewFeedbackComments, addInterviewFeedbackComment, deleteInterviewFeedbackComment,
+  listAllInterviewFeedbackComments,
   listInterviewNotificationLogs, createInterviewNotificationLog, updateInterviewNotificationLog,
   getPublishedJobsForFeed,
   CandidateStatus,
@@ -1352,28 +1356,78 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
     if (candidateEmailLog) {
       notificationPromises.push(
         updateInterviewNotificationLog(candidateEmailLog.id, 'sending')
-          .then(() => import('../../services/email.service'))
-          .then(({ sendNotificationEmail }) => sendNotificationEmail({
-            companyId,
-            toEmail: candidateDetails.email!,
-            eventKey: 'ats.interview_scheduled',
-            variables: {
-              candidateName: candidateDetails.full_name ?? '',
-              interviewDate: scheduledDate.toLocaleDateString('it-IT'),
-              interviewTime: scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }),
-              interviewType: normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona',
-              location: typeof location === 'string' ? location : '',
-              description: normalizedDescription ?? '',
-            },
-            fallbackSubject: 'Colloquio di lavoro programmato',
-            fallbackBody: `
-              <p>Gentile ${candidateDetails.full_name ?? ''},</p>
-              <p>È stato programmato un colloquio ${normalizedInterviewType === 'phone' ? 'telefonico' : 'di persona'} per il giorno ${scheduledDate.toLocaleDateString('it-IT')} alle ore ${scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}.</p>
-              ${typeof location === 'string' && location ? `<p><strong>Luogo:</strong> ${location}</p>` : ''}
-              ${normalizedDescription ? `<p><strong>Dettagli:</strong> ${normalizedDescription}</p>` : ''}
-              <p>Cordiali saluti</p>
-            `,
-          }))
+          .then(async () => {
+            // Attach the fixed website logo
+            const attachments: { filename: string; content: Buffer; contentType: string; cid: string }[] = [];
+            const logoPath = path.join(process.cwd(), '../hr-system-demo-frontend/src/assets/fusaro-logo-2.png');
+            try {
+              if (fs.existsSync(logoPath)) {
+                const logoBuffer = fs.readFileSync(logoPath);
+                attachments.push({
+                  filename: 'fusaro-logo-2.png',
+                  content: logoBuffer,
+                  contentType: 'image/png',
+                  cid: 'website-logo'
+                });
+              }
+            } catch (e) {
+              console.error('[ATS_CONTROLLER] Failed to read static logo for interview email', e);
+            }
+
+            const candidateName = candidateDetails.full_name ?? '';
+            const interviewDate = scheduledDate.toLocaleDateString('it-IT');
+            const interviewTime = scheduledDate.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' });
+            const interviewTypeLabel = normalizedInterviewType === 'phone' ? 'Telefonico' : 'Di persona';
+
+            const html = `
+              <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333; background-color: #ffffff; padding: 32px; border-radius: 8px; border: 1px solid #e2e8f0;">
+                ${attachments.length > 0 ? `<div style="text-align: center; margin-bottom: 32px;"><img src="cid:website-logo" alt="Logo" style="max-height: 80px; max-width: 200px; object-fit: contain;" /></div>` : ''}
+                <h2 style="color: #0f172a; text-align: center; margin-bottom: 24px; font-size: 22px;">Dettagli Colloquio di Lavoro</h2>
+                <p style="font-size: 15px; line-height: 1.6; color: #334155;">Gentile <strong>${candidateName}</strong>,</p>
+                <p style="font-size: 15px; line-height: 1.6; color: #334155;">Ti confermiamo che è stato programmato un colloquio di lavoro per la posizione a cui ti sei candidato. Di seguito trovi tutti i dettagli del tuo appuntamento:</p>
+                
+                <div style="margin-top: 32px; padding: 24px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+                  <h3 style="margin-top: 0; margin-bottom: 16px; color: #0f172a; font-size: 16px;">Riepilogo dell'appuntamento</h3>
+                  <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+                    <tr>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%;"><strong>Tipo di colloquio</strong></td>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${interviewTypeLabel}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Data</strong></td>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${interviewDate}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Ora</strong></td>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${interviewTime}</td>
+                    </tr>
+                    ${location ? `
+                    <tr>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Luogo / Link</strong></td>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${location}</td>
+                    </tr>` : ''}
+                    ${normalizedDescription ? `
+                    <tr>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Note / Descrizione</strong></td>
+                      <td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${normalizedDescription.replace(/\n/g, '<br/>')}</td>
+                    </tr>` : ''}
+                  </table>
+                </div>
+                
+                <p style="margin-top: 32px; font-size: 13px; line-height: 1.5; color: #64748b; text-align: center;">
+                  Se dovessi avere la necessità di spostare l'appuntamento, ti preghiamo di rispondere direttamente a questa email il prima possibile.<br>
+                  Grazie per la tua disponibilità e in bocca al lupo!
+                </p>
+              </div>
+            `;
+
+            await sendEmailForCompany(companyId, {
+              to: candidateDetails.email!,
+              subject: 'Colloquio di lavoro programmato',
+              html,
+              attachments
+            });
+          })
           .then(() => updateInterviewNotificationLog(candidateEmailLog.id, 'done'))
           .catch((err) => updateInterviewNotificationLog(
             candidateEmailLog.id, 
@@ -1874,6 +1928,15 @@ export const listInterviewFeedbackCommentsHandler = asyncHandler(async (req: Req
   ok(res, { comments });
 });
 
+export const listAllInterviewFeedbackCommentsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const storeIds = resolveStoreIds(req.user);
+  const comments = await listAllInterviewFeedbackComments(allowedCompanyIds, storeIds);
+  ok(res, { comments });
+});
+
 export const addInterviewFeedbackCommentHandler = asyncHandler(async (req: Request, res: Response) => {
   const interviewId = parseInt(req.params.interviewId, 10);
   if (Number.isNaN(interviewId)) { badRequest(res, 'ID non valido'); return; }
@@ -1900,6 +1963,53 @@ export const addInterviewFeedbackCommentHandler = asyncHandler(async (req: Reque
     storeIds,
   );
   if (!comment) { notFound(res, 'Colloquio non trovato'); return; }
+
+  // Send notification to HR users if comment is added by store_manager or area_manager
+  if (req.user!.role === 'area_manager' || req.user!.role === 'store_manager') {
+    try {
+      const candidateAndManagerRow = await queryOne<{ candidate_name: string; manager_name: string; manager_surname: string }>(
+        `SELECT c.full_name AS candidate_name, u.name AS manager_name, u.surname AS manager_surname
+         FROM interviews i
+         JOIN candidates c ON c.id = i.candidate_id
+         JOIN users u ON u.id = $1
+         WHERE i.id = $2
+         LIMIT 1`,
+        [req.user!.userId, interviewId]
+      );
+
+      if (candidateAndManagerRow) {
+        const candidateName = candidateAndManagerRow.candidate_name;
+        const managerFullName = `${candidateAndManagerRow.manager_name} ${candidateAndManagerRow.manager_surname}`.trim();
+
+        const hrs = await query<{ id: number; locale: string | null }>(
+          `SELECT id, locale FROM users WHERE company_id = $1 AND role = 'hr'`,
+          [interviewRow.company_id]
+        );
+
+        const { sendNotification } = await import('../notifications/notifications.service');
+        const { t } = await import('../../utils/i18n');
+
+        for (const hr of hrs) {
+          const hrLocale = hr.locale || 'it';
+          await sendNotification({
+            companyId: interviewRow.company_id,
+            userId: hr.id,
+            type: 'ats.feedback_added',
+            title: t(hrLocale, 'notifications.ats_feedback_added.title'),
+            message: t(hrLocale, 'notifications.ats_feedback_added.message', {
+              managerName: managerFullName,
+              candidateName: candidateName,
+            }),
+            priority: 'medium',
+            locale: hrLocale,
+            channels: ['in_app'],
+          });
+        }
+      }
+    } catch (err) {
+      console.error('[ATS feedback notification] Failed to send HR notifications:', err);
+    }
+  }
 
   created(res, { comment }, 'Feedback aggiunto');
 });
