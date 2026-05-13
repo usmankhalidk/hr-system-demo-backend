@@ -84,13 +84,13 @@ export async function sendEmailForCompany(
         pass: smtpPass,
       },
       tls: {
-        // Ensure compatibility with modern SMTP servers like Office 365
-        ciphers: 'SSLv3',
+        // Let Node.js negotiate modern TLS (e.g. TLS 1.2, TLS 1.3) automatically
         rejectUnauthorized: false
       },
       debug: true, // Enable debug logs in the terminal
-      logger: true // Log the SMTP transaction
-    });
+      logger: true, // Log the SMTP transaction
+      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+    } as any);
 
     console.log(`[EMAIL] Attempting to send email to ${options.to} via ${smtpHost}...`);
 
@@ -127,7 +127,8 @@ class EmailService {
           user: process.env.SMTP_USER,
           pass: process.env.SMTP_PASS,
         },
-      });
+        family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+      } as any);
     }
   }
 
@@ -238,10 +239,10 @@ export async function verifySmtpConfig(config: {
         pass: config.smtpPass,
       },
       tls: {
-        ciphers: 'SSLv3',
         rejectUnauthorized: false
       },
-    });
+      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+    } as any);
 
     await transporter.verify();
     return true;
