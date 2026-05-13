@@ -1540,3 +1540,69 @@ export async function updateInterviewNotificationLog(
     [id, status, errorMessage ?? null]
   );
 }
+
+export interface AllInterviewFeedbackComment {
+  id: number;
+  interviewId: number;
+  candidateId: number;
+  candidateName: string;
+  positionTitle: string | null;
+  authorId: number;
+  authorName: string | null;
+  authorSurname: string | null;
+  authorAvatarFilename: string | null;
+  authorRole: string | null;
+  body: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export async function listAllInterviewFeedbackComments(
+  companyIds: number[],
+  storeIds?: number[],
+): Promise<AllInterviewFeedbackComment[]> {
+  const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
+  
+  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const params: any[] = [companyIds];
+  let paramIndex = 2;
+
+  if (useStoreScope) {
+    conditions.push(`COALESCE(i.store_id, c.store_id, jp.store_id) = ANY($${paramIndex}::int[])`);
+    params.push(storeIds);
+    paramIndex++;
+  }
+
+  const sql = `
+    SELECT ifc.*, 
+           u.name as author_name, u.surname as author_surname,
+           u.avatar_filename as author_avatar_filename, u.role as author_role,
+           c.id as candidate_id, c.full_name as candidate_name,
+           jp.title as position_title
+    FROM interview_feedback_comments ifc
+    JOIN interviews i ON i.id = ifc.interview_id
+    JOIN candidates c ON c.id = i.candidate_id
+    LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+    JOIN users u ON ifc.user_id = u.id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY ifc.created_at DESC
+  `;
+
+  const rows = await query<Record<string, unknown>>(sql, params);
+
+  return rows.map((r) => ({
+    id: r.id as number,
+    interviewId: r.interview_id as number,
+    candidateId: r.candidate_id as number,
+    candidateName: r.candidate_name as string || '',
+    positionTitle: (r.position_title as string | null) ?? null,
+    authorId: r.user_id as number,
+    authorName: (r.author_name as string | null) ?? null,
+    authorSurname: (r.author_surname as string | null) ?? null,
+    authorAvatarFilename: (r.author_avatar_filename as string | null) ?? null,
+    authorRole: (r.author_role as string | null) ?? null,
+    body: r.body as string,
+    createdAt: r.created_at as string,
+    updatedAt: r.updated_at as string,
+  }));
+}

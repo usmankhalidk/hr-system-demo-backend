@@ -215,6 +215,16 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
     it: '{{name}} ha inviato la propria candidatura.',
   },
 
+  // ── ats.feedback_added ──────────────────────────────────────────────────
+  'notifications.ats_feedback_added.title': {
+    en: 'Interview feedback submitted',
+    it: 'Feedback colloquio inviato',
+  },
+  'notifications.ats_feedback_added.message': {
+    en: '{{managerName}} submitted feedback for candidate {{candidateName}}.',
+    it: '{{managerName}} ha inserito un feedback per il candidato {{candidateName}}.',
+  },
+
   // ── ats.interview_invite ──────────────────────────────────────────────────
   'notifications.ats_interview_invite.title': {
     en: 'Interview scheduled',

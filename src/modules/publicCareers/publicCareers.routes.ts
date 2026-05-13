@@ -5,6 +5,7 @@ import multer from 'multer';
 import { query, queryOne } from '../../config/database';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { badRequest, conflict, created, notFound, ok } from '../../utils/response';
+import { sendEmailForCompany } from '../../services/email.service';
 
 type PublicJobRow = {
   id: number;
@@ -619,6 +620,8 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
   const maritalStatus = normalizeOptionalText(body.marital_status ?? body.maritalStatus, 50);
   const hasCurrentEmployer = normalizeOptionalText(body.has_current_employer ?? body.hasCurrentEmployer, 12);
   const applicationDate = normalizeOptionalText(body.application_date ?? body.applicationDate, 32);
+  const startDate = normalizeOptionalText(body.start_date ?? body.startDate, 32);
+  const postalCode = normalizeOptionalText(body.postal_code ?? body.postalCode, 20);
   const gdprConsent = parseBooleanInput(body.gdpr_consent ?? body.gdprConsent);
   const utmSource = normalizeOptionalText(req.query.utm_source, 100) ?? 'direct';
 
@@ -645,10 +648,11 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
     return;
   }
 
-  const job = await queryOne<{ id: number; company_id: number; store_id: number | null; status: string }>(
-    `SELECT id, company_id, store_id, status
-     FROM job_postings
-     WHERE id = $1`,
+  const job = await queryOne<{ id: number; company_id: number; store_id: number | null; status: string; title: string; company_name: string; company_logo_filename: string | null }>(
+    `SELECT j.id, j.company_id, j.store_id, j.status, j.title, c.name AS company_name, c.logo_filename AS company_logo_filename
+     FROM job_postings j
+     JOIN companies c ON c.id = j.company_id
+     WHERE j.id = $1`,
     [jobId],
   );
 
@@ -701,6 +705,8 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
     marital_status: maritalStatus,
     has_current_employer: hasCurrentEmployer,
     application_date: applicationDate,
+    start_date: startDate,
+    postal_code: postalCode,
     uploaded_filename: req.file.filename,
   });
 
@@ -752,6 +758,71 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
     badRequest(res, 'Impossibile inviare la candidatura', 'APPLICATION_FAILED');
     return;
   }
+
+  // Attach the fixed website logo
+  let attachments: { filename: string; content: Buffer; contentType: string; cid: string }[] = [];
+  const logoPath = path.join(process.cwd(), '../hr-system-demo-frontend/src/assets/fusaro-logo-2.png');
+  try {
+    if (fs.existsSync(logoPath)) {
+      const logoBuffer = fs.readFileSync(logoPath);
+      attachments.push({
+        filename: 'fusaro-logo-2.png',
+        content: logoBuffer,
+        contentType: 'image/png',
+        cid: 'website-logo'
+      });
+    }
+  } catch (e) {
+    console.error('[PUBLIC_CAREERS] Failed to read static logo for email', e);
+  }
+
+  const htmlDataRows = [
+    fullName && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569; width: 40%;"><strong>Nome e cognome</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${fullName}</td></tr>`,
+    email && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Email</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${email}</td></tr>`,
+    phone && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Telefono</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${phone}</td></tr>`,
+    linkedinUrl && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>LinkedIn</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${linkedinUrl}</td></tr>`,
+    coverLetter && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Lettera di presentazione</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${coverLetter.replace(/\n/g, '<br/>')}</td></tr>`,
+    availability && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Disponibilità</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${availability}</td></tr>`,
+    gender && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Genere</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${gender}</td></tr>`,
+    nationality && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Nazionalità</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${nationality}</td></tr>`,
+    country && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Nazione</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${country}</td></tr>`,
+    state && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Provincia</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${state}</td></tr>`,
+    city && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Città</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${city}</td></tr>`,
+    dateOfBirth && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Data di nascita</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${dateOfBirth}</td></tr>`,
+    currentEmployer && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Attuale datore di lavoro</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${currentEmployer}</td></tr>`,
+    currentRole && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Attuale ruolo</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${currentRole}</td></tr>`,
+    maritalStatus && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Stato civile</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${maritalStatus}</td></tr>`,
+    startDate && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Data di inizio desiderata</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${startDate}</td></tr>`,
+    postalCode && `<tr><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #475569;"><strong>Codice postale</strong></td><td style="padding: 10px 0; border-bottom: 1px solid #e2e8f0; color: #0f172a;">${postalCode}</td></tr>`
+  ].filter(Boolean).join('');
+
+  const html = `
+    <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333; background-color: #ffffff; padding: 32px; border-radius: 8px; border: 1px solid #e2e8f0;">
+      ${attachments.length > 0 ? `<div style="text-align: center; margin-bottom: 32px;"><img src="cid:website-logo" alt="Logo" style="max-height: 80px; max-width: 200px; object-fit: contain;" /></div>` : ''}
+      <h2 style="color: #0f172a; text-align: center; margin-bottom: 24px; font-size: 22px;">Candidatura inviata con successo!</h2>
+      <p style="font-size: 15px; line-height: 1.6; color: #334155;">Ciao <strong>${fullName}</strong>,</p>
+      <p style="font-size: 15px; line-height: 1.6; color: #334155;">Ti confermiamo di aver ricevuto la tua candidatura per la posizione di <strong style="color: #0ea5e9;">${job.title}</strong> presso <strong>${job.company_name}</strong>.</p>
+      
+      <div style="margin-top: 32px; padding: 24px; background-color: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0;">
+        <h3 style="margin-top: 0; margin-bottom: 16px; color: #0f172a; font-size: 16px;">Riepilogo dei tuoi dati</h3>
+        <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+          ${htmlDataRows}
+        </table>
+      </div>
+      
+      <p style="margin-top: 32px; font-size: 13px; line-height: 1.5; color: #64748b; text-align: center;">
+        Il team di selezione di ${job.company_name} esaminerà il tuo profilo e ti contatterà al più presto.<br>
+        Grazie per il tuo interesse!
+      </p>
+    </div>
+  `;
+
+  sendEmailForCompany(job.company_id, {
+    to: email,
+    subject: `Conferma candidatura: ${job.title} - ${job.company_name}`,
+    html,
+    attachments
+  }).catch(e => console.error('[PUBLIC_CAREERS] Failed to send application confirmation email', e));
 
   created(res, { application_id: inserted.id }, 'Candidatura inviata con successo');
 }));

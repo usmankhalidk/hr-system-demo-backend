@@ -10,6 +10,7 @@ import {
   jobFeedHandler,
   listCandidateCommentsHandler, addCandidateCommentHandler, deleteCandidateCommentHandler,
   listInterviewFeedbackCommentsHandler, addInterviewFeedbackCommentHandler, deleteInterviewFeedbackCommentHandler,
+  listAllInterviewFeedbackCommentsHandler,
   listInterviewNotificationsHandler, sendInterviewNotificationHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
@@ -53,7 +54,8 @@ router.get('/interviews', listAllInterviewsHandler);
 router.get('/candidates/:candidateId/interviews',  listInterviewsHandler);
 router.post('/candidates/:candidateId/interviews', requireRole('admin', 'hr', 'area_manager', 'store_manager'), createInterviewHandler);
 
-// Interview updates by standalone ID
+// Interview feedback comments
+router.get('/interviews/feedback/all',        requireRole('admin', 'hr', 'area_manager', 'store_manager'), listAllInterviewFeedbackCommentsHandler);
 router.patch('/interviews/:id',               requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateInterviewHandler);
 router.delete('/interviews/:id',              requireRole('admin', 'hr'), deleteInterviewHandler);
 // Interview feedback comments

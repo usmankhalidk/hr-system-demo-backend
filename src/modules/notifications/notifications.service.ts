@@ -20,6 +20,7 @@ export type NotificationEventType =
   | 'document.expiring'
   | 'ats.candidate_received'
   | 'ats.interview_invite'
+  | 'ats.feedback_added'
   | 'ats.outcome'
   | 'onboarding.welcome'
   | 'onboarding.task_reminder'
