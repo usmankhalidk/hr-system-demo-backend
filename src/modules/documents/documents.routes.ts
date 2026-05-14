@@ -27,6 +27,9 @@ import path from 'path';
 import fs from 'fs';
 import AdmZip from 'adm-zip';
 import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
+import { sendDocumentSignatureEmailAutomation } from '../automations/documentSignature';
 
 // Phase 3 placeholder: employee documents, bulk uploads, and e-signature.
 // This router is intentionally NOT wired into src/index.ts yet.
@@ -184,7 +187,7 @@ const uploadUnifiedMiddleware = (req: Request, res: Response, next: NextFunction
 export async function performAutoAssign(
   documentId: number,
   filename: string,
-  companyId: number,
+  allowedCompanyIds: number[],
   options?: {
     requiresSignature?: boolean;
     expiresAt?: string | null;
@@ -194,9 +197,9 @@ export async function performAutoAssign(
     isSuperAdmin?: boolean;
   },
 ): Promise<boolean> {
-  const isGlobalSearch = options?.isSuperAdmin || !companyId || companyId === 0;
+  const isGlobalSearch = options?.isSuperAdmin || !allowedCompanyIds || allowedCompanyIds.length === 0;
 
-  // Fetch active employees (filtered by company unless global search for super admin)
+  // Fetch active employees (filtered by allowed company IDs unless global search for super admin)
   const employees = await query<{
     id: number;
     name: string;
@@ -204,48 +207,66 @@ export async function performAutoAssign(
     unique_id: string | null;
     company_id: number;
   }>(
-    `SELECT id, name, surname, unique_id, company_id FROM users WHERE status = 'active' AND role <> 'admin' ${!isGlobalSearch ? 'AND company_id = $1' : ''}`,
-    !isGlobalSearch ? [companyId] : [],
+    `SELECT id, name, surname, unique_id, company_id FROM users WHERE status = 'active' ${!isGlobalSearch ? 'AND company_id = ANY($1)' : ''}`,
+    !isGlobalSearch ? [allowedCompanyIds] : [],
   );
 
   // Normalize filename for matching: remove extension and trim
   const cleanBaseName = filename.replace(/\.(pdf|zip|jpg|jpeg|png|webp|bin|docx|xlsx)$/i, '').trim();
-  // Split into tokens (lowercase)
-  const tokens = cleanBaseName.toLowerCase().split(/[_\s.-]+/).filter(Boolean);
-  const fullLowerName = cleanBaseName.toLowerCase();
+  const normalizedFile = cleanBaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  const tokens = normalizedFile.split(/[_\s.-]+/).filter(Boolean);
+  const rawJoined = tokens.join('');
 
   const matchesLevel1: typeof employees = []; // ID Match
-  const matchesLevel2: typeof employees = []; // Full name Match
-  const matchesLevel3: typeof employees = []; // Single name/surname token Match
+  const matchesLevel2: typeof employees = []; // Full Name variations Match (mario rossi, rossi mario, mariorossi, rossimario)
+  const matchesLevel3: typeof employees = []; // Last Name match (surname)
+  const matchesLevel4: typeof employees = []; // First Name match (name)
 
   for (const emp of employees) {
-    const name = emp.name.toLowerCase();
-    const surname = emp.surname.toLowerCase();
-    const uid = emp.unique_id?.toLowerCase();
+    const name = emp.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const surname = emp.surname.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const uid = emp.unique_id?.toLowerCase().trim();
 
-    // Level 1: Unique ID (highest priority)
     if (uid && tokens.includes(uid)) {
       matchesLevel1.push(emp);
       continue;
     }
 
-    // Level 2: Full Name (Surname_Name or Name_Surname tokens anywhere)
-    if (fullLowerName.includes(`${name} ${surname}`) ||
-      fullLowerName.includes(`${surname} ${name}`) ||
-      fullLowerName.includes(`${name}_${surname}`) ||
-      fullLowerName.includes(`${surname}_${name}`)) {
+    // Level 2: Full name / Last name + Full name variations
+    if (
+      normalizedFile.includes(`${name} ${surname}`) ||
+      normalizedFile.includes(`${surname} ${name}`) ||
+      normalizedFile.includes(`${name}_${surname}`) ||
+      normalizedFile.includes(`${surname}_${name}`) ||
+      rawJoined.includes(`${name}${surname}`) ||
+      rawJoined.includes(`${surname}${name}`)
+    ) {
       matchesLevel2.push(emp);
       continue;
     }
 
-    // Level 3: Partial token match
-    if (tokens.includes(name) || tokens.includes(surname)) {
+    // Level 3: Last name match (surname)
+    if (tokens.includes(surname)) {
       matchesLevel3.push(emp);
+      continue;
+    }
+
+    // Level 4: First name match
+    if (tokens.includes(name)) {
+      matchesLevel4.push(emp);
+    }
+  }
+
+  // Parse provided employee ID safely
+  let providedEmpId: number | null = null;
+  if (options?.employeeId !== undefined && options?.employeeId !== null) {
+    const parsed = Number(options.employeeId);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      providedEmpId = parsed;
     }
   }
 
   let matchedEmp: typeof employees[0] | null = null;
-  const providedEmpId = options?.employeeId !== undefined ? options.employeeId : null;
 
   if (providedEmpId === null) {
     if (matchesLevel1.length === 1) {
@@ -254,6 +275,8 @@ export async function performAutoAssign(
       matchedEmp = matchesLevel2[0];
     } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
       matchedEmp = matchesLevel3[0];
+    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 0 && matchesLevel4.length === 1) {
+      matchedEmp = matchesLevel4[0];
     }
   }
 
@@ -269,7 +292,7 @@ export async function performAutoAssign(
       `SELECT company_id FROM users WHERE id = $1`,
       [providedEmpId]
     );
-    finalCompanyId = empInfo?.company_id || companyId;
+    finalCompanyId = empInfo?.company_id || (allowedCompanyIds.length > 0 ? allowedCompanyIds[0] : 0);
   }
 
   if (finalEmpId && finalCompanyId) {
@@ -336,6 +359,31 @@ export async function performAutoAssign(
           options?.visibleToRoles || ['admin', 'hr', 'area_manager', 'store_manager', 'employee']
         ]
       );
+
+      if (options?.requiresSignature) {
+        const empRow = await queryOne<{ locale?: string }>(`SELECT locale FROM users WHERE id = $1`, [empId]);
+        const userLocale = empRow?.locale || 'it';
+        const title = t(userLocale, 'notifications.document_signature_required.title');
+        const message = t(userLocale, 'notifications.document_signature_required.message');
+
+        await sendNotification({
+          companyId: targetCompanyId,
+          userId: empId,
+          type: 'document.signature_required',
+          title,
+          message,
+          priority: 'high',
+          channels: ['in_app']
+        });
+
+        sendDocumentSignatureEmailAutomation(
+          targetCompanyId,
+          empId,
+          filename,
+          allowedCompanyIds[0]
+        ).catch(err => console.error('[AUTOMATION] Document signature email error:', err));
+      }
+
       return true;
     }
   }
@@ -532,6 +580,30 @@ router.put(
               [emp.company_id, employee_id, autoCategoryId, newTitle, newPath, finalRequiresSignature, finalExpiresAt, finalVisibleToRolesArr, existing.id]
             );
           }
+
+          if (finalRequiresSignature) {
+            const empRow = await queryOne<{ locale?: string }>(`SELECT locale FROM users WHERE id = $1`, [employee_id]);
+            const userLocale = empRow?.locale || 'it';
+            const title = t(userLocale, 'notifications.document_signature_required.title');
+            const message = t(userLocale, 'notifications.document_signature_required.message');
+
+            await sendNotification({
+              companyId: emp.company_id,
+              userId: employee_id,
+              type: 'document.signature_required',
+              title,
+              message,
+              priority: 'high',
+              channels: ['in_app']
+            });
+
+            sendDocumentSignatureEmailAutomation(
+              emp.company_id,
+              employee_id,
+              newTitle,
+              req.user?.companyId
+            ).catch(err => console.error('[AUTOMATION] Document signature email error:', err));
+          }
         }
       } else if (existing) {
         // Employee removed: soft delete from employee_documents
@@ -671,7 +743,7 @@ router.post(
       expiresAt: expires_at || null,
       visibleToRoles: visibleToRolesArr,
       uploadedBy: req.user!.userId,
-      employeeId: employee_id ? parseInt(String(employee_id), 10) : undefined,
+      employeeId: employee_id && String(employee_id) !== 'null' && String(employee_id) !== 'undefined' ? parseInt(String(employee_id), 10) : undefined,
       isSuperAdmin: req.user!.is_super_admin
     };
 
@@ -684,6 +756,8 @@ router.post(
       );
       if (emp) baseCompanyId = emp.company_id;
     }
+
+    const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
     if (isZip) {
       // Handle ZIP
@@ -711,7 +785,7 @@ router.post(
           });
 
           // Rule based auto-assignment
-          await performAutoAssign(doc.id, entry.name, baseCompanyId || 0, options);
+          await performAutoAssign(doc.id, entry.name, allowedCompanyIds, options);
         }
 
         ok(res, { success: true, message: 'ZIP extracted and files saved successfully' });
@@ -737,7 +811,7 @@ router.post(
       });
 
       // Rule based auto-assignment
-      const matched = await performAutoAssign(doc.id, originalname, baseCompanyId || 0, options);
+      const matched = await performAutoAssign(doc.id, originalname, allowedCompanyIds, options);
 
       ok(res, {
         matched,
