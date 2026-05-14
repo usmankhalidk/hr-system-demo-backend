@@ -134,9 +134,8 @@ function buildScopeWhere(
   switch (role) {
     case 'admin':
     case 'hr':
-      return { where: base, params: [companyId] };
     case 'area_manager':
-      return { where: `${base} AND u.supervisor_id = $2`, params: [companyId, userId] };
+      return { where: base, params: [companyId] };
     case 'store_manager':
       return { where: `${base} AND u.store_id = $2`, params: [companyId, storeId] };
     case 'employee':
@@ -946,15 +945,17 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       company_id, store_id, supervisor_id, name, surname, email, password_hash,
       role, unique_id, department, hire_date, contract_end_date,
       working_type, weekly_hours, off_days, personal_email, date_of_birth, nationality,
-      gender, iban, address, cap, country, state, city, phone,
-      first_aid_flag, marital_status, status,
-      contract_type, probation_months, termination_type
+      gender, iban, address, cap, first_aid_flag, marital_status, status,
+      contract_type, probation_months, termination_type, termination_date, phone,
+      country, state, city
     ) VALUES (
-      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32
+      $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30,
+      $31, $32, $33
     ) RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, country, state, city, phone, first_aid_flag, marital_status, status,
-        contract_type, probation_months, termination_type`,
+        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
+        contract_type, probation_months, termination_type, termination_date, phone,
+        country, state, city`,
     [
       companyId,
       body.store_id ?? null,
@@ -988,6 +989,11 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.contract_type ?? null,
       body.probation_months ?? null,
       body.termination_type ?? null,
+      body.termination_date ?? null,
+      body.phone ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
     ],
   );
   // Check Welcome Email Automation (Background task, non-blocking)
@@ -1108,18 +1114,21 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   // because we're allowing cross-company transfers. We've already validated access above.
   const employee = await queryOne(
     `UPDATE users SET
-      company_id = $1, store_id = $2, supervisor_id = $3, name = $4, surname = $5,
-      email = COALESCE($6, email),
-      role = $7, unique_id = $8, department = $9, hire_date = $10,
-      contract_end_date = $11, working_type = $12, weekly_hours = $13,
-      off_days = $14,
-      personal_email = $15, date_of_birth = $16, nationality = $17,
-      gender = $18, iban = $19, address = $20, cap = $21,
-      country = $22, state = $23, city = $24, phone = $25,
-      first_aid_flag = $26, marital_status = $27,
-      contract_type = $28, probation_months = $29,
-      termination_date = $30, termination_type = $31,
-      password_hash = COALESCE($32, password_hash),
+      store_id = $1, supervisor_id = $2, name = $3, surname = $4,
+      email = COALESCE($5, email),
+      role = $6, unique_id = $7, department = $8, hire_date = $9,
+      contract_end_date = $10, working_type = $11, weekly_hours = $12,
+      off_days = $13,
+      personal_email = $14, date_of_birth = $15, nationality = $16,
+      gender = $17, iban = $18, address = $19, cap = $20,
+      first_aid_flag = $21, marital_status = $22,
+      contract_type = $23, probation_months = $24,
+      termination_date = $25, termination_type = $26,
+      password_hash = COALESCE($27, password_hash),
+      phone = $30,
+      country = $31,
+      state = $32,
+      city = $33,
       updated_at = NOW()
     WHERE id = $33
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
@@ -1160,6 +1169,11 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.termination_type ?? null,
       passwordHash,
       empId,
+      companyId,
+      body.phone ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
     ],
   );
 

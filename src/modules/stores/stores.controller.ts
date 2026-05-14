@@ -76,8 +76,8 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
   const companyFilter = targetId !== null ? [targetId] : allowedCompanyIds;
 
   const isSuperAdmin = req.user!.is_super_admin === true;
-  if (role === 'admin' || role === 'hr' || isSuperAdmin) {
-    // Admin/HR can list stores inside the allowed companies scope
+  if (role === 'admin' || role === 'hr' || role === 'area_manager' || isSuperAdmin) {
+    // Admin/HR/Area Manager can list stores inside the allowed companies scope
     stores = await query<StoreRow>(`
       SELECT s.*,
         c.name AS company_name,
@@ -90,37 +90,6 @@ export const listStores = asyncHandler(async (req: Request, res: Response) => {
       WHERE s.company_id = ANY($1)
       ORDER BY s.name
     `, [companyFilter]);
-  } else if (role === 'area_manager') {
-    if (hasCrossCompanyAccess) {
-      // When cross-company access is enabled for the role, list stores
-      // in the allowed companies (instead of only supervised ones).
-      stores = await query<StoreRow>(`
-        SELECT s.*,
-          c.name AS company_name,
-          cg.name AS group_name,
-          c.logo_filename AS company_logo_filename,
-          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
-        FROM stores s
-        JOIN companies c ON c.id = s.company_id
-        LEFT JOIN company_groups cg ON cg.id = c.group_id
-        WHERE s.company_id = ANY($1)
-        ORDER BY s.name
-      `, [companyFilter]);
-    } else {
-      stores = await query<StoreRow>(`
-        SELECT DISTINCT s.*,
-          c.name AS company_name,
-          cg.name AS group_name,
-          c.logo_filename AS company_logo_filename,
-          (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count
-        FROM stores s
-        JOIN companies c ON c.id = s.company_id
-        LEFT JOIN company_groups cg ON cg.id = c.group_id
-        INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = $2
-        WHERE s.is_active = true
-        ORDER BY s.name
-      `, [userId, companyId]);
-    }
   } else if (role === 'store_manager') {
     stores = await query<StoreRow>(`
       SELECT s.*,

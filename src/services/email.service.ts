@@ -51,28 +51,18 @@ export async function sendEmailForCompany(
       [companyId],
     );
 
-    let smtpHost = cfg?.smtp_host;
-    let smtpPort = cfg?.smtp_port || 587;
-    let smtpUser = cfg?.smtp_user;
-    let smtpPass = cfg?.smtp_pass;
-    let smtpFrom = cfg?.smtp_from;
+    const smtpHost = cfg?.smtp_host;
+    const smtpPort = cfg?.smtp_port || 587;
+    const smtpUser = cfg?.smtp_user;
+    const smtpPass = cfg?.smtp_pass;
+    const smtpFrom = cfg?.smtp_from;
 
     if (!smtpHost || !smtpUser || !smtpPass) {
-      // Fallback to global/environment SMTP config if available
-      if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-        smtpHost = process.env.SMTP_HOST;
-        smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
-        smtpUser = process.env.SMTP_USER;
-        smtpPass = process.env.SMTP_PASS;
-        smtpFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
-        console.log(`[EMAIL] Fallback to global SMTP configurations for company ${companyId}.`);
-      } else {
-        // No config or incomplete config — silently skip, do NOT crash
-        console.log(
-          `[EMAIL] No SMTP config for company ${companyId} and no global SMTP variables — email to ${options.to} skipped.`,
-        );
-        return;
-      }
+      // No DB config or incomplete config — silently skip, do NOT crash
+      console.log(
+        `[EMAIL] No DB SMTP config for company ${companyId} — email to ${options.to} skipped.`,
+      );
+      return;
     }
 
     const transporter = nodemailer.createTransport({
@@ -84,13 +74,13 @@ export async function sendEmailForCompany(
         pass: smtpPass,
       },
       tls: {
-        // Ensure compatibility with modern SMTP servers like Office 365
-        ciphers: 'SSLv3',
+        // Let Node.js negotiate modern TLS (e.g. TLS 1.2, TLS 1.3) automatically
         rejectUnauthorized: false
       },
       debug: true, // Enable debug logs in the terminal
-      logger: true // Log the SMTP transaction
-    });
+      logger: true, // Log the SMTP transaction
+      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+    } as any);
 
     console.log(`[EMAIL] Attempting to send email to ${options.to} via ${smtpHost}...`);
 
@@ -127,7 +117,8 @@ class EmailService {
           user: process.env.SMTP_USER,
           pass: process.env.SMTP_PASS,
         },
-      });
+        family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+      } as any);
     }
   }
 
@@ -196,7 +187,7 @@ export async function sendNotificationEmail(options: {
   let htmlBody = fallbackBody;
 
   if (template) {
-    subject  = template.subject_it ?? fallbackSubject;
+    subject = template.subject_it ?? fallbackSubject;
     htmlBody = template.body_it;
   }
 
@@ -204,7 +195,7 @@ export async function sendNotificationEmail(options: {
   const interpolate = (tpl: string): string =>
     tpl.replace(/\{\{(\w+)\}\}/g, (_match, key) => variables[key] ?? '');
 
-  subject  = interpolate(subject);
+  subject = interpolate(subject);
   htmlBody = interpolate(htmlBody);
 
   const plainText = htmlBody.replace(/<[^>]+>/g, '');
@@ -238,10 +229,10 @@ export async function verifySmtpConfig(config: {
         pass: config.smtpPass,
       },
       tls: {
-        ciphers: 'SSLv3',
         rejectUnauthorized: false
       },
-    });
+      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
+    } as any);
 
     await transporter.verify();
     return true;
