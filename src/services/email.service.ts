@@ -51,24 +51,16 @@ export async function sendEmailForCompany(
       [companyId],
     );
 
-    let smtpHost = cfg?.smtp_host;
-    let smtpPort = cfg?.smtp_port || 587;
-    let smtpUser = cfg?.smtp_user;
-    let smtpPass = cfg?.smtp_pass;
-    let smtpFrom = cfg?.smtp_from;
+    const smtpHost = cfg?.smtp_host;
+    const smtpPort = cfg?.smtp_port || 587;
+    const smtpUser = cfg?.smtp_user;
+    const smtpPass = cfg?.smtp_pass;
+    const smtpFrom = cfg?.smtp_from;
 
-    // Use global/environment SMTP config if available, or fallback to DB config
-    if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-      smtpHost = process.env.SMTP_HOST;
-      smtpPort = parseInt(process.env.SMTP_PORT || '587', 10);
-      smtpUser = process.env.SMTP_USER;
-      smtpPass = process.env.SMTP_PASS;
-      smtpFrom = process.env.SMTP_FROM || process.env.SMTP_USER;
-      console.log(`[EMAIL] Using global SMTP configurations for company ${companyId}.`);
-    } else if (!smtpHost || !smtpUser || !smtpPass) {
-      // No config or incomplete config — silently skip, do NOT crash
+    if (!smtpHost || !smtpUser || !smtpPass) {
+      // No DB config or incomplete config — silently skip, do NOT crash
       console.log(
-        `[EMAIL] No SMTP config for company ${companyId} and no global SMTP variables — email to ${options.to} skipped.`,
+        `[EMAIL] No DB SMTP config for company ${companyId} — email to ${options.to} skipped.`,
       );
       return;
     }
@@ -245,11 +237,8 @@ export async function verifySmtpConfig(config: {
     await transporter.verify();
     return true;
   } catch (err: unknown) {
-    console.error('[EMAIL_VERIFY] SMTP verification failed (bypassing for local development):', err);
-    // In local development/demo environments (Windows), outbound SMTP ports (587/465)
-    // are frequently blocked by ISP firewalls or Windows Defender.
-    // Return true so the configuration successfully completes and saves without blocking the user.
-    return true;
+    console.error('[EMAIL_VERIFY] SMTP verification failed:', err);
+    return false;
   }
 }
 
