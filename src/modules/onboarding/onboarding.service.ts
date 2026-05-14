@@ -300,12 +300,13 @@ export interface EmployeeOnboardingOverview {
 export async function getOnboardingOverview(companyIds: number[]): Promise<EmployeeOnboardingOverview[]> {
   if (companyIds.length === 0) return [];
   const rows = await query<{
-    employee_id: number;
+     employee_id: number;
     company_id: number;
     company_name: string;
     name: string;
     surname: string;
     email: string;
+    role: string;
     store_id: number | null;
     store_name: string | null;
     avatar_filename: string | null;
@@ -319,6 +320,7 @@ export async function getOnboardingOverview(companyIds: number[]): Promise<Emplo
        u.name,
        u.surname,
        u.email,
+       u.role,
        s.id AS store_id,
        s.name AS store_name,
        u.avatar_filename,
@@ -330,9 +332,9 @@ export async function getOnboardingOverview(companyIds: number[]): Promise<Emplo
      LEFT JOIN employee_onboarding_tasks t ON t.employee_id = u.id
      LEFT JOIN onboarding_templates tmpl ON tmpl.id = t.template_id AND tmpl.company_id = u.company_id
      WHERE u.company_id = ANY($1)
-       AND u.role = 'employee'
+       AND u.role NOT IN ('admin', 'store_terminal')
        AND u.status = 'active'
-     GROUP BY u.id, u.company_id, c.name, u.name, u.surname, u.email, s.id, s.name, u.avatar_filename
+     GROUP BY u.id, u.company_id, c.name, u.name, u.surname, u.email, u.role, s.id, s.name, u.avatar_filename
      ORDER BY u.surname ASC, u.name ASC`,
     [companyIds],
   );
@@ -347,6 +349,7 @@ export async function getOnboardingOverview(companyIds: number[]): Promise<Emplo
       name: r.name,
       surname: r.surname,
       email: r.email,
+      role: r.role as any,
       storeId: r.store_id,
       storeName: r.store_name,
       avatarFilename: r.avatar_filename,
