@@ -29,6 +29,10 @@ router.get('/', authenticate, listNotifications);
 // NOTE: Declared before /:id/read to avoid "read-all" being captured as :id
 router.patch('/read-all', authenticate, markAllNotificationsRead);
 
+// DELETE /api/notifications/bulk-delete
+// Deletes multiple notifications by IDs
+router.delete('/bulk-delete', authenticate, require('../../modules/notifications/notifications.controller').bulkDeleteNotifications);
+
 // GET /api/notifications/unread-count
 // Returns { count: number } for the bell-badge polling
 // NOTE: Declared before /:id/read for the same reason

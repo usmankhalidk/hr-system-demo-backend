@@ -43,7 +43,7 @@ const LIST_FIELDS_WITH_COMPANY = `
 const DETAIL_FIELDS = `
   ${LIST_FIELDS},
   u.personal_email, u.date_of_birth, u.nationality, u.gender,
-  u.iban, u.address, u.cap, u.phone, u.country, u.state, u.city,
+  u.iban, u.address, u.cap, u.country, u.state, u.city, u.phone,
   u.contract_type, u.probation_months,
   u.device_reset_pending,
   (u.registered_device_token IS NOT NULL) AS device_registered,
@@ -979,6 +979,10 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.iban ?? null,
       body.address ?? null,
       body.cap ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
+      body.phone ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       'active',
@@ -1022,7 +1026,15 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     [empId, allowedCompanyIds],
   );
   if (!empRow) { notFound(res, 'Dipendente non trovato'); return; }
-  const companyId = empRow.company_id;
+  const currentCompanyId = empRow.company_id;
+  const targetCompanyId = body.company_id ? parseInt(body.company_id, 10) : currentCompanyId;
+
+  // H10: Cross-company transfer — verify caller's access to the target company
+  if (targetCompanyId !== currentCompanyId && !allowedCompanyIds.includes(targetCompanyId)) {
+    forbidden(res, 'Non sei autorizzato a spostare dipendenti in questa azienda');
+    return;
+  }
+
   const currentOffDays = normalizeOffDays(empRow.off_days);
   const nextOffDays = normalizeOffDays(body.off_days, currentOffDays);
   const offDaysChanged = Object.prototype.hasOwnProperty.call(body, 'off_days');
@@ -1047,7 +1059,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
   if (body.unique_id) {
     const conflictRow = await queryOne<{ id: number }>(
       `SELECT id FROM users WHERE company_id = $1 AND unique_id = $2 AND id != $3`,
-      [companyId, body.unique_id, empId],
+      [targetCompanyId, body.unique_id, empId],
     );
     if (conflictRow) {
       conflict(res, 'ID univoco già in uso in questa azienda', 'UNIQUE_ID_CONFLICT');
@@ -1068,18 +1080,25 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     }
   }
 
-  // M11: Validate store_id if provided
+  // M11: Validate store_id if provided (against target company)
+  // IMPORTANT: Validate against targetCompanyId, not currentCompanyId, to allow cross-company transfers
   if (body.store_id) {
-    const storeError = await validateStore(parseInt(body.store_id, 10), companyId);
+    const parsedStoreId = typeof body.store_id === 'string' ? parseInt(body.store_id, 10) : body.store_id;
+    if (isNaN(parsedStoreId)) {
+      badRequest(res, 'ID punto vendita non valido', 'INVALID_STORE_ID');
+      return;
+    }
+    const storeError = await validateStore(parsedStoreId, targetCompanyId);
     if (storeError) {
       badRequest(res, storeError, 'INVALID_STORE');
       return;
     }
   }
 
-  // M9: Validate supervisor_id if provided
+  // M9: Validate supervisor_id if provided (against target company)
+  // IMPORTANT: Validate against targetCompanyId, not currentCompanyId, to allow cross-company transfers
   if (body.supervisor_id) {
-    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), companyId);
+    const supError = await validateSupervisor(parseInt(body.supervisor_id, 10), targetCompanyId);
     if (supError) {
       badRequest(res, supError, 'INVALID_SUPERVISOR');
       return;
@@ -1091,31 +1110,30 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
     passwordHash = await bcrypt.hash(body.password, 12);
   }
 
+  // IMPORTANT: The WHERE clause should only check the employee ID, not company_id,
+  // because we're allowing cross-company transfers. We've already validated access above.
   const employee = await queryOne(
     `UPDATE users SET
-      store_id = $1, supervisor_id = $2, name = $3, surname = $4,
-      email = COALESCE($5, email),
-      role = $6, unique_id = $7, department = $8, hire_date = $9,
-      contract_end_date = $10, working_type = $11, weekly_hours = $12,
-      off_days = $13,
-      personal_email = $14, date_of_birth = $15, nationality = $16,
-      gender = $17, iban = $18, address = $19, cap = $20,
-      first_aid_flag = $21, marital_status = $22,
-      contract_type = $23, probation_months = $24,
-      termination_date = $25, termination_type = $26,
-      password_hash = COALESCE($27, password_hash),
-      phone = $30,
-      country = $31,
-      state = $32,
-      city = $33,
+      company_id = $1, store_id = $2, supervisor_id = $3, name = $4, surname = $5,
+      email = COALESCE($6, email),
+      role = $7, unique_id = $8, department = $9, hire_date = $10,
+      contract_end_date = $11, working_type = $12, weekly_hours = $13,
+      off_days = $14,
+      personal_email = $15, date_of_birth = $16, nationality = $17,
+      gender = $18, iban = $19, address = $20, cap = $21,
+      country = $22, state = $23, city = $24, phone = $25,
+      first_aid_flag = $26, marital_status = $27,
+      contract_type = $28, probation_months = $29,
+      termination_date = $30, termination_type = $31,
+      password_hash = COALESCE($32, password_hash),
       updated_at = NOW()
-    WHERE id = $28 AND company_id = $29
+    WHERE id = $33
     RETURNING id, company_id, name, surname, email, role, store_id, supervisor_id, unique_id, department,
         hire_date, contract_end_date, working_type, weekly_hours, off_days, personal_email, date_of_birth,
-        nationality, gender, iban, address, cap, first_aid_flag, marital_status, status,
-        contract_type, probation_months, termination_date, termination_type, phone,
-        country, state, city`,
+        nationality, gender, iban, address, cap, country, state, city, phone, first_aid_flag, marital_status, status,
+        contract_type, probation_months, termination_date, termination_type`,
     [
+      targetCompanyId,
       body.store_id ?? null,
       body.supervisor_id ?? null,
       body.name,
@@ -1136,6 +1154,10 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.iban ?? null,
       body.address ?? null,
       body.cap ?? null,
+      body.country ?? null,
+      body.state ?? null,
+      body.city ?? null,
+      body.phone ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       body.contract_type ?? null,
@@ -1144,11 +1166,6 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
       body.termination_type ?? null,
       passwordHash,
       empId,
-      companyId,
-      body.phone ?? null,
-      body.country ?? null,
-      body.state ?? null,
-      body.city ?? null,
     ],
   );
 
@@ -1166,7 +1183,7 @@ export const updateEmployee = asyncHandler(async (req: Request, res: Response) =
          AND status IN ('scheduled', 'confirmed')
          AND date >= CURRENT_DATE
          AND ((EXTRACT(ISODOW FROM date)::int + 6) % 7) = ANY($3::int[])`,
-      [companyId, empId, newlyAddedOffDays],
+      [targetCompanyId, empId, newlyAddedOffDays],
     );
   }
 

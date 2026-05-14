@@ -459,3 +459,51 @@ export const updateAutomationSetting = asyncHandler(
     ok(res, { jobKey, enabled }, 'Automation setting updated');
   },
 );
+
+
+// ---------------------------------------------------------------------------
+// DELETE /api/notifications/bulk-delete
+// ---------------------------------------------------------------------------
+
+/**
+ * Deletes multiple notifications by IDs.
+ * Security: only deletes notifications that belong to the authenticated user.
+ */
+export const bulkDeleteNotifications = asyncHandler(
+  async (req: Request, res: Response) => {
+    const { userId, companyId } = req.user!;
+
+    if (!companyId) {
+      forbidden(res, 'No company associated with this account');
+      return;
+    }
+
+    const { ids } = req.body as { ids?: number[] };
+
+    if (!Array.isArray(ids) || ids.length === 0) {
+      badRequest(res, 'No notification IDs provided', 'VALIDATION_ERROR');
+      return;
+    }
+
+    // Validate all IDs are numbers
+    const validIds = ids.filter((id) => typeof id === 'number' && id > 0);
+    if (validIds.length === 0) {
+      badRequest(res, 'No valid notification IDs provided', 'VALIDATION_ERROR');
+      return;
+    }
+
+    // Delete only notifications that belong to this user
+    const result = await query(
+      `DELETE FROM notifications
+       WHERE id = ANY($1::int[])
+         AND user_id = $2
+         AND company_id = $3
+       RETURNING id`,
+      [validIds, userId, companyId],
+    );
+
+    const deletedCount = result.length;
+
+    ok(res, { deletedCount }, `${deletedCount} notification(s) deleted`);
+  },
+);
