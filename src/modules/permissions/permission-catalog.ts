@@ -140,8 +140,8 @@ export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleN
   if (moduleName === 'gestione_accessi' && role === 'admin') return true;
   if (moduleName === 'terminali' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'dipendenti' && role === 'employee') return true;
-  if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager')) return true;
-  if (moduleName === 'ats' && role === 'admin') return true;
+  if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager' || role === 'hr' || role === 'admin')) return true;
+  if (moduleName === 'ats' && (role === 'admin' || role === 'hr')) return true;
   if (moduleName === 'onboarding') return true;
   if (moduleName === 'notifiche') return true;
   if (moduleName === 'automazioni' && (role === 'admin' || role === 'hr')) return true;

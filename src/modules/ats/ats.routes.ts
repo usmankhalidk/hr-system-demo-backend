@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { authenticate, requireRole } from '../../middleware/auth';
+import { authenticate, requireRole, requireModulePermission } from '../../middleware/auth';
 import {
   listJobsHandler, getJobHandler, createJobHandler, updateJobHandler,
   deleteJobHandler, publishJobHandler, syncJobHandler,
@@ -24,6 +24,7 @@ const router = Router();
 router.get('/feed/:slug/jobs.xml', jobFeedHandler);
 
 router.use(authenticate);
+router.use(requireModulePermission('ats'));
 
 // Job postings
 router.get('/jobs',               listJobsHandler);
