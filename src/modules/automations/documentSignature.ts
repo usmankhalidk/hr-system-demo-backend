@@ -27,7 +27,7 @@ export async function sendDocumentSignatureEmailAutomation(
     [effectiveCompanyId],
   );
 
-  const hasValidSmtp = (cfg: any) => (cfg && cfg.smtp_host && cfg.smtp_user && cfg.smtp_pass) || (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS);
+  const hasValidSmtp = (cfg: any) => Boolean(cfg && cfg.smtp_host && cfg.smtp_user && cfg.smtp_pass);
   const isEnabled = (auto: any) => auto ? auto.is_enabled : true;
 
   if ((!isEnabled(automation) || !hasValidSmtp(smtpCfg)) && callerCompanyId && callerCompanyId !== companyId) {
