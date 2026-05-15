@@ -8,7 +8,7 @@ import {
 } from './onboarding.service';
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
-import { queryOne } from '../../config/database';
+import { query, queryOne } from '../../config/database';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 
 // ---------------------------------------------------------------------------
@@ -143,8 +143,8 @@ export const assignTasksHandler = asyncHandler(async (req: Request, res: Respons
   if (Number.isNaN(employeeId)) { badRequest(res, 'Invalid employee ID'); return; }
 
   // Verify the employee exists and is in an allowed company
-  const empRow = await queryOne<{ id: number; locale?: string; company_id: number }>(
-    `SELECT id, locale, company_id
+  const empRow = await queryOne<{ id: number; locale?: string; company_id: number; name: string; surname: string }>(
+    `SELECT id, locale, company_id, name, surname
      FROM users
      WHERE id = $1
        AND status = 'active'
@@ -153,17 +153,97 @@ export const assignTasksHandler = asyncHandler(async (req: Request, res: Respons
   );
   if (!empRow) { notFound(res, 'Employee not found or does not belong to this company'); return; }
 
+  // Get assigner details
+  const assignerRow = await queryOne<{ name: string; surname: string }>(
+    `SELECT name, surname FROM users WHERE id = $1`,
+    [user.userId],
+  );
+  const assignerName = assignerRow 
+    ? `${assignerRow.name}${assignerRow.surname ? ' ' + assignerRow.surname : ''}`
+    : 'Admin';
+
   const { template_ids } = req.body as { template_ids?: number[] };
   const ids = Array.isArray(template_ids) ? template_ids : undefined;
   const count = await assignTasksToEmployee(employeeId, empRow.company_id, ids, user.userId);
   const locale = empRow.locale ?? 'it';
+
+  // Get the assigned tasks details for the notification
+  const assignedTasks = await query<{
+    template_name: string;
+    template_description: string | null;
+    template_priority: string;
+    due_date: string | null;
+    template_category: string;
+  }>(
+    `SELECT 
+       tmpl.name AS template_name,
+       tmpl.description AS template_description,
+       tmpl.priority AS template_priority,
+       t.due_date,
+       tmpl.category AS template_category
+     FROM employee_onboarding_tasks t
+     JOIN onboarding_templates tmpl ON tmpl.id = t.template_id
+     WHERE t.employee_id = $1 
+       AND tmpl.company_id = $2
+       AND t.assigned_by_user_id = $3
+     ORDER BY 
+       CASE tmpl.task_type
+         WHEN 'day1' THEN 1
+         WHEN 'week1' THEN 2
+         WHEN 'month1' THEN 3
+         WHEN 'ongoing' THEN 4
+         ELSE 5
+       END,
+       tmpl.sort_order ASC
+     LIMIT 5`,
+    [employeeId, empRow.company_id, user.userId],
+  );
+
+  // Build detailed message with task information
+  const employeeName = `${empRow.name}${empRow.surname ? ' ' + empRow.surname : ''}`;
+  let detailedMessage = locale === 'en' 
+    ? `Hi ${employeeName}, ${assignerName} has assigned you ${count} onboarding task${count > 1 ? 's' : ''}.\n\n`
+    : `Ciao ${employeeName}, ${assignerName} ti ha assegnato ${count} attività di onboarding.\n\n`;
+
+  if (assignedTasks.length > 0) {
+    detailedMessage += locale === 'en' ? 'Tasks:\n' : 'Attività:\n';
+    assignedTasks.forEach((task: {
+      template_name: string;
+      template_description: string | null;
+      template_priority: string;
+      due_date: string | null;
+      template_category: string;
+    }, index: number) => {
+      const priorityEmoji = task.template_priority === 'high' ? '🔴' : task.template_priority === 'medium' ? '🟡' : '🟢';
+      const dueDateText = task.due_date 
+        ? (locale === 'en' ? ` (Due: ${task.due_date})` : ` (Scadenza: ${task.due_date})`)
+        : '';
+      detailedMessage += `${index + 1}. ${priorityEmoji} ${task.template_name}${dueDateText}\n`;
+      if (task.template_description && index < 3) {
+        const shortDesc = task.template_description.length > 60 
+          ? task.template_description.substring(0, 60) + '...'
+          : task.template_description;
+        detailedMessage += `   ${shortDesc}\n`;
+      }
+    });
+    
+    if (count > assignedTasks.length) {
+      detailedMessage += locale === 'en' 
+        ? `\n...and ${count - assignedTasks.length} more task${count - assignedTasks.length > 1 ? 's' : ''}.`
+        : `\n...e altre ${count - assignedTasks.length} attività.`;
+    }
+  }
+
+  detailedMessage += locale === 'en'
+    ? '\n\nLog in to the portal to view and complete your tasks.'
+    : '\n\nAccedi al portale per visualizzare e completare le tue attività.';
 
   sendNotification({
     companyId: empRow.company_id,
     userId: employeeId,
     type: 'onboarding.welcome',
     title:   t(locale, 'notifications.onboarding_welcome_assigned.title'),
-    message: t(locale, 'notifications.onboarding_welcome_assigned.message', { count }),
+    message: detailedMessage,
     priority: 'high',
     locale,
   }).catch(() => undefined);
