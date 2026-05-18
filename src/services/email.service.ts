@@ -171,8 +171,9 @@ export async function sendNotificationEmail(options: {
   variables: Record<string, string>;
   fallbackSubject: string;
   fallbackBody: string;
+  attachments?: EmailOptions['attachments'];
 }): Promise<void> {
-  const { companyId, toEmail, eventKey, variables, fallbackSubject, fallbackBody } = options;
+  const { companyId, toEmail, eventKey, variables, fallbackSubject, fallbackBody, attachments } = options;
 
   // Attempt to load the template
   const template = await queryOne<NotificationTemplate>(
@@ -206,6 +207,7 @@ export async function sendNotificationEmail(options: {
     subject,
     html: htmlBody,
     text: plainText,
+    attachments,
   });
 }
 
