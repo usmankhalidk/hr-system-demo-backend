@@ -10,6 +10,7 @@ import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezo
 import { sendNotification } from '../notifications/notifications.service';
 import { sendShiftCreatedAutomation } from '../automations/shiftNotification';
 import { t } from '../../utils/i18n';
+import { PDFDocument, rgb, StandardFonts } from 'pdf-lib';
 
 // ---------------------------------------------------------------------------
 // Helper: parse a cell value as HH:MM time string (handles Excel fractions, Date, string)
@@ -1540,7 +1541,7 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
   const truncated = shifts.length > EXPORT_ROW_CAP;
   if (truncated) shifts.splice(EXPORT_ROW_CAP);
 
-  const format = (req.query.format as string) === 'xlsx' ? 'xlsx' : 'csv';
+  const format = (req.query.format as string) === 'pdf' ? 'pdf' : (req.query.format as string) === 'xlsx' ? 'xlsx' : 'csv';
   const filename = `turni-${week ?? 'export'}`;
 
   const HEADERS = ['Data','Inizio','Fine','Pausa Inizio','Pausa Fine','Spezzato','Inizio2','Fine2','Ore','Nome','Cognome','ID','Negozio','Stato','Note'];
@@ -1554,7 +1555,61 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
     s.store_name, s.status, s.notes ?? '',
   ]);
 
-  if (format === 'xlsx') {
+  if (format === 'pdf') {
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+
+    let page = pdfDoc.addPage([841.89, 595.28]); // A4 Landscape
+    let { width, height } = page.getSize();
+    let y = height - 40;
+
+    const checkPageOverflow = (needed: number) => {
+      if (y - needed < 40) {
+        page = pdfDoc.addPage([841.89, 595.28]);
+        y = height - 40;
+      }
+    };
+
+    // Header Band
+    page.drawRectangle({ x: 40, y: y - 60, width: width - 80, height: 60, color: rgb(0.05, 0.13, 0.22) });
+    page.drawText('EXPORT TURNI (SHIFTS EXPORT)', { x: 60, y: y - 25, size: 14, font: fontBold, color: rgb(1, 1, 1) });
+    page.drawText(`Periodo: ${week ?? 'N/A'} | Generato il: ${new Date().toLocaleString('it-IT')}`, { x: 60, y: y - 45, size: 9, font, color: rgb(0.9, 0.9, 0.9) });
+    y -= 80;
+
+    // Table Headers
+    const COL_WIDTHS = [70, 45, 45, 65, 65, 55, 45, 45, 35, 70, 70, 60, 80, 55, 100];
+    const colX = (idx: number) => 40 + COL_WIDTHS.slice(0, idx).reduce((a, b) => a + b, 0);
+
+    HEADERS.forEach((h, i) => {
+      page.drawText(h, { x: colX(i), y, size: 8, font: fontBold });
+    });
+    page.drawLine({ start: { x: 40, y: y - 4 }, end: { x: width - 40, y: y - 4 }, thickness: 1, color: rgb(0.2, 0.2, 0.2) });
+    y -= 18;
+
+    // Rows
+    for (const row of rowData) {
+      checkPageOverflow(15);
+      row.forEach((val, i) => {
+        const str = String(val);
+        const limit = i === 14 ? 20 : i === 12 ? 15 : 12; // notes/store truncation
+        const display = str.length > limit ? str.substring(0, limit - 2) + '..' : str;
+        page.drawText(display, { x: colX(i), y, size: 7.5, font });
+      });
+      y -= 14;
+    }
+
+    if (truncated) {
+      checkPageOverflow(20);
+      page.drawText(`... Troncato a ${EXPORT_ROW_CAP} righe ...`, { x: 40, y, size: 9, font: fontItalic, color: rgb(0.8, 0, 0) });
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
+    res.send(Buffer.from(pdfBytes));
+  } else if (format === 'xlsx') {
     const ws = XLSX.utils.aoa_to_sheet([HEADERS, ...rowData]);
     // Style header row bold (basic column widths)
     ws['!cols'] = HEADERS.map((h) => ({ wch: Math.max(h.length + 2, 12) }));
