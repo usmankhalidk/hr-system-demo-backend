@@ -49,31 +49,23 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
     throw new Error('SUPER_ADMIN_PASSWORD must be at least 8 characters.');
   }
 
+  const superAdminName = 'Marco';
+  const superAdminSurname = 'Rossi';
+
   const runner = client ?? pool;
   const passwordHash = await bcrypt.hash(password, 12);
 
   const defaultCompanyId = await resolveDefaultCompanyId(runner);
 
-  // Get IDs of super admins to delete
-  const { rows: usersToDelete } = await runner.query<{ id: number }>(
-    `SELECT id FROM users WHERE is_super_admin = true AND LOWER(email) <> LOWER($1)`,
+  // Demote any other super admins without deleting users (keeps FK integrity)
+  await runner.query(
+    `UPDATE users
+     SET is_super_admin = false,
+         status = 'inactive',
+         updated_at = NOW()
+     WHERE is_super_admin = true AND LOWER(email) <> LOWER($1)`,
     [email]
   );
-
-  // Delete audit logs first (foreign key dependency)
-  if (usersToDelete.length > 0) {
-    const userIds = usersToDelete.map(u => u.id);
-    await runner.query(
-      `DELETE FROM audit_logs WHERE user_id = ANY($1)`,
-      [userIds]
-    );
-
-    // Now delete the users
-    await runner.query(
-      `DELETE FROM users WHERE id = ANY($1)`,
-      [userIds]
-    );
-  }
 
   const { rows } = await runner.query<{ id: number }>(
     `SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
@@ -83,14 +75,16 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
   if (rows.length > 0) {
     await runner.query(
       `UPDATE users
-       SET password_hash = $1,
-           role = 'admin',
-           status = 'active',
-           is_super_admin = true,
-           company_id = $2,
-           updated_at = NOW()
-       WHERE id = $3`,
-      [passwordHash, defaultCompanyId, rows[0].id]
+       SET name = $1,
+           surname = $2,
+           password_hash = $3,
+            role = 'admin',
+            status = 'active',
+            is_super_admin = true,
+            company_id = $4,
+            updated_at = NOW()
+       WHERE id = $5`,
+      [superAdminName, superAdminSurname, passwordHash, defaultCompanyId, rows[0].id]
     );
     console.log('✓ Super admin updated');
   } else {
@@ -98,8 +92,8 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
       `INSERT INTO users (
          company_id, name, surname, email, password_hash,
          role, status, is_super_admin
-       ) VALUES ($1, $2, $3, $4, $5, 'admin', 'active', true)`,
-      [defaultCompanyId, 'Super', 'Admin', email, passwordHash]
+        ) VALUES ($1, $2, $3, $4, $5, 'admin', 'active', true)`,
+      [defaultCompanyId, superAdminName, superAdminSurname, email, passwordHash]
     );
     console.log('✓ Super admin created');
   }
