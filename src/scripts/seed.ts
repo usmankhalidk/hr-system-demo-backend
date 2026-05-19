@@ -2,6 +2,7 @@ import { pool } from '../config/database';
 import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
+import { ensureSuperAdmin } from './seedUtils';
 
 dotenv.config();
 
@@ -60,27 +61,13 @@ export async function migrate() {
 }
 
 export async function seed() {
+  if (process.env.FORCE_SEED !== 'true') {
+    await ensureSuperAdmin();
+    return;
+  }
+
   const client = await pool.connect();
   try {
-    // ── Guard: skip if already seeded ───────────────────────────────────────
-    // Set FORCE_SEED=true to wipe and re-seed (demo resets / Railway deploys).
-    if (process.env.FORCE_SEED !== 'true') {
-      try {
-        const { rows } = await client.query(
-          'SELECT COUNT(*)::int AS count FROM companies'
-        );
-        if (rows[0].count > 0) {
-          console.log(
-            `✓ Database already seeded (${rows[0].count} companies). Skipping.\n` +
-            '  Set FORCE_SEED=true to wipe and re-seed.'
-          );
-          return;
-        }
-      } catch {
-        // companies table does not exist yet — proceed with full seed
-      }
-    }
-
     await client.query('BEGIN');
 
     // ── Drop everything and rebuild schema from scratch ──────────────────────
@@ -199,12 +186,6 @@ export async function seed() {
     // automatically advanced for explicit inserts. Advance it for any subsequent inserts.
     await client.query(`SELECT setval('users_id_seq', (SELECT MAX(id) FROM users))`);
     console.log('✓ Users seeded (13 users)');
-
-    // ── Phase 1 feedback: is_super_admin ──────────────────────────────────────
-    await client.query(`
-      UPDATE users SET is_super_admin = true WHERE email = 'admin@fusarouomo.com'
-    `);
-    console.log('✓ Super admin flag set');
 
     // ── Phase 1 feedback: contract_type + probation_months for employees ──────
     await client.query(`
@@ -910,7 +891,10 @@ export async function seed() {
     `, [tmplAdminId]);
     console.log('✓ Shift templates seeded (4 templates)');
 
-    console.log('\n✅ Seed complete! All passwords: password123\n');
+    await ensureSuperAdmin(client);
+
+    console.log('\n✅ Seed complete! Demo users password: password123\n');
+    console.log('  Super admin credentials come from SUPER_ADMIN_EMAIL / SUPER_ADMIN_PASSWORD');
     console.log('  FUSARO UOMO');
     console.log('    admin@fusarouomo.com          Admin');
     console.log('    hr@fusarouomo.com             HR');
