@@ -54,11 +54,26 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
 
   const defaultCompanyId = await resolveDefaultCompanyId(runner);
 
-  await runner.query(
-    `DELETE FROM users
-     WHERE is_super_admin = true AND LOWER(email) <> LOWER($1)`,
+  // Get IDs of super admins to delete
+  const { rows: usersToDelete } = await runner.query<{ id: number }>(
+    `SELECT id FROM users WHERE is_super_admin = true AND LOWER(email) <> LOWER($1)`,
     [email]
   );
+
+  // Delete audit logs first (foreign key dependency)
+  if (usersToDelete.length > 0) {
+    const userIds = usersToDelete.map(u => u.id);
+    await runner.query(
+      `DELETE FROM audit_logs WHERE user_id = ANY($1)`,
+      [userIds]
+    );
+
+    // Now delete the users
+    await runner.query(
+      `DELETE FROM users WHERE id = ANY($1)`,
+      [userIds]
+    );
+  }
 
   const { rows } = await runner.query<{ id: number }>(
     `SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
