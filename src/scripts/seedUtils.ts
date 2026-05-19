@@ -31,8 +31,8 @@ async function resolveDefaultCompanyId(runner: PoolClient | typeof pool): Promis
     return rows[0].id;
   }
 
-  const name = optionalEnv('DEFAULT_COMPANY_NAME') ?? 'FUSARO UOMO';
-  const slug = optionalEnv('DEFAULT_COMPANY_SLUG') ?? slugify(name);
+  const name = optionalEnv('DEFAULT_COMPANY_NAME') ?? 'FUSARO UOMO'; 
+  const slug = optionalEnv('DEFAULT_COMPANY_SLUG') ?? slugify(name); 
 
   const { rows: created } = await runner.query<{ id: number }>(
     `INSERT INTO companies (name, slug) VALUES ($1, $2) RETURNING id`,
