@@ -36,6 +36,8 @@ export function generateICSEvent(options: ICSEventOptions): ICSResult {
       start.getUTCHours(),
       start.getUTCMinutes(),
     ],
+    startInputType: 'utc',
+    startOutputType: 'utc',
     duration: { minutes: durationMinutes },
     ...(options.organizerEmail
       ? { organizer: { email: options.organizerEmail, name: options.organizerName ?? options.organizerEmail } }

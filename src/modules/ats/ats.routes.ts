@@ -12,6 +12,7 @@ import {
   listInterviewFeedbackCommentsHandler, addInterviewFeedbackCommentHandler, deleteInterviewFeedbackCommentHandler,
   listAllInterviewFeedbackCommentsHandler,
   listInterviewNotificationsHandler, sendInterviewNotificationHandler,
+  candidateProfilePdfHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
 
@@ -22,6 +23,7 @@ const router = Router();
 // Publisher / Job Feed portal — no API key needed.
 // URL: GET /api/ats/feed/:slug/jobs.xml
 router.get('/feed/:slug/jobs.xml', jobFeedHandler);
+router.get('/candidates/:candidateId/profile.pdf', candidateProfilePdfHandler);
 
 router.use(authenticate);
 router.use(requireModulePermission('ats'));
