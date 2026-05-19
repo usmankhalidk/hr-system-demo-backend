@@ -1,7 +1,9 @@
 import { Request, Response } from 'express';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import sanitizeHtml from 'sanitize-html';
+import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound } from '../../utils/response';
 import { sendEmailForCompany } from '../../services/email.service';
@@ -151,6 +153,25 @@ async function resolveAtsCompanyId(req: Request): Promise<number | null> {
   }
 
   return null;
+}
+
+function resolveAtsCompanyScope(req: Request, allowedCompanyIds: number[]): number[] | null {
+  const explicit =
+    req.query.company_id
+    ?? req.query.companyId
+    ?? req.query.target_company_id
+    ?? req.query.targetCompanyId;
+  const explicitValue = Array.isArray(explicit) ? explicit[0] : explicit;
+
+  if (explicitValue !== undefined && explicitValue !== null && String(explicitValue).trim() !== '') {
+    const parsed = Number.parseInt(String(explicitValue), 10);
+    if (Number.isNaN(parsed) || !allowedCompanyIds.includes(parsed)) {
+      return null;
+    }
+    return [parsed];
+  }
+
+  return [...allowedCompanyIds];
 }
 
 // ---------------------------------------------------------------------------
@@ -1113,8 +1134,11 @@ export const listAllInterviewsHandler = asyncHandler(async (req: Request, res: R
     return; 
   }
 
-  const explicitCompanyId = await resolveAtsCompanyId(req);
-  const scope = explicitCompanyId ? [explicitCompanyId] : allowedCompanyIds;
+  const scopedCompanyIds = resolveAtsCompanyScope(req, allowedCompanyIds);
+  if (!scopedCompanyIds) {
+    forbidden(res, 'Nessuna azienda valida selezionata');
+    return;
+  }
 
   const filters: {
     dateFrom?: string;
@@ -1156,8 +1180,8 @@ export const listAllInterviewsHandler = asyncHandler(async (req: Request, res: R
 
   const storeIds = resolveStoreIds(req.user);
   
-  // Fetch interviews for scoped companies
-  const interviews = await listAllInterviews(scope, filters, storeIds);
+  // Fetch interviews for all allowed companies unless a company filter is explicit
+  const interviews = await listAllInterviews(scopedCompanyIds, filters, storeIds);
   ok(res, { interviews });
 });
 
@@ -1474,19 +1498,29 @@ export const deleteInterviewHandler = asyncHandler(async (req: Request, res: Res
 // ---------------------------------------------------------------------------
 
 export const getAlertsHandler = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = await resolveAtsCompanyId(req);
-  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const scopedCompanyIds = resolveAtsCompanyScope(req, allowedCompanyIds);
+  if (!scopedCompanyIds) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
   const storeIds = resolveStoreIds(req.user);
-  const alerts = await getHRAlerts(companyId, storeIds);
+  const alerts = (await Promise.all(
+    scopedCompanyIds.map((companyId) => getHRAlerts(companyId, storeIds)),
+  )).flat();
   ok(res, { alerts });
 });
 
 export const getRisksHandler = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = await resolveAtsCompanyId(req);
-  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const risks = await evaluateAllJobRisks(companyId);
+  const scopedCompanyIds = resolveAtsCompanyScope(req, allowedCompanyIds);
+  if (!scopedCompanyIds) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const risks = (await Promise.all(
+    scopedCompanyIds.map((companyId) => evaluateAllJobRisks(companyId)),
+  )).flat();
   ok(res, { risks });
 });
 
@@ -1580,7 +1614,7 @@ function normalizeCountryCode(value: string): string {
 }
 
 function resolveFrontendBase(req: Request): string {
-  const raw = process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL;
+  const raw = process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
   if (raw && raw.trim() !== '') {
     return raw.replace(/\/+$/, '');
   }
@@ -1592,6 +1626,336 @@ function resolveFrontendBase(req: Request): string {
 
   return 'http://localhost:5173';
 }
+
+function resolveBackendBase(req: Request): string {
+  const raw = process.env.PUBLIC_API_URL ?? process.env.BACKEND_URL ?? process.env.API_URL;
+  if (raw && raw.trim() !== '') {
+    const cleaned = raw.trim().replace(/\/+$/, '');
+    return cleaned.endsWith('/api') ? cleaned.slice(0, -4) : cleaned;
+  }
+
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const host = forwardedHost || req.get('host');
+  if (host) {
+    return `${forwardedProto || req.protocol}://${host}`.replace(/\/+$/, '');
+  }
+
+  return 'http://localhost:3001';
+}
+
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function findEmailLogoPath(): string | null {
+  const candidates = [
+    process.env.EMAIL_LOGO_PATH,
+    path.resolve(process.cwd(), '../hr-system-demo-frontend/public/IMG_5144.png'),
+    path.resolve(process.cwd(), 'public/IMG_5144.png'),
+    path.resolve(process.cwd(), '../frontend/public/IMG_5144.png'),
+  ].filter(Boolean) as string[];
+
+  return candidates.find((candidate) => fs.existsSync(candidate)) ?? null;
+}
+
+function getPdfTokenSecret(): string {
+  return process.env.JWT_SECRET ?? process.env.QR_SECRET ?? 'ats-pdf-token-secret';
+}
+
+function signCandidatePdfToken(candidateId: number, companyId: number, interviewId: number): string {
+  const expiresAt = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
+  const payload = `${candidateId}.${companyId}.${interviewId}.${expiresAt}`;
+  const signature = crypto.createHmac('sha256', getPdfTokenSecret()).update(payload).digest('hex');
+  return `${payload}.${signature}`;
+}
+
+function verifyCandidatePdfToken(token: string, expectedCandidateId: number): { companyId: number; interviewId: number } | null {
+  const parts = token.split('.');
+  if (parts.length !== 5) return null;
+
+  const [candidateIdRaw, companyIdRaw, interviewIdRaw, expiresAtRaw, signature] = parts;
+  const candidateId = Number.parseInt(candidateIdRaw, 10);
+  const companyId = Number.parseInt(companyIdRaw, 10);
+  const interviewId = Number.parseInt(interviewIdRaw, 10);
+  const expiresAt = Number.parseInt(expiresAtRaw, 10);
+
+  if (
+    Number.isNaN(candidateId)
+    || Number.isNaN(companyId)
+    || Number.isNaN(interviewId)
+    || Number.isNaN(expiresAt)
+    || candidateId !== expectedCandidateId
+    || expiresAt < Math.floor(Date.now() / 1000)
+  ) {
+    return null;
+  }
+
+  const payload = `${candidateId}.${companyId}.${interviewId}.${expiresAt}`;
+  const expected = crypto.createHmac('sha256', getPdfTokenSecret()).update(payload).digest('hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  const actualBuffer = Buffer.from(signature, 'hex');
+
+  if (expectedBuffer.length !== actualBuffer.length || !crypto.timingSafeEqual(expectedBuffer, actualBuffer)) {
+    return null;
+  }
+
+  return { companyId, interviewId };
+}
+
+function pdfText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/[\u201C\u201D]/g, '"')
+    .replace(/[\u2013\u2014]/g, '-')
+    .replace(/[^\x09\x0A\x0D\x20-\x7E\u00A0-\u00FF]/g, '')
+    .trim();
+}
+
+function parseCandidateSourceProfile(sourceRef: unknown): Record<string, string> {
+  if (typeof sourceRef !== 'string' || !sourceRef.trim()) return {};
+  try {
+    const parsed = JSON.parse(sourceRef) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .filter(([, value]) => typeof value === 'string' && value.trim() !== '')
+        .map(([key, value]) => [key, String(value).trim()]),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function formatPdfDate(value: unknown): string {
+  if (value === null || value === undefined || value === '') return '-';
+  const date = value instanceof Date ? value : new Date(String(value));
+  if (Number.isNaN(date.getTime())) return pdfText(value);
+  return date.toLocaleString('it-IT', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+}
+
+async function buildCandidateProfilePdf(candidateId: number, companyId: number): Promise<Buffer | null> {
+  const candidate = await queryOne<Record<string, unknown>>(
+    `SELECT c.*,
+            jp.title AS position_title,
+            co.name AS company_name,
+            s.name AS store_name
+     FROM candidates c
+     LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
+     LEFT JOIN companies co ON co.id = c.company_id
+     LEFT JOIN stores s ON s.id = COALESCE(c.store_id, jp.store_id)
+     WHERE c.id = $1 AND c.company_id = $2
+     LIMIT 1`,
+    [candidateId, companyId],
+  );
+
+  if (!candidate) return null;
+
+  const candidateComments = await query<Record<string, unknown>>(
+    `SELECT cc.body, cc.created_at, u.name, u.surname, u.role
+     FROM candidate_comments cc
+     JOIN users u ON u.id = cc.user_id AND u.company_id = $2
+     WHERE cc.candidate_id = $1
+     ORDER BY cc.created_at ASC`,
+    [candidateId, companyId],
+  );
+
+  const interviewFeedback = await query<Record<string, unknown>>(
+    `SELECT ifc.body, ifc.created_at, u.name, u.surname, u.role,
+            i.scheduled_at, i.interview_type
+     FROM interview_feedback_comments ifc
+     JOIN interviews i ON i.id = ifc.interview_id
+     JOIN candidates c ON c.id = i.candidate_id
+     JOIN users u ON u.id = ifc.user_id AND u.company_id = $2
+     WHERE c.id = $1 AND c.company_id = $2
+     ORDER BY ifc.created_at ASC`,
+    [candidateId, companyId],
+  );
+
+  const profile = parseCandidateSourceProfile(candidate.source_ref);
+  const pdfDoc = await PDFDocument.create();
+  const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
+  const pageSize: [number, number] = [595.28, 841.89];
+  const margin = 48;
+  let page = pdfDoc.addPage(pageSize);
+  let y = pageSize[1] - margin;
+
+  const drawLine = (text: string, options: { size?: number; bold?: boolean; italic?: boolean; color?: ReturnType<typeof rgb>; indent?: number } = {}) => {
+    const size = options.size ?? 10;
+    const activeFont = options.bold ? fontBold : options.italic ? fontItalic : font;
+    const x = margin + (options.indent ?? 0);
+    const maxWidth = pageSize[0] - margin * 2 - (options.indent ?? 0);
+    const words = pdfText(text).split(/\s+/).filter(Boolean);
+    const lines: string[] = [];
+    let line = '';
+
+    for (const word of words) {
+      const next = line ? `${line} ${word}` : word;
+      if (activeFont.widthOfTextAtSize(next, size) <= maxWidth) {
+        line = next;
+      } else {
+        if (line) lines.push(line);
+        line = word;
+      }
+    }
+    if (line) lines.push(line);
+    if (lines.length === 0) lines.push('');
+
+    for (const current of lines) {
+      if (y < 70) {
+        page = pdfDoc.addPage(pageSize);
+        y = pageSize[1] - margin;
+      }
+      page.drawText(current, {
+        x,
+        y,
+        size,
+        font: activeFont,
+        color: options.color ?? rgb(0.12, 0.16, 0.22),
+      });
+      y -= size + 6;
+    }
+  };
+
+  const section = (title: string) => {
+    y -= 10;
+    if (y < 90) {
+      page = pdfDoc.addPage(pageSize);
+      y = pageSize[1] - margin;
+    }
+    page.drawRectangle({
+      x: margin,
+      y: y - 8,
+      width: pageSize[0] - margin * 2,
+      height: 24,
+      color: rgb(0.94, 0.96, 0.98),
+    });
+    drawLine(title, { size: 12, bold: true, color: rgb(0.05, 0.13, 0.22) });
+    y -= 8;
+  };
+
+  const field = (label: string, value: unknown) => {
+    const display = pdfText(value) || '-';
+    drawLine(`${label}: ${display}`, { size: 10 });
+  };
+
+  page.drawRectangle({
+    x: 0,
+    y: pageSize[1] - 110,
+    width: pageSize[0],
+    height: 110,
+    color: rgb(0.05, 0.13, 0.22),
+  });
+  page.drawText('VEYLO HR', { x: margin, y: pageSize[1] - 52, size: 15, font: fontBold, color: rgb(0.95, 0.78, 0.35) });
+  page.drawText('Candidate Profile & Comments', { x: margin, y: pageSize[1] - 82, size: 21, font: fontBold, color: rgb(1, 1, 1) });
+  page.drawText(`Generated: ${formatPdfDate(new Date().toISOString())}`, { x: margin, y: pageSize[1] - 100, size: 8.5, font, color: rgb(0.82, 0.87, 0.93) });
+  y = pageSize[1] - 145;
+
+  section('Candidate data');
+  field('Full name', candidate.full_name);
+  field('Status', candidate.status);
+  field('Email', candidate.email);
+  field('Phone', candidate.phone);
+  field('LinkedIn', candidate.linkedin_url);
+  field('CV / Resume file', candidate.resume_path);
+  field('Company', candidate.company_name);
+  field('Store', candidate.store_name);
+  field('Position', candidate.position_title);
+  field('Tags', Array.isArray(candidate.tags) ? (candidate.tags as string[]).join(', ') : '');
+  field('Applied at', candidate.applied_at ?? candidate.created_at);
+  field('Last stage change', candidate.last_stage_change);
+
+  section('Application profile');
+  const profileFields: Array<[string, string[]]> = [
+    ['Availability', ['availability', 'availableStartDate', 'available_start_date']],
+    ['Current employer', ['currentEmployer', 'current_employer']],
+    ['Current role', ['currentRole', 'current_role']],
+    ['Nationality', ['nationality']],
+    ['Gender', ['gender']],
+    ['Date of birth', ['dateOfBirth', 'date_of_birth']],
+    ['Address', ['address']],
+    ['City', ['city']],
+    ['State', ['state']],
+    ['Country', ['country']],
+    ['Postal code', ['postalCode', 'postal_code']],
+    ['Application source', ['applicationSource', 'application_source']],
+    ['Application channel', ['applicationChannel', 'application_channel']],
+  ];
+  for (const [label, keys] of profileFields) {
+    field(label, keys.map((key) => profile[key]).find(Boolean));
+  }
+  if (candidate.cover_letter) {
+    y -= 6;
+    drawLine('Cover letter:', { bold: true });
+    drawLine(candidate.cover_letter as string, { indent: 14 });
+  }
+
+  section('Candidate comments');
+  if (candidateComments.length === 0) {
+    drawLine('No candidate comments recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
+  } else {
+    candidateComments.forEach((comment, index) => {
+      const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
+      drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
+      drawLine(comment.body as string, { indent: 14 });
+      y -= 4;
+    });
+  }
+
+  section('Interview feedback');
+  if (interviewFeedback.length === 0) {
+    drawLine('No interview feedback recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
+  } else {
+    interviewFeedback.forEach((comment, index) => {
+      const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
+      const interviewLabel = `${comment.interview_type === 'phone' ? 'Phone' : 'In-person'} interview ${formatPdfDate(comment.scheduled_at as string)}`;
+      drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
+      drawLine(interviewLabel, { italic: true, indent: 14, color: rgb(0.42, 0.46, 0.53) });
+      drawLine(comment.body as string, { indent: 14 });
+      y -= 4;
+    });
+  }
+
+  return Buffer.from(await pdfDoc.save());
+}
+
+export const candidateProfilePdfHandler = asyncHandler(async (req: Request, res: Response) => {
+  const candidateId = Number.parseInt(req.params.candidateId, 10);
+  if (Number.isNaN(candidateId)) {
+    badRequest(res, 'ID candidato non valido');
+    return;
+  }
+
+  const token = typeof req.query.token === 'string' ? req.query.token : '';
+  const verified = token ? verifyCandidatePdfToken(token, candidateId) : null;
+  if (!verified) {
+    forbidden(res, 'Link PDF non valido o scaduto');
+    return;
+  }
+
+  const pdf = await buildCandidateProfilePdf(candidateId, verified.companyId);
+  if (!pdf) {
+    notFound(res, 'Candidato non trovato');
+    return;
+  }
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `inline; filename="candidate-${candidateId}-profile.pdf"`);
+  res.setHeader('Cache-Control', 'private, max-age=300');
+  res.send(pdf);
+});
 
 export const translatePreviewHandler = asyncHandler(async (req: Request, res: Response) => {
   const { text, source_language } = req.body as { text?: unknown; source_language?: unknown };
@@ -1865,8 +2229,8 @@ export const listAllInterviewFeedbackCommentsHandler = asyncHandler(async (req: 
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const explicitCompanyId = await resolveAtsCompanyId(req);
-  const scope = explicitCompanyId ? [explicitCompanyId] : allowedCompanyIds;
+  const scope = resolveAtsCompanyScope(req, allowedCompanyIds);
+  if (!scope) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
   const storeIds = resolveStoreIds(req.user);
   const comments = await listAllInterviewFeedbackComments(scope, storeIds);
@@ -2297,22 +2661,45 @@ async function sendProfessionalInterviewEmail(params: {
     if (!interviewRow) throw new Error('Interview not found');
 
     const frontendBase = resolveFrontendBase(req);
-    const candidateUrl = `${frontendBase}/ats?candidateId=${interviewRow.candidate_id}&tab=resume`;
+    const backendBase = resolveBackendBase(req);
+    const candidatePdfToken = signCandidatePdfToken(interviewRow.candidate_id, companyId, interviewId);
+    const candidateUrl = `${backendBase}/api/ats/candidates/${encodeURIComponent(String(interviewRow.candidate_id))}/profile.pdf?token=${encodeURIComponent(candidatePdfToken)}`;
+    const scheduledDate = interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date();
+    const candidateName = `${firstName} ${lastName}`.trim() || recipientName || 'Candidato';
+    const interviewTypeLabel = interviewRow.interview_type === 'phone' ? 'Telefonico' : 'Di persona';
+    const dateLabel = scheduledDate.toLocaleDateString('it-IT', {
+      weekday: 'long',
+      day: '2-digit',
+      month: 'long',
+      year: 'numeric',
+    });
+    const timeLabel = scheduledDate.toLocaleTimeString('it-IT', {
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+    const logoPath = findEmailLogoPath();
+    const logoCid = logoPath ? 'veylo-hr-logo' : null;
+    const logoSrc = logoCid ? `cid:${logoCid}` : `${frontendBase}/IMG_5144.png`;
+    const safeCandidateUrl = escapeHtml(candidateUrl);
+    const safeRecipientName = escapeHtml(recipientName || candidateName);
+    const safeCandidateName = escapeHtml(candidateName);
+    const safeStoreName = escapeHtml(storeName);
+    const safeLogoSrc = escapeHtml(logoSrc);
+    const safeLocation = escapeHtml(interviewRow.location || '');
+    const safeDescription = escapeHtml(interviewRow.description || '').replace(/\r?\n/g, '<br />');
+    const logoUrl = logoSrc;
 
     const { generateICSEvent } = await import('./ics.service');
     const ics = generateICSEvent({
-      title: `Colloquio: ${firstName} ${lastName}`,
+      title: `Colloquio: ${candidateName}`,
       description: interviewRow.description || 'Job Interview',
       location: interviewRow.location || '',
-      startDate: interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date(),
+      startDate: scheduledDate,
     });
-
-    const backendBase = `${req.protocol}://${req.get('host')}`;
-    const logoUrl = `${backendBase}/public/IMG_5144.png`; 
     
-    const subject = `${firstName} ${lastName} - ${storeName} - Interview Invitation`;
+    const subject = `${candidateName} - ${storeName} - Interview Invitation`;
 
-    const professionalBody = `
+    let professionalBody = `
       <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; max-width: 600px; margin: 0 auto; color: #333; line-height: 1.6;">
         <div style="text-align: center; padding: 20px 0; border-bottom: 2px solid #f1f5f9;">
           <img src="${logoUrl}" alt="Veylo HR Logo" style="max-height: 60px; margin-bottom: 10px;">
@@ -2375,13 +2762,147 @@ async function sendProfessionalInterviewEmail(params: {
       </div>
     `;
 
+    professionalBody = `
+      <!doctype html>
+      <html>
+        <head>
+          <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <style>
+            @media only screen and (max-width: 620px) {
+              .email-container { width: 100% !important; }
+              .email-padding { padding: 22px 18px !important; }
+              .detail-label, .detail-value { display: block !important; width: 100% !important; padding-left: 0 !important; }
+              .profile-button { display: block !important; width: 100% !important; box-sizing: border-box !important; }
+            }
+          </style>
+        </head>
+        <body style="margin:0; padding:0; background:#f3f6f8; font-family:Arial, Helvetica, sans-serif; color:#18212f;">
+          <div style="display:none; max-height:0; overflow:hidden; opacity:0; color:transparent;">
+            Invito al colloquio per ${safeCandidateName} - ${escapeHtml(dateLabel)} alle ${escapeHtml(timeLabel)}.
+          </div>
+          <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f3f6f8; margin:0; padding:28px 12px;">
+            <tr>
+              <td align="center">
+                <table role="presentation" class="email-container" width="600" cellspacing="0" cellpadding="0" border="0" style="width:600px; max-width:600px; background:#ffffff; border:1px solid #e3e9ef; border-radius:16px; overflow:hidden;">
+                  <tr>
+                    <td align="center" style="background:#0f2338; padding:30px 28px 26px;">
+                      <img src="${safeLogoSrc}" width="156" alt="Veylo HR" style="display:block; width:156px; max-width:156px; height:auto; border:0; outline:none; text-decoration:none; margin:0 auto 18px;" />
+                      <div style="font-size:12px; line-height:16px; letter-spacing:1.8px; text-transform:uppercase; color:#d4a947; font-weight:700;">Recruiting</div>
+                      <h1 style="margin:8px 0 0; font-size:26px; line-height:32px; color:#ffffff; font-weight:700;">Invito al colloquio</h1>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="email-padding" style="padding:34px 38px 30px;">
+                      <p style="margin:0 0 16px; font-size:16px; line-height:25px; color:#18212f;">Gentile <strong>${safeRecipientName}</strong>,</p>
+                      <p style="margin:0 0 26px; font-size:15px; line-height:24px; color:#465568;">
+                        ${recipientType === 'interviewer'
+                          ? 'Ti informiamo che &egrave; stato programmato un colloquio di selezione. Di seguito trovi i dettagli:'
+                          : 'Siamo lieti di confermare il tuo colloquio di lavoro. Di seguito trovi tutti i dettagli dell&rsquo;appuntamento:'}
+                      </p>
+
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0" style="background:#f8fafc; border:1px solid #e1e8ef; border-radius:12px;">
+                        <tr>
+                          <td style="padding:22px 24px;">
+                            <h2 style="margin:0 0 16px; font-size:17px; line-height:22px; color:#18212f; font-weight:700;">Dettagli appuntamento</h2>
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Candidato</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${safeCandidateName}</td>
+                              </tr>
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Data</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${escapeHtml(dateLabel)}</td>
+                              </tr>
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Ora</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${escapeHtml(timeLabel)}</td>
+                              </tr>
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Tipo</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${escapeHtml(interviewTypeLabel)}</td>
+                              </tr>
+                              ${interviewRow.location ? `
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Luogo / Link</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${safeLocation}</td>
+                              </tr>` : ''}
+                              ${interviewRow.description ? `
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 10px 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Note</td>
+                                <td class="detail-value" style="padding:10px 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${safeDescription}</td>
+                              </tr>` : ''}
+                              <tr>
+                                <td class="detail-label" width="145" style="padding:10px 18px 0 0; border-top:1px solid #e5ebf1; color:#6b7787; font-size:13px; line-height:19px; font-weight:700;">Store</td>
+                                <td class="detail-value" style="padding:10px 0 0; border-top:1px solid #e5ebf1; color:#18212f; font-size:14px; line-height:20px;">${safeStoreName}</td>
+                              </tr>
+                            </table>
+                          </td>
+                        </tr>
+                      </table>
+
+                      <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
+                        <tr>
+                          <td align="center" style="padding:30px 0 18px;">
+                            <a class="profile-button" href="${safeCandidateUrl}" target="_blank" style="display:inline-block; background:#c9973a; color:#ffffff; text-decoration:none; font-size:15px; line-height:18px; font-weight:700; padding:15px 26px; border-radius:8px; box-shadow:0 8px 18px rgba(201,151,58,0.22);">Apri Profilo Candidato &amp; CV</a>
+                          </td>
+                        </tr>
+                      </table>
+
+                      <p style="margin:0 0 24px; font-size:13px; line-height:21px; color:#667386; text-align:center;">
+                        ${recipientType === 'interviewer'
+                          ? 'Clicca sul pulsante sopra per accedere direttamente al profilo del candidato, visualizzare il CV e aggiungere i tuoi commenti.'
+                          : 'Puoi visualizzare i dettagli della tua candidatura cliccando sul pulsante sopra.'}
+                      </p>
+
+                      <div style="background:#fff8e6; border:1px solid #f3dfab; border-radius:10px; padding:14px 16px;">
+                        <p style="margin:0; font-size:13px; line-height:20px; color:#7c5b14; text-align:center;">
+                          <strong>Sincronizzazione calendario:</strong> in allegato trovi il file <strong>interview.ics</strong> per aggiungere l&rsquo;evento al tuo calendario.
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td align="center" style="padding:20px 28px 28px; border-top:1px solid #edf1f5;">
+                      <p style="margin:0; font-size:12px; line-height:18px; color:#8a97a8;">&copy; ${new Date().getFullYear()} Veylo HR - Recruiting Pipeline. Tutti i diritti riservati.</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+      </html>
+    `;
+    const plainText = [
+      'Invito al colloquio',
+      `Gentile ${recipientName || candidateName},`,
+      recipientType === 'interviewer'
+        ? "Ti informiamo che e' stato programmato un colloquio di selezione."
+        : "Siamo lieti di confermare il tuo colloquio di lavoro.",
+      `Candidato: ${candidateName}`,
+      `Data: ${dateLabel}`,
+      `Ora: ${timeLabel}`,
+      `Tipo: ${interviewTypeLabel}`,
+      interviewRow.location ? `Luogo / Link: ${interviewRow.location}` : '',
+      interviewRow.description ? `Note: ${interviewRow.description}` : '',
+      `Profilo candidato e CV: ${candidateUrl}`,
+      "In allegato trovi il file interview.ics per aggiungere l'evento al tuo calendario.",
+    ].filter(Boolean).join('\n\n');
+
     const { sendEmailForCompany } = await import('../../services/email.service');
     await sendEmailForCompany(companyId, {
       to: recipientEmail,
       subject: subject,
       html: professionalBody,
-      text: professionalBody.replace(/<[^>]+>/g, ''),
+      text: plainText,
       attachments: [
+        ...(logoPath && logoCid ? [{
+          filename: 'IMG_5144.png',
+          content: fs.readFileSync(logoPath),
+          contentType: 'image/png',
+          cid: logoCid,
+        }] : []),
         {
           filename: 'interview.ics',
           content: ics.icsContent,
