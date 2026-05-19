@@ -10,6 +10,38 @@ function requireEnv(name: string): string {
   return value;
 }
 
+function optionalEnv(name: string): string | undefined {
+  const value = process.env[name]?.trim();
+  return value && value.length > 0 ? value : undefined;
+}
+
+function slugify(input: string): string {
+  const slug = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+  return slug.length > 0 ? slug : 'default-company';
+}
+
+async function resolveDefaultCompanyId(runner: PoolClient | typeof pool): Promise<number | null> {
+  const { rows } = await runner.query<{ id: number }>(
+    `SELECT id FROM companies ORDER BY id LIMIT 1`
+  );
+  if (rows[0]?.id) {
+    return rows[0].id;
+  }
+
+  const name = optionalEnv('DEFAULT_COMPANY_NAME') ?? 'FUSARO UOMO';
+  const slug = optionalEnv('DEFAULT_COMPANY_SLUG') ?? slugify(name);
+
+  const { rows: created } = await runner.query<{ id: number }>(
+    `INSERT INTO companies (name, slug) VALUES ($1, $2) RETURNING id`,
+    [name, slug]
+  );
+  console.log('✓ Default company created');
+  return created[0]?.id ?? null;
+}
+
 export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
   const email = requireEnv('SUPER_ADMIN_EMAIL').toLowerCase();
   const password = requireEnv('SUPER_ADMIN_PASSWORD');
@@ -19,6 +51,14 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
 
   const runner = client ?? pool;
   const passwordHash = await bcrypt.hash(password, 12);
+
+  const defaultCompanyId = await resolveDefaultCompanyId(runner);
+
+  await runner.query(
+    `DELETE FROM users
+     WHERE is_super_admin = true AND LOWER(email) <> LOWER($1)`,
+    [email]
+  );
 
   const { rows } = await runner.query<{ id: number }>(
     `SELECT id FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
@@ -32,9 +72,10 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
            role = 'admin',
            status = 'active',
            is_super_admin = true,
+           company_id = $2,
            updated_at = NOW()
-       WHERE id = $2`,
-      [passwordHash, rows[0].id]
+       WHERE id = $3`,
+      [passwordHash, defaultCompanyId, rows[0].id]
     );
     console.log('✓ Super admin updated');
   } else {
@@ -43,7 +84,7 @@ export async function ensureSuperAdmin(client?: PoolClient): Promise<void> {
          company_id, name, surname, email, password_hash,
          role, status, is_super_admin
        ) VALUES ($1, $2, $3, $4, $5, 'admin', 'active', true)`,
-      [null, 'Super', 'Admin', email, passwordHash]
+      [defaultCompanyId, 'Super', 'Admin', email, passwordHash]
     );
     console.log('✓ Super admin created');
   }
