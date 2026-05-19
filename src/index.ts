@@ -12,6 +12,7 @@ import { initSocket } from './config/socket';
 import authRoutes from './modules/auth/auth.routes';
 import { authenticate } from './middleware/auth';
 import { seed, migrate } from './scripts/seed';
+import { productionSeed } from './scripts/productionSeed';
 import companiesRoutes from './modules/companies/companies.routes';
 import companyGroupsRoutes from './modules/companyGroups/companyGroups.routes';
 import storesRoutes from './modules/stores/stores.routes';
@@ -477,6 +478,10 @@ async function start() {
   if (process.env.FORCE_SEED === 'true') {
     console.log('FORCE_SEED=true — seeding database...');
     await seed();
+  }
+
+  if (process.env.PRODUCTION_SEED === 'true') {
+    await productionSeed();
   }
 
   const httpServer = createServer(app);
