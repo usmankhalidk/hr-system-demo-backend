@@ -30,7 +30,7 @@ import { generateICSEvent } from './ics.service';
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
-import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import { resolveAllowedCompanyIds, resolveCompanyGroupId } from '../../utils/companyScope';
 // Store managers only see their own store; other roles see everything
 function resolveStoreIds(user: Express.Request['user']): number[] | undefined {
   if (!user) return undefined;
@@ -718,6 +718,58 @@ export const listCandidatesHandler = asyncHandler(async (req: Request, res: Resp
     storeIds,
   });
   ok(res, { candidates });
+});
+
+// GET /api/ats/interviewers — eligible interviewers for a company (with group scope)
+export const listInterviewersHandler = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const rawCompanyId = req.query.company_id ?? req.query.target_company_id ?? req.query.companyId;
+  const fallbackCompanyId = req.user?.companyId ?? null;
+  const parsedCompanyId = rawCompanyId != null && String(rawCompanyId).trim() !== ''
+    ? Number.parseInt(String(rawCompanyId), 10)
+    : fallbackCompanyId;
+
+  if (!parsedCompanyId || Number.isNaN(parsedCompanyId)) {
+    badRequest(res, 'Azienda non valida');
+    return;
+  }
+  if (!allowedCompanyIds.includes(parsedCompanyId)) {
+    forbidden(res, 'Nessuna azienda valida selezionata');
+    return;
+  }
+
+  const groupId = await resolveCompanyGroupId(parsedCompanyId);
+  let groupCompanyIds = [parsedCompanyId];
+  if (groupId !== null) {
+    const rows = await query<{ id: number }>(
+      `SELECT id FROM companies WHERE group_id = $1 AND is_active = true ORDER BY id`,
+      [groupId],
+    );
+    groupCompanyIds = rows.map((row) => row.id);
+  }
+
+  const scopedCompanyIds = groupCompanyIds.filter((id) => allowedCompanyIds.includes(id));
+  if (scopedCompanyIds.length === 0) {
+    ok(res, { interviewers: [] });
+    return;
+  }
+
+  const interviewers = await query(
+    `SELECT
+       u.id, u.company_id, u.store_id, u.name, u.surname, u.email, u.role, u.status,
+       u.avatar_filename, c.name AS company_name
+     FROM users u
+     LEFT JOIN companies c ON c.id = u.company_id
+     WHERE u.company_id = ANY($1)
+       AND u.status = 'active'
+       AND u.role IN ('hr', 'area_manager', 'store_manager')
+     ORDER BY c.name, u.surname, u.name`,
+    [scopedCompanyIds],
+  );
+
+  ok(res, { interviewers });
 });
 
 export const getCandidateHandler = asyncHandler(async (req: Request, res: Response) => {

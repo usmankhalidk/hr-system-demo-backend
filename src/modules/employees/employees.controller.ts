@@ -1,7 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
-import { query, queryOne } from '../../config/database';
+import { pool, query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { UserRole } from '../../config/jwt';
@@ -979,10 +979,6 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
       body.iban ?? null,
       body.address ?? null,
       body.cap ?? null,
-      body.country ?? null,
-      body.state ?? null,
-      body.city ?? null,
-      body.phone ?? null,
       body.first_aid_flag ?? false,
       body.marital_status ?? null,
       'active',
@@ -1209,6 +1205,80 @@ export const deactivateEmployee = asyncHandler(async (req: Request, res: Respons
     return;
   }
   ok(res, employee, 'Dipendente disattivato');
+});
+
+// DELETE /api/employees/:id/permanent — hard delete (admin only)
+export const deleteEmployeePermanently = asyncHandler(async (req: Request, res: Response) => {
+  const empId = parseInt(req.params.id, 10);
+  if (isNaN(empId)) { notFound(res, 'Dipendente non trovato'); return; }
+
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query<{ id: number; is_super_admin: boolean }>(
+      `SELECT id, is_super_admin FROM users WHERE id = $1 AND company_id = ANY($2)`,
+      [empId, allowedCompanyIds],
+    );
+    const target = rows[0];
+    if (!target) {
+      await client.query('ROLLBACK');
+      notFound(res, 'Dipendente non trovato');
+      return;
+    }
+    if (target.is_super_admin) {
+      await client.query('ROLLBACK');
+      forbidden(res, 'Impossibile eliminare un super admin');
+      return;
+    }
+
+    // Detach references that don't cascade
+    await client.query(`UPDATE users SET supervisor_id = NULL WHERE supervisor_id = $1`, [empId]);
+    await client.query(`UPDATE role_module_permissions SET updated_by = NULL WHERE updated_by = $1`, [empId]);
+    await client.query(`UPDATE group_role_visibility SET updated_by = NULL WHERE updated_by = $1`, [empId]);
+    await client.query(`UPDATE audit_logs SET user_id = NULL WHERE user_id = $1`, [empId]);
+    await client.query(`UPDATE shifts SET created_by = NULL WHERE created_by = $1`, [empId]);
+    await client.query(`UPDATE shift_templates SET created_by = NULL WHERE created_by = $1`, [empId]);
+    await client.query(`UPDATE temporary_store_assignments SET created_by = NULL WHERE created_by = $1`, [empId]);
+    await client.query(`UPDATE temporary_store_assignments SET cancelled_by = NULL WHERE cancelled_by = $1`, [empId]);
+    await client.query(`UPDATE external_store_mappings SET created_by = NULL WHERE created_by = $1`, [empId]);
+    await client.query(`UPDATE external_store_mappings SET updated_by = NULL WHERE updated_by = $1`, [empId]);
+    await client.query(`UPDATE company_external_affluence_settings SET updated_by = NULL WHERE updated_by = $1`, [empId]);
+    await client.query(`UPDATE onboarding_templates SET created_by_user_id = NULL WHERE created_by_user_id = $1`, [empId]);
+    await client.query(`UPDATE employee_onboarding_tasks SET assigned_by_user_id = NULL WHERE assigned_by_user_id = $1`, [empId]);
+    await client.query(`UPDATE companies SET owner_user_id = NULL WHERE owner_user_id = $1`, [empId]);
+    await client.query(`UPDATE company_groups SET owner_user_id = NULL WHERE owner_user_id = $1`, [empId]);
+
+    // Delete rows that would block deletion
+    await client.query(`DELETE FROM window_display_activities WHERE flagged_by = $1`, [empId]);
+    await client.query(`DELETE FROM attendance_events WHERE user_id = $1`, [empId]);
+    await client.query(`DELETE FROM shifts WHERE user_id = $1`, [empId]);
+    await client.query(`DELETE FROM leave_approvals WHERE approver_id = $1`, [empId]);
+    await client.query(`DELETE FROM leave_approvals WHERE leave_request_id IN (SELECT id FROM leave_requests WHERE user_id = $1)`, [empId]);
+    await client.query(`DELETE FROM leave_balances WHERE user_id = $1`, [empId]);
+    await client.query(`DELETE FROM leave_requests WHERE user_id = $1`, [empId]);
+    await client.query(`DELETE FROM documents WHERE uploaded_by = $1`, [empId]);
+
+    const deleted = await client.query<{ id: number }>(
+      `DELETE FROM users WHERE id = $1 RETURNING id`,
+      [empId],
+    );
+
+    if (deleted.rowCount === 0) {
+      await client.query('ROLLBACK');
+      notFound(res, 'Dipendente non trovato');
+      return;
+    }
+
+    await client.query('COMMIT');
+    ok(res, { id: empId }, 'Dipendente eliminato definitivamente');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release();
+  }
 });
 
 // PATCH /api/employees/:id/activate — Admin only

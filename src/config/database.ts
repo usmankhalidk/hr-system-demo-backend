@@ -28,6 +28,25 @@ export async function query<T = any>(
   text: string,
   params?: any[]
 ): Promise<T[]> {
+  // Defensive sanity-check: node-postgres will error if the bound parameter
+  // count does not match the prepared statement placeholders. Trim or pad
+  // the params array to match the highest $n placeholder to avoid a
+  // cryptic 'bind message supplies X parameters' runtime error on deployed servers.
+  if (params && params.length > 0) {
+    const matches = Array.from(text.matchAll(/\$([0-9]+)/g)).map((m) => Number(m[1]));
+    const maxPlaceholder = matches.length ? Math.max(...matches) : 0;
+    if (maxPlaceholder > 0 && params.length !== maxPlaceholder) {
+      console.error(`DB: param count mismatch: SQL expects ${maxPlaceholder} params but received ${params.length}. Adjusting.`);
+      if (params.length > maxPlaceholder) {
+        params = params.slice(0, maxPlaceholder);
+      } else {
+        // pad with nulls
+        const padded = [...params];
+        while (padded.length < maxPlaceholder) padded.push(null);
+        params = padded;
+      }
+    }
+  }
   const result = await pool.query(text, params);
   return result.rows;
 }
@@ -36,6 +55,20 @@ export async function queryOne<T = any>(
   text: string,
   params?: any[]
 ): Promise<T | null> {
+  if (params && params.length > 0) {
+    const matches = Array.from(text.matchAll(/\$([0-9]+)/g)).map((m) => Number(m[1]));
+    const maxPlaceholder = matches.length ? Math.max(...matches) : 0;
+    if (maxPlaceholder > 0 && params.length !== maxPlaceholder) {
+      console.error(`DB: param count mismatch: SQL expects ${maxPlaceholder} params but received ${params.length}. Adjusting.`);
+      if (params.length > maxPlaceholder) {
+        params = params.slice(0, maxPlaceholder);
+      } else {
+        const padded = [...params];
+        while (padded.length < maxPlaceholder) padded.push(null);
+        params = padded;
+      }
+    }
+  }
   const result = await pool.query(text, params);
   return result.rows[0] ?? null;
 }
