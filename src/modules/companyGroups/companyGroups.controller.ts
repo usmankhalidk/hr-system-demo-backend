@@ -27,10 +27,18 @@ export const listCompanyGroups = asyncHandler(async (req: Request, res: Response
   // Main Admin can see all groups; other scoped roles only see the group
   // associated with their own company (standalone companies return an empty list).
   if (user.is_super_admin === true) {
-    const groups = await query<{ id: number; name: string; owner_user_id: number | null }>(
-      `SELECT id, name, owner_user_id
-       FROM company_groups
-       ORDER BY id ASC`
+    const groups = await query<{ id: number; name: string; owner_user_id: number | null; companies: { id: number; name: string }[] | null }>(
+      `SELECT
+         cg.id,
+         cg.name,
+         cg.owner_user_id,
+         (
+           SELECT json_agg(json_build_object('id', c.id, 'name', c.name))
+           FROM companies c
+           WHERE c.group_id = cg.id
+         ) as companies
+       FROM company_groups cg
+       ORDER BY cg.id ASC`
     );
     ok(res, groups);
     return;
@@ -47,11 +55,19 @@ export const listCompanyGroups = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  const groups = await query<{ id: number; name: string; owner_user_id: number | null }>(
-    `SELECT id, name, owner_user_id
-     FROM company_groups
-     WHERE id = $1
-     ORDER BY id ASC`,
+  const groups = await query<{ id: number; name: string; owner_user_id: number | null; companies: { id: number; name: string }[] | null }>(
+    `SELECT
+       cg.id,
+       cg.name,
+       cg.owner_user_id,
+       (
+         SELECT json_agg(json_build_object('id', c.id, 'name', c.name))
+         FROM companies c
+         WHERE c.group_id = cg.id
+       ) as companies
+     FROM company_groups cg
+     WHERE cg.id = $1
+     ORDER BY cg.id ASC`,
     [groupId]
   );
   ok(res, groups);
