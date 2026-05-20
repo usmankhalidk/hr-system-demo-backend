@@ -178,3 +178,61 @@ export const updateGroupRoleVisibility = asyncHandler(async (req: Request, res: 
   ok(res, null, 'Permessi del gruppo aggiornati');
 });
 
+export const updateCompanyGroup = asyncHandler(async (req: Request, res: Response) => {
+  const { groupId } = req.params;
+  const id = parseInt(groupId, 10);
+  if (Number.isNaN(id)) {
+    notFound(res, 'Gruppo non trovato');
+    return;
+  }
+
+  const { name } = req.body as { name: string };
+  const slugSafe = name?.trim();
+  if (!slugSafe) {
+    badRequest(res, 'Nome gruppo non valido', 'INVALID_GROUP_NAME');
+    return;
+  }
+
+  const group = await queryOne<{ id: number; name: string }>(
+    `UPDATE company_groups
+     SET name = $1
+     WHERE id = $2
+     RETURNING id, name`,
+    [slugSafe, id]
+  );
+
+  if (!group) {
+    notFound(res, 'Gruppo non trovato');
+    return;
+  }
+
+  ok(res, group, 'Gruppo aggiornato con successo');
+});
+
+export const deleteCompanyGroup = asyncHandler(async (req: Request, res: Response) => {
+  const { groupId } = req.params;
+  const id = parseInt(groupId, 10);
+  if (Number.isNaN(id)) {
+    notFound(res, 'Gruppo non trovato');
+    return;
+  }
+
+  // Set group_id to null for companies belonging to this group
+  await query(`UPDATE companies SET group_id = NULL WHERE group_id = $1`, [id]);
+
+  // Delete associated roles visibility
+  await query(`DELETE FROM group_role_visibility WHERE group_id = $1`, [id]);
+
+  // Delete the group itself
+  const deleted = await queryOne<{ id: number }>(
+    `DELETE FROM company_groups WHERE id = $1 RETURNING id`,
+    [id]
+  );
+
+  if (!deleted) {
+    notFound(res, 'Gruppo non trovato o già eliminato');
+    return;
+  }
+
+  ok(res, null, 'Gruppo eliminato con successo');
+});
