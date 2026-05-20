@@ -759,9 +759,11 @@ export const listInterviewersHandler = asyncHandler(async (req: Request, res: Re
   const interviewers = await query(
     `SELECT
        u.id, u.company_id, u.store_id, u.name, u.surname, u.email, u.role, u.status,
-       u.avatar_filename, c.name AS company_name
+       u.avatar_filename, c.name AS company_name, c.logo_filename AS company_logo_filename,
+       s.name AS store_name
      FROM users u
      LEFT JOIN companies c ON c.id = u.company_id
+     LEFT JOIN stores s ON s.id = u.store_id
      WHERE u.company_id = ANY($1)
        AND u.status = 'active'
        AND u.role IN ('hr', 'area_manager', 'store_manager')
