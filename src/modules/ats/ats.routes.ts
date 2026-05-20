@@ -5,6 +5,7 @@ import {
   deleteJobHandler, publishJobHandler, syncJobHandler,
   listCandidatesHandler, getCandidateHandler, createCandidateHandler,
   updateCandidateHandler, updateCandidateTagsHandler, deleteCandidateHandler,
+  listInterviewersHandler,
   listInterviewsHandler, listAllInterviewsHandler, createInterviewHandler, updateInterviewHandler,
   deleteInterviewHandler, getAlertsHandler, getRisksHandler,
   jobFeedHandler,
@@ -39,6 +40,7 @@ router.post('/jobs/:id/sync',     requireRole('admin', 'hr'), syncJobHandler);
 
 // Candidates
 router.get('/candidates',         listCandidatesHandler);
+router.get('/interviewers',       requireRole('admin', 'hr', 'area_manager', 'store_manager'), listInterviewersHandler);
 router.post('/candidates',        optionalInternalResumeUpload, createCandidateHandler);
 router.get('/candidates/:id',     getCandidateHandler);
 router.patch('/candidates/:id',   requireRole('admin', 'hr', 'area_manager', 'store_manager'), updateCandidateHandler);

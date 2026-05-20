@@ -7,6 +7,7 @@ import {
   createEmployee,
   updateEmployee,
   deactivateEmployee,
+  deleteEmployeePermanently,
   activateEmployee,
   resetEmployeeDevice,
 } from './employees.controller';
@@ -121,6 +122,16 @@ router.delete(
   requireModulePermission('dipendenti', 'write'),
   auditLog('employee'),
   deactivateEmployee,
+);
+
+router.delete(
+  '/:id/permanent',
+  authenticate,
+  enforceCompany,
+  requireRole('admin'),
+  requireModulePermission('dipendenti', 'write'),
+  auditLog('employee'),
+  deleteEmployeePermanently,
 );
 
 router.patch(
