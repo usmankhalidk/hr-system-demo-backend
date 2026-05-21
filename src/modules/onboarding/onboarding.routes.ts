@@ -10,26 +10,26 @@ const router = Router();
 
 router.use(authenticate);
 
-// Templates — admin/HR only
-router.get('/templates',        requireRole('admin', 'hr'), listTemplatesHandler);
-router.post('/templates',       requireRole('admin', 'hr'), createTemplateHandler);
-router.patch('/templates/:id',  requireRole('admin', 'hr'), updateTemplateHandler);
-router.delete('/templates/:id', requireRole('admin', 'hr'), deleteTemplateHandler);
+// Templates — admin/HR/area_manager
+router.get('/templates',        requireRole('admin', 'hr', 'area_manager'), listTemplatesHandler);
+router.post('/templates',       requireRole('admin', 'hr', 'area_manager'), createTemplateHandler);
+router.patch('/templates/:id',  requireRole('admin', 'hr', 'area_manager'), updateTemplateHandler);
+router.delete('/templates/:id', requireRole('admin', 'hr', 'area_manager'), deleteTemplateHandler);
 
 // Employee onboarding tasks
 router.get('/employees/:employeeId/tasks',          getEmployeeTasksHandler);
-router.post('/employees/:employeeId/tasks/assign',  requireRole('admin', 'hr'), assignTasksHandler);
-router.post('/employees/:employeeId/remind',        requireRole('admin', 'hr'), sendReminderHandler);
+router.post('/employees/:employeeId/tasks/assign',  requireRole('admin', 'hr', 'area_manager'), assignTasksHandler);
+router.post('/employees/:employeeId/remind',        requireRole('admin', 'hr', 'area_manager'), sendReminderHandler);
 
 // Task state
 router.patch('/tasks/:taskId/complete',             completeTaskHandler);
-router.patch('/tasks/:taskId/uncomplete',           requireRole('admin', 'hr'), uncompleteTaskHandler);
+router.patch('/tasks/:taskId/uncomplete',           requireRole('admin', 'hr', 'area_manager'), uncompleteTaskHandler);
 
-// Overview + stats — admin/HR only
-router.get('/overview', requireRole('admin', 'hr'), getOverviewHandler);
-router.get('/stats',    requireRole('admin', 'hr'), getStatsHandler);
+// Overview + stats — admin/HR/area_manager
+router.get('/overview', requireRole('admin', 'hr', 'area_manager'), getOverviewHandler);
+router.get('/stats',    requireRole('admin', 'hr', 'area_manager'), getStatsHandler);
 
 // Bulk actions
-router.post('/bulk-assign', requireRole('admin', 'hr'), bulkAssignAllHandler);
+router.post('/bulk-assign', requireRole('admin', 'hr', 'area_manager'), bulkAssignAllHandler);
 
 export default router;
