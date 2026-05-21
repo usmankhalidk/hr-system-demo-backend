@@ -68,6 +68,8 @@ export interface SendNotificationOptions {
   skipSettingsCheck?: boolean;
   /** Optional locale (e.g. 'it', 'en-US') for this notification's content */
   locale?: string;
+  /** Optional additional data for deep linking */
+  metadata?: Record<string, any>;
 }
 
 export interface Notification {
@@ -90,6 +92,8 @@ export interface Notification {
   recipientSurname?: string | null;
   recipientRole?: string | null;
   recipientAvatarFilename?: string | null;
+  /** Additional data for deep linking */
+  metadata?: any;
 }
 
 // ---------------------------------------------------------------------------
@@ -114,6 +118,7 @@ interface NotificationRow {
   recipient_surname?: string | null;
   recipient_role?: string | null;
   recipient_avatar_filename?: string | null;
+  metadata?: string | null;
 }
 
 interface NotificationSettingRow {
@@ -128,6 +133,29 @@ interface UserRow {
 }
 
 function toNotification(row: NotificationRow): Notification {
+  let parsedMetadata: any = undefined;
+  
+  if (row.metadata) {
+    try {
+      // Handle case where metadata might be a string "[object Object]" or invalid JSON
+      if (typeof row.metadata === 'string') {
+        // Check if it's the invalid "[object Object]" string
+        if (row.metadata === '[object Object]' || row.metadata.startsWith('[object')) {
+          console.warn(`[notifications] Invalid metadata for notification ${row.id}: "${row.metadata}"`);
+          parsedMetadata = undefined;
+        } else {
+          parsedMetadata = JSON.parse(row.metadata);
+        }
+      } else {
+        // If it's already an object, use it directly
+        parsedMetadata = row.metadata;
+      }
+    } catch (err) {
+      console.error(`[notifications] Failed to parse metadata for notification ${row.id}:`, err);
+      parsedMetadata = undefined;
+    }
+  }
+  
   return {
     id: row.id,
     companyId: row.company_id,
@@ -145,6 +173,7 @@ function toNotification(row: NotificationRow): Notification {
     recipientSurname: row.recipient_surname ?? undefined,
     recipientRole: row.recipient_role ?? undefined,
     recipientAvatarFilename: row.recipient_avatar_filename ?? undefined,
+    metadata: parsedMetadata,
   };
 }
 
@@ -224,11 +253,11 @@ export async function sendNotification(
     // 2. In-app notification — always inserted (unless filtered above)
     // ------------------------------------------------------------------
     await query(
-      `INSERT INTO notifications
-         (company_id, user_id, type, title, message, priority, is_enabled, locale, category)
-       VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8)`,
-      [companyId, userId, type, title, message, priority, effectiveLocale, category],
-    );
+        `INSERT INTO notifications
+           (company_id, user_id, type, title, message, priority, is_enabled, locale, category, metadata)
+         VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, $9)`,
+        [companyId, userId, type, title, message, priority, effectiveLocale, category, options.metadata ? JSON.stringify(options.metadata) : null],
+      );
 
     // ------------------------------------------------------------------
     // 3. Email channel — failures are caught and logged silently
@@ -349,7 +378,7 @@ export async function getNotifications(options: {
 
     const rows = await query<NotificationRow>(
       `SELECT n.id, n.company_id, n.user_id, n.type, n.title, n.message,
-              n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category,
+              n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category, n.metadata,
               u.name AS recipient_name,
               u.surname AS recipient_surname,
               u.role::text AS recipient_role,
@@ -361,8 +390,8 @@ export async function getNotifications(options: {
          ${unreadFilter}
        ORDER BY n.created_at DESC
        LIMIT $${isSuperAdmin ? 1 : 2} OFFSET $${isSuperAdmin ? 2 : 3}`,
-      isSuperAdmin ? [safeLimit, safeOffset] : [companyId, safeLimit, safeOffset],
-    );
+        isSuperAdmin ? [safeLimit, safeOffset] : [companyId, safeLimit, safeOffset],
+      );
 
     return {
       notifications: rows.map(toNotification),
@@ -397,14 +426,14 @@ export async function getNotifications(options: {
 
   const rows = await query<NotificationRow>(
     `SELECT n.id, n.company_id, n.user_id, n.type, n.title, n.message,
-            n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category
-     FROM notifications n
-     WHERE n.user_id = $1
-       AND n.company_id = $2
-       AND n.is_enabled = TRUE
-       ${unreadFilter}
-     ORDER BY n.created_at DESC
-     LIMIT $3 OFFSET $4`,
+             n.priority, n.is_enabled, n.is_read, n.read_at, n.created_at, n.locale, n.category, n.metadata
+      FROM notifications n
+      WHERE n.user_id = $1
+        AND n.company_id = $2
+        AND n.is_enabled = TRUE
+        ${unreadFilter}
+      ORDER BY n.created_at DESC
+      LIMIT $3 OFFSET $4`,
     [userId, companyId, safeLimit, safeOffset],
   );
 

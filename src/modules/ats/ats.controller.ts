@@ -2301,10 +2301,11 @@ export const addInterviewFeedbackCommentHandler = asyncHandler(async (req: Reque
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
 
-  const interviewRow = await queryOne<{ company_id: number }>(
-    `SELECT company_id FROM interviews WHERE id = $1 LIMIT 1`,
+  const interviewRow = await queryOne<{ company_id: number; candidate_id: number }>(
+    `SELECT candidate_id, company_id FROM interviews WHERE id = $1 LIMIT 1`,
     [interviewId],
   );
+  const candidateId = interviewRow?.candidate_id;
   if (!interviewRow) { notFound(res, 'Colloquio non trovato'); return; }
   if (!allowedCompanyIds.includes(interviewRow.company_id)) { forbidden(res, 'Azienda non autorizzata'); return; }
 
@@ -2318,51 +2319,84 @@ export const addInterviewFeedbackCommentHandler = asyncHandler(async (req: Reque
   );
   if (!comment) { notFound(res, 'Colloquio non trovato'); return; }
 
-  // Send notification to HR users if comment is added by store_manager or area_manager
-  if (req.user!.role === 'area_manager' || req.user!.role === 'store_manager') {
-    try {
-      const candidateAndManagerRow = await queryOne<{ candidate_name: string; manager_name: string; manager_surname: string }>(
-        `SELECT c.full_name AS candidate_name, u.name AS manager_name, u.surname AS manager_surname
-         FROM interviews i
-         JOIN candidates c ON c.id = i.candidate_id
-         JOIN users u ON u.id = $1
-         WHERE i.id = $2
-         LIMIT 1`,
-        [req.user!.userId, interviewId]
+  // Send notification to HR and area_manager users of the same company or same company group
+  try {
+    const candidateAndManagerRow = await queryOne<{ candidate_name: string; manager_name: string; manager_surname: string; group_id: number | null }>(
+      `SELECT c.full_name AS candidate_name, u.name AS manager_name, u.surname AS manager_surname, co.group_id
+       FROM interviews i
+       JOIN candidates c ON c.id = i.candidate_id
+       JOIN users u ON u.id = $1
+       JOIN companies co ON co.id = $2
+       WHERE i.id = $3
+       LIMIT 1`,
+      [req.user!.userId, interviewRow.company_id, interviewId]
+    );
+
+    if (candidateAndManagerRow) {
+      const candidateName = candidateAndManagerRow.candidate_name;
+      const managerFullName = `${candidateAndManagerRow.manager_name} ${candidateAndManagerRow.manager_surname}`.trim();
+
+      // Find all target users in the same company group, or just the same company if no group
+      const targetUsers = await query<{ id: number; locale: string | null; role: string; name: string; surname: string; avatar_filename: string | null; company_name: string; store_name: string | null; company_id: number }>(
+        `SELECT u.id, u.locale, u.role, u.name, u.surname, u.avatar_filename, co.name AS company_name, s.name AS store_name, u.company_id
+         FROM users u
+         JOIN companies co ON co.id = u.company_id
+         LEFT JOIN stores s ON s.id = u.store_id
+         WHERE (
+           ($1::int IS NOT NULL AND co.group_id = $1::int)
+           OR
+           ($1::int IS NULL AND u.company_id = $2)
+         )
+         AND u.role IN ('admin', 'hr', 'area_manager')
+         AND u.id != $3`,
+        [candidateAndManagerRow.group_id, interviewRow.company_id, req.user!.userId]
       );
 
-      if (candidateAndManagerRow) {
-        const candidateName = candidateAndManagerRow.candidate_name;
-        const managerFullName = `${candidateAndManagerRow.manager_name} ${candidateAndManagerRow.manager_surname}`.trim();
+      const { sendNotification } = await import('../notifications/notifications.service');
+      const { t } = await import('../../utils/i18n');
 
-        const hrs = await query<{ id: number; locale: string | null }>(
-          `SELECT id, locale FROM users WHERE company_id = $1 AND role = 'hr'`,
-          [interviewRow.company_id]
+      for (const targetUser of targetUsers) {
+        const userLocale = targetUser.locale || 'it';
+        await sendNotification({
+          companyId: targetUser.company_id,
+          userId: targetUser.id,
+          type: 'ats.feedback_added',
+          title: t(userLocale, 'notifications.ats_feedback_added.title'),
+          message: t(userLocale, 'notifications.ats_feedback_added.message', {
+            managerName: managerFullName,
+            candidateName: candidateName,
+          }),
+          priority: 'medium',
+          locale: userLocale,
+          channels: ['in_app'],
+          metadata: {
+            candidateId,
+            interviewId,
+            feedbackId: comment.id,
+          },
+        });
+
+        // Also log this notification for the UI to display in the feedback icon
+        const log = await createInterviewNotificationLog(
+          interviewId,
+          'in_app',
+          'interviewer',
+          JSON.stringify({
+            name: `${targetUser.name} ${targetUser.surname}`.trim(),
+            avatarFilename: targetUser.avatar_filename,
+            role: targetUser.role,
+            companyName: targetUser.company_name,
+            storeName: targetUser.store_name,
+            feedbackId: comment.id
+          })
         );
-
-        const { sendNotification } = await import('../notifications/notifications.service');
-        const { t } = await import('../../utils/i18n');
-
-        for (const hr of hrs) {
-          const hrLocale = hr.locale || 'it';
-          await sendNotification({
-            companyId: interviewRow.company_id,
-            userId: hr.id,
-            type: 'ats.feedback_added',
-            title: t(hrLocale, 'notifications.ats_feedback_added.title'),
-            message: t(hrLocale, 'notifications.ats_feedback_added.message', {
-              managerName: managerFullName,
-              candidateName: candidateName,
-            }),
-            priority: 'medium',
-            locale: hrLocale,
-            channels: ['in_app'],
-          });
+        if (log) {
+          await updateInterviewNotificationLog(log.id, 'done');
         }
       }
-    } catch (err) {
-      console.error('[ATS feedback notification] Failed to send HR notifications:', err);
     }
+  } catch (err) {
+    console.error('[ATS feedback notification] Failed to send feedback notifications:', err);
   }
 
   created(res, { comment }, 'Feedback aggiunto');
