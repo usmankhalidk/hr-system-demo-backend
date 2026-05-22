@@ -35,7 +35,9 @@ interface TransferWithNames extends TransferRow {
   company_name: string;
   group_name: string | null;
   origin_store_name: string;
+  origin_store_logo_filename: string | null;
   target_store_name: string;
+  target_store_logo_filename: string | null;
   created_by_name: string | null;
   created_by_surname: string | null;
   created_by_avatar_filename: string | null;
@@ -75,7 +77,9 @@ const TRANSFER_SELECT = `
   c.name AS company_name,
   cg.name AS group_name,
   s_from.name AS origin_store_name,
+  s_from.logo_filename AS origin_store_logo_filename,
   s_to.name AS target_store_name,
+  s_to.logo_filename AS target_store_logo_filename,
   creator.name AS created_by_name,
   creator.surname AS created_by_surname,
   creator.avatar_filename AS created_by_avatar_filename,
