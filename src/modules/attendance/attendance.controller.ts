@@ -1055,12 +1055,13 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const EARLY_EXIT_MS = 1000;
   const LONG_BREAK_MS = 5 * 60 * 1000;  // 5 minutes
   const OVERTIME_MS = 60 * 60 * 1000; // 1 hour
+  const MISSING_CHECKOUT_MS = 30 * 60 * 1000; // 30 minutes after shift end
 
   const anomalies: Array<{
     shift_id: number; company_id: number; user_id: number; user_name: string; user_surname: string;
     user_avatar_filename: string | null;
     store_name: string; date: string;
-    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime';
+    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime' | 'missing_checkout';
     severity: 'low' | 'medium' | 'high';
     details: string;
     details_key: string;
@@ -1154,6 +1155,24 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
+    // Missing checkout: employee checked in but never checked out, and shift ended more than 30 min ago
+    if (checkin && !checkout && shiftEnd.getTime() + MISSING_CHECKOUT_MS < nowTs) {
+      anomalies.push({
+        shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
+        user_name: shift.user_name, user_surname: shift.user_surname,
+        user_avatar_filename: shift.user_avatar_filename,
+        store_name: shift.store_name, date: shift.date,
+        anomaly_type: 'missing_checkout', severity: 'high',
+        details: `Mancata uscita. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
+        details_key: 'attendance.detail_missing_checkout',
+        details_params: { 
+          checkin: checkin.toTimeString().slice(0, 5), 
+          shift_end: shift.end_time.slice(0, 5) 
+        },
+        checkin_source: evGroup.checkin_source ?? null,
+      });
+    }
+
     // Overtime: check-out > scheduled end time
     if (checkout) {
       const overtimeMs = checkout.getTime() - shiftEnd.getTime();
@@ -1216,7 +1235,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       continue;
     }
 
-    const priority = anomaly.anomaly_type === 'no_show'
+    const priority = (anomaly.anomaly_type === 'no_show' || anomaly.anomaly_type === 'missing_checkout')
       ? 'high'
       : (anomaly.anomaly_type === 'overtime' ? 'low' : 'medium');
 
