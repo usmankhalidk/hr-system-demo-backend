@@ -1,6 +1,5 @@
 node_modules/
 dist/
-.env
 *.log
 
 uploads/*
@@ -14,3 +13,4 @@ uploads/store-logos/*
 src/modules/externalAffluence/local-only/
 temp_auto_push.bat
 temp_interactive_push.bat
+config.bat
