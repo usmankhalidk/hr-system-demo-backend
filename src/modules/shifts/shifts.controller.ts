@@ -943,11 +943,6 @@ export const updateShift = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  if (role === 'store_manager' && body.status === 'confirmed' && !targetIsOffDay) {
-    forbidden(res, 'Il responsabile di negozio non può confermare i turni');
-    return;
-  }
-
   const updatedShift = await queryOne<{ id: number }>(
     `UPDATE shifts SET
        store_id      = $1,
