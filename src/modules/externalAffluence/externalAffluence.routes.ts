@@ -16,6 +16,9 @@ import {
   syncAffluenceFromExternal,
   updateAffluenceConfiguration,
   upsertMapping,
+  getAffluenceForecast,
+  upsertForecastOverride,
+  deleteForecastOverride,
 } from './externalAffluence.controller';
 
 const router = Router();
@@ -47,7 +50,7 @@ const updateAffluenceConfigurationSchema = z.object({
   medium_max_staff: z.number().int().min(0).max(100000).optional(),
   coverage_tolerance: z.number().min(0).max(10).optional(),
   slot_weights: z.array(z.object({
-    time_slot: z.enum(['09:00-12:00', '12:00-15:00', '15:00-18:00', '18:00-21:00']),
+    time_slot: z.enum(['00:00-06:00', '06:00-12:00', '12:00-18:00', '18:00-24:00']),
     weight: z.number().min(0).max(1),
   })).optional(),
   target_company_id: z.number().int().positive().optional(),
@@ -222,6 +225,30 @@ router.post(
   requireModulePermission('turni', 'write'),
   validate(syncAffluenceSchema),
   syncAffluenceFromExternal,
+);
+
+router.get(
+  '/forecast',
+  authenticate,
+  requireRole(...readRoles),
+  requireModulePermission('turni', 'read'),
+  getAffluenceForecast,
+);
+
+router.put(
+  '/forecast/override',
+  authenticate,
+  requireRole(...mappingWriteRoles),
+  requireModulePermission('turni', 'write'),
+  upsertForecastOverride,
+);
+
+router.delete(
+  '/forecast/override',
+  authenticate,
+  requireRole(...mappingWriteRoles),
+  requireModulePermission('turni', 'write'),
+  deleteForecastOverride,
 );
 
 registerLocalDebugRoutes(router);

@@ -181,10 +181,10 @@ const EXTERNAL_TABLE_CATALOG: ExternalTableCatalogItem[] = [
 ];
 
 const SLOT_DISTRIBUTION: Array<{ timeSlot: string; weight: number }> = [
-  { timeSlot: '09:00-12:00', weight: 0.22 },
-  { timeSlot: '12:00-15:00', weight: 0.3 },
-  { timeSlot: '15:00-18:00', weight: 0.28 },
-  { timeSlot: '18:00-21:00', weight: 0.2 },
+  { timeSlot: '00:00-06:00', weight: 0.1 },
+  { timeSlot: '06:00-12:00', weight: 0.3 },
+  { timeSlot: '12:00-18:00', weight: 0.35 },
+  { timeSlot: '18:00-24:00', weight: 0.25 },
 ];
 
 let externalPool: Pool | null = null;
