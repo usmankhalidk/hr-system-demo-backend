@@ -3,6 +3,9 @@ import { query, queryOne } from '../../config/database';
 import { ok, created, forbidden, notFound, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { resolveAllowedCompanyIds } from '../../utils/companyScope';
+import fs from 'fs';
+import path from 'path';
+import { emitToCompany } from '../../config/socket';
 
 async function resolveMessageCompanyId(req: Request, res: Response): Promise<number | null> {
   if (!req.user) {
@@ -12,8 +15,10 @@ async function resolveMessageCompanyId(req: Request, res: Response): Promise<num
 
   const explicit =
     req.body?.company_id ??
+    req.body?.companyId ??
     req.body?.target_company_id ??
     req.query?.company_id ??
+    req.query?.companyId ??
     req.query?.target_company_id ??
     req.params?.company_id;
 
@@ -37,13 +42,15 @@ async function resolveMessageCompanyId(req: Request, res: Response): Promise<num
 // POST /api/messages — send a message to an employee
 export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
   const { userId, role } = req.user!;
-  const { recipientId, recipient_id, subject, body } = req.body as {
+  const { recipientId, recipient_id, subject, body, attachmentFilename, attachment_filename } = req.body as {
     recipientId?: number;
     recipient_id?: number;
     company_id?: number;
     target_company_id?: number;
     subject?: string;
-    body: string;
+    body?: string;
+    attachmentFilename?: string | null;
+    attachment_filename?: string | null;
   };
 
   const companyId = await resolveMessageCompanyId(req, res);
@@ -62,8 +69,10 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     return;
   }
 
-  if (!body?.trim()) {
-    badRequest(res, 'Il corpo del messaggio è obbligatorio', 'MISSING_FIELDS');
+  const finalAttachmentFilename = attachmentFilename ?? attachment_filename ?? null;
+
+  if (!body?.trim() && !finalAttachmentFilename) {
+    badRequest(res, 'Il corpo del messaggio o un allegato è obbligatorio', 'MISSING_FIELDS');
     return;
   }
 
@@ -79,6 +88,50 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
       `SELECT id, role, company_id FROM users WHERE id = $1 AND company_id = ANY($2) AND status = 'active'`,
       [numRecipientId, allowedCompanyIds],
     );
+  }
+  // Conversation history fallback: if they already have an existing conversation, they can message each other.
+  if (!recipient) {
+    const hasHistory = await queryOne<{ id: number }>(
+      `SELECT id FROM messages 
+       WHERE (sender_id = $1 AND recipient_id = $2) 
+          OR (sender_id = $2 AND recipient_id = $1) 
+       LIMIT 1`,
+      [userId, numRecipientId]
+    );
+    if (hasHistory) {
+      recipient = await queryOne<{ id: number; role: string; company_id: number }>(
+        `SELECT id, role, company_id FROM users WHERE id = $1 AND status = 'active'`,
+        [numRecipientId]
+      );
+    }
+  }
+  // Centralized HR/admin fallback or group-wide active users fallback in same company group
+  if (!recipient) {
+    const senderGroupId = await queryOne<{ group_id: number | null }>(
+      `SELECT group_id FROM companies WHERE id = $1`,
+      [req.user!.companyId]
+    );
+    if (senderGroupId?.group_id != null) {
+      if (role === 'hr' || role === 'admin') {
+        // HR/admin can message ANY active user within the same company group
+        recipient = await queryOne<{ id: number; role: string; company_id: number }>(
+          `SELECT u.id, u.role, u.company_id 
+           FROM users u
+           JOIN companies c ON c.id = u.company_id
+           WHERE u.id = $1 AND c.group_id = $2 AND u.status = 'active'`,
+          [numRecipientId, senderGroupId.group_id],
+        );
+      } else {
+        // Non-HR/admin can message HR/admin within the same company group
+        recipient = await queryOne<{ id: number; role: string; company_id: number }>(
+          `SELECT u.id, u.role, u.company_id 
+           FROM users u
+           JOIN companies c ON c.id = u.company_id
+           WHERE u.id = $1 AND c.group_id = $2 AND u.status = 'active' AND (u.role = 'hr' OR u.role = 'admin')`,
+          [numRecipientId, senderGroupId.group_id],
+        );
+      }
+    }
   }
   if (!recipient) {
     notFound(res, 'Destinatario non trovato in questa azienda');
@@ -128,12 +181,16 @@ export const sendMessage = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  const msg = await queryOne(
-    `INSERT INTO messages (company_id, sender_id, recipient_id, subject, body)
-     VALUES ($1, $2, $3, $4, $5)
-     RETURNING id, company_id, sender_id, recipient_id, subject, body, is_read, created_at`,
-    [messageCompanyId, userId, numRecipientId, normalizedSubject, body.trim()],
+  const msg = await queryOne<any>(
+    `INSERT INTO messages (company_id, sender_id, recipient_id, subject, body, attachment_filename)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING id, company_id, sender_id, recipient_id, subject, body, is_read, created_at, attachment_filename`,
+    [messageCompanyId, userId, numRecipientId, normalizedSubject, body?.trim() || '', finalAttachmentFilename],
   );
+
+  if (msg) {
+    emitToCompany(messageCompanyId, 'MESSAGE_SENT', msg);
+  }
 
   created(res, msg, 'Messaggio inviato');
 });
@@ -166,8 +223,10 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
 
   const explicitCompany =
     req.body?.company_id ??
+    req.body?.companyId ??
     req.body?.target_company_id ??
     req.query?.company_id ??
+    req.query?.companyId ??
     req.query?.target_company_id ??
     req.params?.company_id;
 
@@ -186,9 +245,8 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
   }
 
   const messages = await query(
-    `SELECT m.id, m.subject, m.body,
-            -- Sent messages are always "read" from the sender's perspective
-            CASE WHEN m.recipient_id = $1 THEN m.is_read ELSE true END AS is_read,
+    `SELECT m.id, m.subject, m.body, m.attachment_filename,
+            m.is_read,
             m.created_at,
             m.company_id,
             c.name AS company_name,
@@ -204,10 +262,10 @@ export const listMessages = asyncHandler(async (req: Request, res: Response) => 
      LEFT JOIN users s ON s.id = m.sender_id
      LEFT JOIN users r ON r.id = m.recipient_id
      LEFT JOIN companies c ON c.id = m.company_id
-     WHERE (m.recipient_id = $1 OR m.sender_id = $1) AND m.company_id = ANY($2)
+     WHERE (m.recipient_id = $1 OR m.sender_id = $1)
      ORDER BY m.created_at DESC
      LIMIT 100`,
-    [userId, companyIds],
+    [userId],
   );
 
   ok(res, messages);
@@ -219,8 +277,10 @@ export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
 
   const explicitCompany =
     req.body?.company_id ??
+    req.body?.companyId ??
     req.body?.target_company_id ??
     req.query?.company_id ??
+    req.query?.companyId ??
     req.query?.target_company_id ??
     req.params?.company_id;
 
@@ -239,8 +299,8 @@ export const unreadCount = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const row = await queryOne<{ count: number }>(
-    `SELECT COUNT(*)::int AS count FROM messages WHERE recipient_id = $1 AND company_id = ANY($2) AND is_read = FALSE`,
-    [userId, companyIds],
+    `SELECT COUNT(*)::int AS count FROM messages WHERE recipient_id = $1 AND is_read = FALSE`,
+    [userId],
   );
   ok(res, { unreadCount: row?.count ?? 0 });
 });
@@ -250,8 +310,10 @@ export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.user!;
   const explicitCompany =
     req.body?.company_id ??
+    req.body?.companyId ??
     req.body?.target_company_id ??
     req.query?.company_id ??
+    req.query?.companyId ??
     req.query?.target_company_id ??
     req.params?.company_id;
 
@@ -273,8 +335,8 @@ export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
   if (isNaN(msgId)) { notFound(res, 'Messaggio non trovato'); return; }
 
   const msg = await queryOne<{ id: number; recipient_id: number }>(
-    `SELECT id, recipient_id FROM messages WHERE id = $1 AND company_id = ANY($2)`,
-    [msgId, companyIds],
+    `SELECT id, recipient_id FROM messages WHERE id = $1`,
+    [msgId],
   );
   if (!msg) { notFound(res, 'Messaggio non trovato'); return; }
   if (msg.recipient_id !== userId) {
@@ -283,10 +345,114 @@ export const markAsRead = asyncHandler(async (req: Request, res: Response) => {
   }
 
   const updated = await queryOne(
-    `UPDATE messages SET is_read = TRUE WHERE id = $1 AND company_id = ANY($2)
+    `UPDATE messages SET is_read = TRUE WHERE id = $1
      RETURNING id, subject, body, is_read, created_at, sender_id, recipient_id`,
-    [msgId, companyIds],
+    [msgId],
+  );
+  
+  ok(res, updated);
+});
+
+export const uploadAttachment = asyncHandler(async (req: Request, res: Response) => {
+  const file = (req as any).file;
+  if (!file) {
+    badRequest(res, 'File non caricato');
+    return;
+  }
+  ok(res, { filename: file.filename }, 'File caricato con successo');
+});
+
+// PATCH /api/messages/:id — edit a message
+export const editMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.user!;
+  const msgId = parseInt(req.params.id, 10);
+  const { body } = req.body as { body: string };
+
+  if (isNaN(msgId)) {
+    notFound(res, 'Messaggio non trovato');
+    return;
+  }
+
+  if (!body || !body.trim()) {
+    badRequest(res, 'Il testo del messaggio è obbligatorio', 'MISSING_FIELDS');
+    return;
+  }
+
+  const msg = await queryOne<{ id: number; sender_id: number }>(
+    `SELECT id, sender_id FROM messages WHERE id = $1`,
+    [msgId],
   );
 
-  ok(res, updated);
+  if (!msg) {
+    notFound(res, 'Messaggio non trovato');
+    return;
+  }
+
+  if (msg.sender_id !== userId) {
+    forbidden(res, 'Non puoi modificare questo messaggio');
+    return;
+  }
+
+  const updated = await queryOne<any>(
+    `UPDATE messages 
+     SET body = $1
+     WHERE id = $2 
+     RETURNING id, company_id, subject, body, is_read, created_at, sender_id, recipient_id, attachment_filename`,
+    [body.trim(), msgId],
+  );
+
+  if (updated) {
+    emitToCompany(updated.company_id, 'MESSAGE_EDITED', updated);
+  }
+
+  ok(res, updated, 'Messaggio modificato');
+});
+
+// DELETE /api/messages/:id — delete a message
+export const deleteMessage = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.user!;
+  const msgId = parseInt(req.params.id, 10);
+
+  if (isNaN(msgId)) {
+    notFound(res, 'Messaggio non trovato');
+    return;
+  }
+
+  const msg = await queryOne<{ id: number; company_id: number; sender_id: number; attachment_filename: string | null }>(
+    `SELECT id, company_id, sender_id, attachment_filename FROM messages WHERE id = $1`,
+    [msgId],
+  );
+
+  if (!msg) {
+    notFound(res, 'Messaggio non trovato');
+    return;
+  }
+
+  if (msg.sender_id !== userId) {
+    forbidden(res, 'Non puoi eliminare questo messaggio');
+    return;
+  }
+
+  // Delete physical attachment if it exists
+  if (msg.attachment_filename) {
+    const uploadsDir = process.env.UPLOADS_DIR
+      ? path.dirname(process.env.UPLOADS_DIR)
+      : path.join(process.cwd(), 'uploads');
+    const filePath = path.join(uploadsDir, 'message-attachments', msg.attachment_filename);
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      console.error('Failed to delete physical message attachment file:', err);
+    }
+  }
+
+  await query(`DELETE FROM messages WHERE id = $1`, [msgId]);
+
+  if (msg) {
+    emitToCompany(msg.company_id, 'MESSAGE_DELETED', { id: msgId });
+  }
+
+  ok(res, { id: msgId }, 'Messaggio eliminato');
 });

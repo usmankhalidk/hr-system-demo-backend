@@ -180,10 +180,10 @@ interface AffluenceSettingsUpdateInput {
 }
 
 const STAFFING_SLOTS: Array<{ timeSlot: string; startMinutes: number; endMinutes: number }> = [
-  { timeSlot: '09:00-12:00', startMinutes: 9 * 60, endMinutes: 12 * 60 },
-  { timeSlot: '12:00-15:00', startMinutes: 12 * 60, endMinutes: 15 * 60 },
-  { timeSlot: '15:00-18:00', startMinutes: 15 * 60, endMinutes: 18 * 60 },
-  { timeSlot: '18:00-21:00', startMinutes: 18 * 60, endMinutes: 21 * 60 },
+  { timeSlot: '00:00-06:00', startMinutes: 0,    endMinutes: 6  * 60 },
+  { timeSlot: '06:00-12:00', startMinutes: 6 * 60, endMinutes: 12 * 60 },
+  { timeSlot: '12:00-18:00', startMinutes: 12 * 60, endMinutes: 18 * 60 },
+  { timeSlot: '18:00-24:00', startMinutes: 18 * 60, endMinutes: 24 * 60 },
 ];
 
 const DEFAULT_VISITORS_PER_STAFF = 10;
@@ -191,10 +191,10 @@ const DEFAULT_LOW_MAX_STAFF = 10;
 const DEFAULT_MEDIUM_MAX_STAFF = 20;
 const DEFAULT_COVERAGE_TOLERANCE = 0.4;
 const DEFAULT_SLOT_WEIGHTS: LiveAffluenceSlotWeight[] = [
-  { timeSlot: '09:00-12:00', weight: 0.25 },
-  { timeSlot: '12:00-15:00', weight: 0.25 },
-  { timeSlot: '15:00-18:00', weight: 0.25 },
-  { timeSlot: '18:00-21:00', weight: 0.25 },
+  { timeSlot: '00:00-06:00', weight: 0.1 },
+  { timeSlot: '06:00-12:00', weight: 0.3 },
+  { timeSlot: '12:00-18:00', weight: 0.35 },
+  { timeSlot: '18:00-24:00', weight: 0.25 },
 ];
 
 let shiftsIsOffDayColumnCache: boolean | null = null;
@@ -233,19 +233,19 @@ function normalizeLiveAffluenceSettings(
     coverageTolerance: normalizeBoundedNumber(row.coverageTolerance, defaults.coverageTolerance, 0, 10),
     slotWeights: [
       {
-        timeSlot: '09:00-12:00',
+        timeSlot: '00:00-06:00',
         weight: normalizeBoundedNumber(row.slotWeight09001200, defaults.slotWeights[0].weight, 0, 1),
       },
       {
-        timeSlot: '12:00-15:00',
+        timeSlot: '06:00-12:00',
         weight: normalizeBoundedNumber(row.slotWeight12001500, defaults.slotWeights[1].weight, 0, 1),
       },
       {
-        timeSlot: '15:00-18:00',
+        timeSlot: '12:00-18:00',
         weight: normalizeBoundedNumber(row.slotWeight15001800, defaults.slotWeights[2].weight, 0, 1),
       },
       {
-        timeSlot: '18:00-21:00',
+        timeSlot: '18:00-24:00',
         weight: normalizeBoundedNumber(row.slotWeight18002100, defaults.slotWeights[3].weight, 0, 1),
       },
     ],
@@ -442,6 +442,46 @@ function buildScheduledStaffBaseline(
   }
 
   return averageBySlot;
+}
+
+function buildActualScheduledStaffForDates(
+  rows: ShiftCoverageRow[],
+): Map<string, number> {
+  const uniqueCoverage = new Set<string>();
+
+  for (const row of rows) {
+    if (row.isOffDay) continue;
+
+    const firstStart = parseTimeToMinutes(row.startTime);
+    const firstEnd = parseTimeToMinutes(row.endTime);
+    if (firstStart == null || firstEnd == null) continue;
+
+    const secondStart = row.isSplit ? parseTimeToMinutes(row.splitStart2) : null;
+    const secondEnd = row.isSplit ? parseTimeToMinutes(row.splitEnd2) : null;
+
+    for (const slot of STAFFING_SLOTS) {
+      const firstOverlaps = rangesOverlap(firstStart, firstEnd, slot.startMinutes, slot.endMinutes);
+      const secondOverlaps =
+        secondStart != null
+        && secondEnd != null
+        && rangesOverlap(secondStart, secondEnd, slot.startMinutes, slot.endMinutes);
+
+      if (!firstOverlaps && !secondOverlaps) {
+        continue;
+      }
+
+      uniqueCoverage.add(`${row.date}|${slot.timeSlot}|${row.userId}`);
+    }
+  }
+
+  const totals = new Map<string, number>();
+  for (const key of uniqueCoverage) {
+    const [date, timeSlot] = key.split('|');
+    const aggregateKey = `${date}|${timeSlot}`;
+    totals.set(aggregateKey, (totals.get(aggregateKey) ?? 0) + 1);
+  }
+
+  return totals;
 }
 
 function isDateOnly(value: string): boolean {
@@ -2035,4 +2075,290 @@ export const syncAffluenceFromExternal = asyncHandler(async (req: Request, res: 
   } finally {
     client.release();
   }
+});
+
+export const getAffluenceForecast = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.query.store_id ?? ''), 10);
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID') {
+    badRequest(res, 'Invalid company id', 'INVALID_COMPANY_ID');
+    return;
+  }
+  if (storeResolution === 'COMPANY_MISMATCH') {
+    res.status(403).json({ success: false, error: 'Access denied for selected company', code: 'COMPANY_MISMATCH' });
+    return;
+  }
+  if (!storeResolution) {
+    notFound(res, 'Store not found', 'STORE_NOT_FOUND');
+    return;
+  }
+
+  const store = storeResolution;
+  const companyId = store.companyId;
+
+  const mapping = await queryOne<StoreMappingRow>(
+    `SELECT
+       external_store_code AS "externalStoreCode",
+       external_store_name AS "externalStoreName"
+     FROM external_store_mappings
+     WHERE company_id = $1
+       AND local_store_id = $2
+       AND is_active = true
+     LIMIT 1`,
+    [companyId, storeId],
+  );
+
+  if (!mapping) {
+    badRequest(res, 'Store has no external mapping yet', 'STORE_MAPPING_REQUIRED');
+    return;
+  }
+
+  const now = new Date();
+  const defaultFrom = formatDateOnly(now);
+  const defaultToDate = new Date(now);
+  defaultToDate.setUTCDate(defaultToDate.getUTCDate() + 13);
+  const defaultTo = formatDateOnly(defaultToDate);
+
+  const fromDate = typeof req.query.from_date === 'string' && isDateOnly(req.query.from_date) ? req.query.from_date : defaultFrom;
+  const toDate = typeof req.query.to_date === 'string' && isDateOnly(req.query.to_date) ? req.query.to_date : defaultTo;
+
+  if (fromDate > toDate) {
+    badRequest(res, 'from_date cannot be greater than to_date', 'INVALID_DATE_RANGE');
+    return;
+  }
+
+  try {
+    const settings = await loadCompanyLiveAffluenceSettings(companyId);
+
+    // Fetch rolling weekday averages (last 8 weeks)
+    const historicalToDate = new Date(now);
+    historicalToDate.setUTCDate(historicalToDate.getUTCDate() - 1);
+    const historicalTo = formatDateOnly(historicalToDate);
+
+    const historicalFromDate = new Date(now);
+    historicalFromDate.setUTCDate(historicalFromDate.getUTCDate() - 56);
+    const historicalFrom = formatDateOnly(historicalFromDate);
+
+    const histRows = await fetchIngressiDaily(
+      String(mapping.externalStoreCode).trim(),
+      historicalFrom,
+      historicalTo,
+      1200,
+    );
+
+    const trafficSummary = buildTrafficSummary(histRows);
+    const weekdayAvgMap = new Map<number, number>();
+    for (const r of trafficSummary.weekdayAverages) {
+      weekdayAvgMap.set(r.dayOfWeek, r.days > 0 ? r.avgVisitors : 0);
+    }
+
+    // Fetch overrides
+    const overrides = await query<{ overrideDate: string; visitorsOverride: number; note: string }>(
+      `SELECT
+         TO_CHAR(override_date::date, 'YYYY-MM-DD') AS "overrideDate",
+         visitors_override AS "visitorsOverride",
+         note
+       FROM affluence_forecast_overrides
+       WHERE store_id = $1
+         AND override_date BETWEEN $2::date AND $3::date`,
+      [storeId, fromDate, toDate],
+    );
+
+    const overrideMap = new Map<string, { visitors: number; note: string }>();
+    for (const r of overrides) {
+      overrideMap.set(r.overrideDate, { visitors: r.visitorsOverride, note: r.note ?? '' });
+    }
+
+    // Fetch actual future/scheduled shifts for the forecast period to overlay actual planned coverage
+    const includeIsOffDay = await hasShiftsIsOffDayColumn();
+    const isOffDaySelect = includeIsOffDay
+      ? 'is_off_day AS "isOffDay"'
+      : 'false AS "isOffDay"';
+
+    const shiftRows = await query<ShiftCoverageRow>(
+      `SELECT
+         TO_CHAR(s.date::date, 'YYYY-MM-DD') AS date,
+         s.user_id AS "userId",
+         TO_CHAR(s.start_time, 'HH24:MI') AS "startTime",
+         TO_CHAR(s.end_time, 'HH24:MI') AS "endTime",
+         CASE WHEN s.split_start2 IS NULL THEN NULL ELSE TO_CHAR(s.split_start2, 'HH24:MI') END AS "splitStart2",
+         CASE WHEN s.split_end2 IS NULL THEN NULL ELSE TO_CHAR(s.split_end2, 'HH24:MI') END AS "splitEnd2",
+         s.is_split AS "isSplit",
+         ${isOffDaySelect}
+       FROM shifts s
+       WHERE s.company_id = $1
+         AND (
+           s.store_id = $2
+           OR (
+             s.assignment_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM temporary_store_assignments tsa
+               WHERE tsa.id = s.assignment_id
+                 AND (tsa.origin_store_id = $2 OR tsa.target_store_id = $2)
+             )
+           )
+         )
+         AND s.date BETWEEN $3::date AND $4::date
+         AND s.status = 'confirmed'`,
+      [companyId, storeId, fromDate, toDate],
+    );
+
+    const actualScheduledStaff = buildActualScheduledStaffForDates(shiftRows);
+
+    // Build forecast rows
+    const days: any[] = [];
+    const currentIter = new Date(fromDate + 'T12:00:00Z');
+    const endIter = new Date(toDate + 'T12:00:00Z');
+
+    const visitorsPerStaff = settings.visitorsPerStaff;
+    const tolerance = settings.coverageTolerance;
+
+    while (currentIter <= endIter) {
+      const dateStr = formatDateOnly(currentIter);
+      const jsDay = currentIter.getUTCDay();
+      const dayOfWeek = jsDay === 0 ? 7 : jsDay;
+
+      const overrideObj = overrideMap.get(dateStr);
+      const hasOverride = overrideMap.has(dateStr);
+      const effectiveDailyVisitors = hasOverride && overrideObj != null
+        ? overrideObj.visitors
+        : (weekdayAvgMap.get(dayOfWeek) ?? 0);
+
+      const slotsList: any[] = [];
+
+      for (const slot of settings.slotWeights) {
+        const estimatedVisitors = Number((effectiveDailyVisitors * slot.weight).toFixed(2));
+        const requiredStaff = estimatedVisitors <= 0
+          ? 0
+          : Math.max(1, Math.ceil(estimatedVisitors / visitorsPerStaff));
+
+        const level = detectLevelFromEstimatedVisitors(estimatedVisitors, settings);
+
+        const currentScheduledStaff = actualScheduledStaff.get(`${dateStr}|${slot.timeSlot}`) ?? 0;
+        const deltaToScheduledStaff = Number((requiredStaff - currentScheduledStaff).toFixed(2));
+
+        let coverageStatus: 'under' | 'balanced' | 'over' = 'balanced';
+        if (deltaToScheduledStaff > tolerance) {
+          coverageStatus = 'under';
+        } else if (deltaToScheduledStaff < -tolerance) {
+          coverageStatus = 'over';
+        }
+
+        slotsList.push({
+          timeSlot: slot.timeSlot,
+          slotWeight: slot.weight,
+          estimatedVisitors,
+          level,
+          requiredStaff,
+          currentScheduledStaff,
+          deltaToScheduledStaff,
+          coverageStatus,
+        });
+      }
+
+      days.push({
+        date: dateStr,
+        dayOfWeek,
+        isOverridden: hasOverride,
+        overriddenVisitors: overrideObj?.visitors ?? null,
+        overrideNote: overrideObj?.note ?? null,
+        estimatedDailyVisitors: weekdayAvgMap.get(dayOfWeek) ?? 0,
+        effectiveDailyVisitors,
+        slots: slotsList,
+      });
+
+      currentIter.setUTCDate(currentIter.getUTCDate() + 1);
+    }
+
+    ok(res, {
+      storeId,
+      companyId,
+      fromDate,
+      toDate,
+      days,
+      settings,
+    });
+  } catch (err) {
+    if (err instanceof ExternalDbUnavailableError) {
+      res.status(503).json({ success: false, error: 'Database esterno non disponibile', code: 'EXTERNAL_DB_UNAVAILABLE' });
+      return;
+    }
+    throw err;
+  }
+});
+
+export const upsertForecastOverride = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.body.store_id ?? ''), 10);
+  const date = String(req.body.date ?? '').trim();
+  const visitorsOverride = parseInt(String(req.body.visitors_override ?? ''), 10);
+  const note = req.body.note != null ? String(req.body.note).trim() : null;
+
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+  if (!isDateOnly(date)) {
+    badRequest(res, 'Invalid date format. Use YYYY-MM-DD', 'INVALID_DATE');
+    return;
+  }
+  if (!Number.isFinite(visitorsOverride) || visitorsOverride < 0) {
+    badRequest(res, 'visitors_override must be a positive integer', 'INVALID_VISITORS_OVERRIDE');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID' || storeResolution === 'COMPANY_MISMATCH' || !storeResolution) {
+    res.status(403).json({ success: false, error: 'Access denied', code: 'ACCESS_DENIED' });
+    return;
+  }
+
+  const userId = req.user?.userId ?? null;
+
+  await query(
+    `INSERT INTO affluence_forecast_overrides (store_id, override_date, visitors_override, note, created_by)
+     VALUES ($1, $2::date, $3, $4, $5)
+     ON CONFLICT (store_id, override_date)
+     DO UPDATE SET
+       visitors_override = EXCLUDED.visitors_override,
+       note = EXCLUDED.note,
+       created_by = EXCLUDED.created_by,
+       updated_at = NOW()`,
+    [storeId, date, visitorsOverride, note, userId],
+  );
+
+  ok(res, { success: true });
+});
+
+export const deleteForecastOverride = asyncHandler(async (req: Request, res: Response) => {
+  const storeId = parseInt(String(req.query.store_id ?? ''), 10);
+  const date = String(req.query.date ?? '').trim();
+
+  if (!Number.isFinite(storeId)) {
+    badRequest(res, 'store_id is required', 'STORE_ID_REQUIRED');
+    return;
+  }
+  if (!isDateOnly(date)) {
+    badRequest(res, 'Invalid date format. Use YYYY-MM-DD', 'INVALID_DATE');
+    return;
+  }
+
+  const storeResolution = await resolveScopedStoreWithDetails(req, storeId);
+  if (storeResolution === 'INVALID_COMPANY_ID' || storeResolution === 'COMPANY_MISMATCH' || !storeResolution) {
+    res.status(403).json({ success: false, error: 'Access denied', code: 'ACCESS_DENIED' });
+    return;
+  }
+
+  await query(
+    `DELETE FROM affluence_forecast_overrides
+     WHERE store_id = $1 AND override_date = $2::date`,
+    [storeId, date],
+  );
+
+  ok(res, { success: true });
 });
