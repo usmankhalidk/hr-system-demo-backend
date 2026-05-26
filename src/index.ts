@@ -371,6 +371,37 @@ app.get('/cvs/:filename', (req, res, next) => {
 });
 
 // Serve public CV files behind authentication
+app.get('/uploads/public-cv/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+    res.status(400).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.pdf': 'application/pdf',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const publicCvDir = process.env.PUBLIC_CV_UPLOAD_DIR
+    ?? path.join(process.cwd(), 'uploads', 'public-cv');
+  const filePath = path.join(publicCvDir, filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
+// Keep old endpoint for backward compatibility
 app.get('/public-cv/:filename', (req, res, next) => {
   if (req.query.token && !req.headers.authorization) {
     req.headers.authorization = `Bearer ${req.query.token}`;

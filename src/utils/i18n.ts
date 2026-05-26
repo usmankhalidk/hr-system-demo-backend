@@ -241,16 +241,20 @@ const MESSAGES: Record<string, Record<SupportedLocale, string>> = {
     it: 'Stato candidato aggiornato',
   },
   'notifications.ats_outcome.message': {
-    en: '{{name}} moved from {{from}} to {{to}}.',
-    it: '{{name}} e passato da {{from}} a {{to}}.',
+    en: '{{name}} moved from **{{from}}** to **{{to}}**.',
+    it: '{{name}} e passato da **{{from}}** a **{{to}}**.',
   },
   'notifications.ats_status_received': {
     en: 'Received',
     it: 'Ricevuto',
   },
   'notifications.ats_status_review': {
-    en: 'In review',
-    it: 'In revisione',
+    en: 'In Review',
+    it: 'In Revisione',
+  },
+  'notifications.ats_status_phone_interview': {
+    en: 'Phone Interview',
+    it: 'Colloquio Telefonico',
   },
   'notifications.ats_status_interview': {
     en: 'Interview',
