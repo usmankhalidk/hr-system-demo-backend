@@ -1083,6 +1083,9 @@ export const updateCandidateHandler = asyncHandler(async (req: Request, res: Res
           }),
           priority: 'medium',
           locale: recipientLocale,
+          metadata: {
+            candidateId: candidate.id,
+          },
         });
       }),
     ).catch(() => undefined);
