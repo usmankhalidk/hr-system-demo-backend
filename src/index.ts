@@ -195,6 +195,33 @@ app.get('/uploads/company-banners/:filename', (req, res) => {
   res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
 });
 
+app.get('/uploads/message-attachments/:filename', (req, res, next) => {
+  if (req.query.token && !req.headers.authorization) {
+    req.headers.authorization = `Bearer ${req.query.token}`;
+  }
+  next();
+}, authenticate, async (req, res) => {
+  const { filename } = req.params;
+  if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {
+    res.status(400).end();
+    return;
+  }
+
+  const ext = path.extname(filename).toLowerCase();
+  const mimeTypes: Record<string, string> = {
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png': 'image/png',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+  };
+  const contentType = mimeTypes[ext];
+  if (contentType) res.setHeader('Content-Type', contentType);
+
+  const filePath = path.join(uploadsRoot, 'message-attachments', filename);
+  res.sendFile(filePath, (err) => { if (err) res.status(404).end(); });
+});
+
 app.get('/uploads/public-avatars/:filename', async (req, res) => {
   const { filename } = req.params;
   if (!/^[a-zA-Z0-9._-]+$/.test(filename)) {

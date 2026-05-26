@@ -1,6 +1,8 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
 import { pool, query, queryOne } from '../../config/database';
 import { ok, created, notFound, conflict, forbidden, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -1217,8 +1219,8 @@ export const deleteEmployeePermanently = asyncHandler(async (req: Request, res: 
   try {
     await client.query('BEGIN');
 
-    const { rows } = await client.query<{ id: number; is_super_admin: boolean }>(
-      `SELECT id, is_super_admin FROM users WHERE id = $1 AND company_id = ANY($2)`,
+    const { rows } = await client.query<{ id: number; is_super_admin: boolean; avatar_filename: string | null }>(
+      `SELECT id, is_super_admin, avatar_filename FROM users WHERE id = $1 AND company_id = ANY($2)`,
       [empId, allowedCompanyIds],
     );
     const target = rows[0];
@@ -1231,6 +1233,19 @@ export const deleteEmployeePermanently = asyncHandler(async (req: Request, res: 
       await client.query('ROLLBACK');
       forbidden(res, 'Impossibile eliminare un super admin');
       return;
+    }
+
+    // Delete avatar physically if it exists
+    if (target.avatar_filename) {
+      const uploadDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads', 'avatars');
+      const filePath = path.join(uploadDir, target.avatar_filename);
+      try {
+        if (fs.existsSync(filePath)) {
+          fs.unlinkSync(filePath);
+        }
+      } catch (err) {
+        console.error('Failed to delete physical avatar on permanent employee delete:', err);
+      }
     }
 
     // Detach references that don't cascade

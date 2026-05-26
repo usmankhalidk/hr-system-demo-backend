@@ -1,5 +1,7 @@
 import { Request, Response } from 'express';
 import bcrypt from 'bcryptjs';
+import fs from 'fs';
+import path from 'path';
 import { query, queryOne } from '../config/database';
 
 export async function listEmployees(req: Request, res: Response) {
@@ -86,6 +88,23 @@ export async function deleteEmployee(req: Request, res: Response) {
   if (parseInt(id) === req.user!.userId) {
     res.status(400).json({ error: 'Cannot delete your own account' });
     return;
+  }
+
+  const emp = await queryOne<{ avatar_filename: string | null }>(
+    `SELECT avatar_filename FROM users WHERE id = $1 AND company_id = $2`,
+    [id, companyId]
+  );
+  
+  if (emp && emp.avatar_filename) {
+    const uploadDir = process.env.UPLOADS_DIR || path.join(process.cwd(), 'uploads', 'avatars');
+    const filePath = path.join(uploadDir, emp.avatar_filename);
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (err) {
+      console.error('Failed to delete physical avatar on user delete:', err);
+    }
   }
 
   const result = await query(
