@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { emailService, verifySmtpConfig } from '../../services/email.service';
-import { authenticate, requireRole } from '../../middleware/auth';
+import { authenticate, requireRole, requireSuperAdmin } from '../../middleware/auth';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { badRequest, ok, notFound } from '../../utils/response';
 import { query, queryOne } from '../../config/database';
@@ -21,7 +21,7 @@ router.get('/health', (_req, res) => {
 // Test email (legacy — uses .env SMTP)
 // ---------------------------------------------------------------------------
 
-router.post('/test', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
+router.post('/test', authenticate, requireSuperAdmin, asyncHandler(async (req, res) => {
   const { to, subject, html } = req.body as { to?: unknown; subject?: unknown; html?: unknown };
 
   if (typeof to !== 'string' || to.trim() === '') {
@@ -92,10 +92,25 @@ router.get('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
     [companyId],
   );
 
+  let returnedConfig = null;
+  if (cfg) {
+    if (user.is_super_admin) {
+      returnedConfig = cfg;
+    } else {
+      returnedConfig = {
+        smtp_host: cfg.smtp_host,
+        smtp_port: cfg.smtp_port,
+        smtp_from: cfg.smtp_from,
+        smtp_user: '',
+        smtp_pass: '',
+      };
+    }
+  }
+
   ok(res, {
     superAdmin: !!user.is_super_admin,
     company: company ? { id: company.id, name: company.name } : null,
-    config: cfg ?? null,
+    config: returnedConfig,
   });
 }));
 
@@ -104,7 +119,7 @@ router.get('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
 // Upserts (insert or update) the SMTP config for the caller's company.
 // ---------------------------------------------------------------------------
 
-router.put('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
+router.put('/config', authenticate, requireSuperAdmin, asyncHandler(async (req, res) => {
   const user = req.user!;
   const body = req.body as any;
 
@@ -169,7 +184,7 @@ router.put('/config', authenticate, requireRole('admin', 'hr'), asyncHandler(asy
 // Verifies connection and authentication for the saved configuration.
 // ---------------------------------------------------------------------------
 
-router.post('/verify', authenticate, requireRole('admin', 'hr'), asyncHandler(async (req, res) => {
+router.post('/verify', authenticate, requireSuperAdmin, asyncHandler(async (req, res) => {
   const user = req.user!;
   const body = req.body as any;
 
