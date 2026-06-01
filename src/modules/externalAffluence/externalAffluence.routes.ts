@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { authenticate, requireModulePermission, requireRole } from '../../middleware/auth';
+import { authenticate, requireModulePermission, requireRole, requireSuperAdmin } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
 import {
   getAffluenceConfiguration,
@@ -88,8 +88,7 @@ function registerBuiltInLocalDebugRoutes(targetRouter: Router): void {
   targetRouter.get(
     '/catalog',
     authenticate,
-    requireRole(...readRoles),
-    requireModulePermission('turni', 'read'),
+    requireSuperAdmin,
     requireLocalDebugAccess,
     getExternalCatalog,
   );
@@ -97,8 +96,7 @@ function registerBuiltInLocalDebugRoutes(targetRouter: Router): void {
   targetRouter.get(
     '/table-data',
     authenticate,
-    requireRole(...readRoles),
-    requireModulePermission('turni', 'read'),
+    requireSuperAdmin,
     requireLocalDebugAccess,
     getExternalTableData,
   );
@@ -139,32 +137,28 @@ function registerLocalDebugRoutes(targetRouter: Router): void {
 router.get(
   '/overview',
   authenticate,
-  requireRole(...readRoles),
-  requireModulePermission('turni', 'read'),
+  requireSuperAdmin,
   getOverview,
 );
 
 router.get(
   '/depositi',
   authenticate,
-  requireRole(...readRoles),
-  requireModulePermission('turni', 'read'),
+  requireSuperAdmin,
   listDepositi,
 );
 
 router.get(
   '/mappings',
   authenticate,
-  requireRole(...readRoles),
-  requireModulePermission('turni', 'read'),
+  requireSuperAdmin,
   listMappings,
 );
 
 router.put(
   '/mappings/:storeId',
   authenticate,
-  requireRole(...mappingWriteRoles),
-  requireModulePermission('turni', 'write'),
+  requireSuperAdmin,
   validate(upsertMappingSchema),
   upsertMapping,
 );
@@ -172,8 +166,7 @@ router.put(
 router.delete(
   '/mappings/:storeId',
   authenticate,
-  requireRole(...mappingWriteRoles),
-  requireModulePermission('turni', 'write'),
+  requireSuperAdmin,
   deleteMapping,
 );
 
@@ -204,16 +197,14 @@ router.get(
 router.get(
   '/configuration',
   authenticate,
-  requireRole(...readRoles),
-  requireModulePermission('turni', 'read'),
+  requireSuperAdmin,
   getAffluenceConfiguration,
 );
 
 router.patch(
   '/configuration',
   authenticate,
-  requireRole(...mappingWriteRoles),
-  requireModulePermission('turni', 'write'),
+  requireSuperAdmin,
   validate(updateAffluenceConfigurationSchema),
   updateAffluenceConfiguration,
 );
@@ -221,8 +212,7 @@ router.patch(
 router.post(
   '/sync-affluence',
   authenticate,
-  requireRole(...syncRoles),
-  requireModulePermission('turni', 'write'),
+  requireSuperAdmin,
   validate(syncAffluenceSchema),
   syncAffluenceFromExternal,
 );
