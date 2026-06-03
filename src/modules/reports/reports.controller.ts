@@ -145,7 +145,7 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
 
   const { reportId } = req.params;
 
-  const config = await queryOne<ReportConfigRow>(
+  let config = await queryOne<any>(
     `SELECT day, time, sections
      FROM report_configurations
      WHERE company_id = $1 AND report_id = $2`,
@@ -153,8 +153,27 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
   );
 
   if (!config) {
-    notFound(res, 'Nessuna configurazione trovata per questo report.');
-    return;
+    let defaultDay = 1;
+    let defaultTime = '07:00';
+    let defaultSections: string[] = [];
+
+    if (reportId === 'admin_monthly') {
+      defaultSections = ['KPI', 'Employees', 'ATS', 'Onboarding in process', 'Shift coverage', 'Contract deadlines', 'Attendance', 'Anomalies', 'Leave Requests', 'Training deadlines'];
+    } else if (reportId === 'hr_weekly') {
+      defaultSections = ['Riepilogo presenze', 'Anomalie rilevate', 'Turni confermati', 'Richieste ferie', 'Onboarding in corso'];
+    } else if (reportId === 'hr_monthly') {
+      defaultTime = '08:00';
+      defaultSections = ['Variazioni organico', 'Ferie & permessi', 'Scadenze formazioni', 'Scadenze visite mediche', 'Contratti in scadenza'];
+    } else if (reportId === 'anomaly_daily') {
+      defaultTime = '08:00';
+      defaultSections = ['position', 'Received Candidates', 'In Review Candidates', 'Phone Interview Candidates', 'In-person Interview Candidates', 'Hired Candidates', 'Rejected Candidates'];
+    }
+
+    config = {
+      day: defaultDay,
+      time: defaultTime,
+      sections: defaultSections
+    };
   }
 
   let parsedSections: string[] = [];
