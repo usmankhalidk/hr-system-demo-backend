@@ -1283,27 +1283,139 @@ export async function generateAndSendMonthlyAdminReport(
       const atsTotalCandidates = parseInt(atsRes?.total || '0', 10);
       const atsInterviewCandidates = parseInt(atsRes?.interview || '0', 10);
 
-      checkPageOverflow(140);
+      checkPageOverflow(260);
       page.drawText('1. KPI Direzionali', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
       page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.79, 0.59, 0.23) });
       y -= 22;
 
-      const drawKpiRow = (label: string, value: string) => {
-        checkPageOverflow(20);
-        page.drawText(label, { x: 50, y, size: 9, font: fontBold, color: rgb(0.2, 0.2, 0.2) });
-        page.drawText(value, { x: 280, y, size: 9, font, color: rgb(0.1, 0.1, 0.1) });
-        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.3, color: rgb(0.85, 0.85, 0.85) });
-        y -= 14;
+      // Define grid metrics
+      const cardW = 250;
+      const cardH = 48;
+      const gap = 12;
+
+      const drawMetricCard = (
+        label: string,
+        valStr: string,
+        subStr: string,
+        cardX: number,
+        cardY: number,
+        accentClr: any,
+        customWidth?: number,
+        bgColor = rgb(0.97, 0.98, 0.99)
+      ) => {
+        const finalW = customWidth || cardW;
+        // Draw card background
+        page.drawRectangle({
+          x: cardX,
+          y: cardY - cardH,
+          width: finalW,
+          height: cardH,
+          color: bgColor,
+        });
+        // Draw left accent bar
+        page.drawRectangle({
+          x: cardX,
+          y: cardY - cardH,
+          width: 4,
+          height: cardH,
+          color: accentClr,
+        });
+        // Label
+        page.drawText(label, {
+          x: cardX + 12,
+          y: cardY - 14,
+          size: 8,
+          font: fontBold,
+          color: rgb(0.4, 0.4, 0.4),
+        });
+        // Large Value
+        page.drawText(valStr, {
+          x: cardX + 12,
+          y: cardY - 28,
+          size: 11.5,
+          font: fontBold,
+          color: rgb(0.1, 0.1, 0.1),
+        });
+        // Sub Value Description
+        page.drawText(subStr, {
+          x: cardX + 12,
+          y: cardY - 40,
+          size: 7,
+          font: fontItalic,
+          color: rgb(0.5, 0.5, 0.5),
+        });
       };
 
-      drawKpiRow('Tasso di presenza (Attendance Rate)', `${attendanceRate}% (${presentAtt} di ${expectedAtt} turni previsti)`);
-      drawKpiRow('Totale Assenze Rilevate (Total Absences)', `${parseInt(absencesRes?.count || '0', 10)} turni`);
-      drawKpiRow('Totale Ritardi Rilevati (Delays)', `${parseInt(delaysRes?.count || '0', 10)} turni`);
-      drawKpiRow('Copertura Turni (Shift Coverage)', `${shiftCoverage}% (${confirmedShiftsCov} di ${totalShiftsCov} turni confermati)`);
-      drawKpiRow('Documenti in scadenza (prossimi 60gg)', `${docExpiryCount} documenti`);
-      drawKpiRow('Onboarding in corso (Onboarding in progress)', `${onboardingInProgress} dipendenti (${onboardingCompletionRate}% completamento medio)`);
-      drawKpiRow('Nuovi Candidati ATS (ATS Candidates)', `${atsTotalCandidates} candidati (${atsInterviewCandidates} in fase colloquio)`);
-      y -= 15;
+      // Row 1: Attendance & Shift Coverage
+      drawMetricCard(
+        'Tasso di presenza / Attendance Rate',
+        `${attendanceRate}%`,
+        `${presentAtt} di ${expectedAtt} turni previsti`,
+        50,
+        y,
+        attendanceRate >= 90 ? rgb(0.08, 0.5, 0.24) : (attendanceRate >= 75 ? rgb(0.9, 0.45, 0) : rgb(0.86, 0.15, 0.15))
+      );
+      drawMetricCard(
+        'Copertura Turni / Shift Coverage',
+        `${shiftCoverage}%`,
+        `${confirmedShiftsCov} di ${totalShiftsCov} turni confermati`,
+        50 + cardW + gap,
+        y,
+        shiftCoverage >= 90 ? rgb(0.08, 0.5, 0.24) : (shiftCoverage >= 75 ? rgb(0.9, 0.45, 0) : rgb(0.86, 0.15, 0.15))
+      );
+      y -= (cardH + 8);
+
+      // Row 2: Absences & Delays
+      const absCount = parseInt(absencesRes?.count || '0', 10);
+      const delCount = parseInt(delaysRes?.count || '0', 10);
+      drawMetricCard(
+        'Assenze Rilevate / Absences',
+        `${absCount} turni`,
+        'Collaboratori assenti ingiustificati',
+        50,
+        y,
+        absCount > 0 ? rgb(0.86, 0.15, 0.15) : rgb(0.08, 0.5, 0.24)
+      );
+      drawMetricCard(
+        'Ritardi Rilevati / Delays',
+        `${delCount} turni`,
+        'Check-in con ritardo > 10 minuti',
+        50 + cardW + gap,
+        y,
+        delCount > 0 ? rgb(0.9, 0.45, 0) : rgb(0.08, 0.5, 0.24)
+      );
+      y -= (cardH + 8);
+
+      // Row 3: Expiring Docs & Onboarding Progress
+      drawMetricCard(
+        'Documenti in Scadenza / Expiring Docs',
+        `${docExpiryCount} documenti`,
+        'Scadenza prevista nei prossimi 60 giorni',
+        50,
+        y,
+        docExpiryCount > 0 ? rgb(0.9, 0.45, 0) : rgb(0.08, 0.5, 0.24)
+      );
+      drawMetricCard(
+        'Onboarding in Corso / Onboarding',
+        `${onboardingInProgress} dipendenti`,
+        `Completamento medio: ${onboardingCompletionRate}%`,
+        50 + cardW + gap,
+        y,
+        onboardingInProgress > 0 ? rgb(0.1, 0.5, 0.8) : rgb(0.08, 0.5, 0.24)
+      );
+      y -= (cardH + 8);
+
+      // Row 4: ATS Candidates (Full Width Card)
+      drawMetricCard(
+        'Nuovi Candidati ATS / New Candidates',
+        `${atsTotalCandidates} registrati nel mese`,
+        `${atsInterviewCandidates} candidati in fase avanzata (colloqui)`,
+        50,
+        y,
+        atsTotalCandidates > 0 ? rgb(0.1, 0.5, 0.8) : rgb(0.5, 0.5, 0.5),
+        512
+      );
+      y -= (cardH + 20);
     }
 
     // SECTION 2: Employees
@@ -1325,7 +1437,7 @@ export async function generateAndSendMonthlyAdminReport(
       );
 
       checkPageOverflow(60);
-      page.drawText('2. Elenco Collaboratori Attivi', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
+      page.drawText('2. Collaboratori & Forza Lavoro', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
       page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.79, 0.59, 0.23) });
       y -= 22;
 
@@ -1334,23 +1446,85 @@ export async function generateAndSendMonthlyAdminReport(
         page.drawText('Nessun collaboratore attivo trovato.', { x: 50, y, size: 9, font: fontItalic });
         y -= 15;
       } else {
-        checkPageOverflow(20);
-        page.drawText('Nominativo', { x: 50, y, size: 9, font: fontBold });
-        page.drawText('Ruolo', { x: 210, y, size: 9, font: fontBold });
-        page.drawText('Email', { x: 310, y, size: 9, font: fontBold });
-        page.drawText('Data Assunzione', { x: 460, y, size: 9, font: fontBold });
-        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
-        y -= 14;
-
+        // Compute role counts
+        let totalCount = employees.length;
+        let adminC = 0, hrC = 0, mgrC = 0, empC = 0;
         for (const e of employees) {
-          checkPageOverflow(16);
-          const name = `${e.surname} ${e.name}`;
-          const hireDate = e.hire_date ? new Date(e.hire_date).toLocaleDateString('it-IT') : '-';
-          page.drawText(name.length > 25 ? name.substring(0, 22) + '...' : name, { x: 50, y, size: 9, font });
-          page.drawText(e.role, { x: 210, y, size: 9, font });
-          page.drawText(e.email || '-', { x: 310, y, size: 9, font });
-          page.drawText(hireDate, { x: 460, y, size: 9, font });
-          y -= 12;
+          const r = (e.role || '').toLowerCase();
+          if (r.includes('admin')) adminC++;
+          else if (r.includes('hr')) hrC++;
+          else if (r.includes('manager')) mgrC++;
+          else empC++;
+        }
+
+        // Draw headcount summary box
+        checkPageOverflow(40);
+        page.drawRectangle({
+          x: 50,
+          y: y - 24,
+          width: 512,
+          height: 24,
+          color: rgb(0.96, 0.97, 0.98),
+        });
+        page.drawText(`Organico Attivo: ${totalCount} dipendenti  |  Ruoli:  Admin: ${adminC}  ·  HR: ${hrC}  ·  Manager: ${mgrC}  ·  Staff: ${empC}`, {
+          x: 62,
+          y: y - 16,
+          size: 8.5,
+          font: fontBold,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        y -= 36;
+
+        // Filter new hires
+        const newHires = employees.filter(e => {
+          if (!e.hire_date) return false;
+          const hd = new Date(e.hire_date);
+          return hd >= start && hd <= end;
+        });
+
+        checkPageOverflow(30);
+        if (newHires.length > 0) {
+          page.drawText(`Nuovi Collaboratori Assunti nel Mese (${newHires.length})`, { x: 50, y, size: 9.5, font: fontBold, color: rgb(0.3, 0.3, 0.3) });
+          y -= 14;
+
+          // Draw table header
+          checkPageOverflow(20);
+          page.drawText('Nominativo', { x: 50, y, size: 8.5, font: fontBold });
+          page.drawText('Ruolo', { x: 250, y, size: 8.5, font: fontBold });
+          page.drawText('Data Assunzione', { x: 420, y, size: 8.5, font: fontBold });
+          page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+          y -= 14;
+
+          for (const e of newHires) {
+            checkPageOverflow(16);
+            const name = `${e.surname} ${e.name}`;
+            const hireDate = new Date(e.hire_date).toLocaleDateString('it-IT');
+            page.drawText(name.length > 30 ? name.substring(0, 27) + '...' : name, { x: 50, y, size: 8.5, font });
+            page.drawText(e.role, { x: 250, y, size: 8.5, font });
+            page.drawText(hireDate, { x: 420, y, size: 8.5, font });
+            y -= 12;
+          }
+        } else {
+          page.drawText('Nessuna nuova assunzione nel mese. Collaboratori Attivi (Esempio dei primi 10):', { x: 50, y, size: 9.5, font: fontBold, color: rgb(0.3, 0.3, 0.3) });
+          y -= 14;
+
+          // Draw table header
+          checkPageOverflow(20);
+          page.drawText('Nominativo', { x: 50, y, size: 8.5, font: fontBold });
+          page.drawText('Ruolo', { x: 250, y, size: 8.5, font: fontBold });
+          page.drawText('Data Assunzione', { x: 420, y, size: 8.5, font: fontBold });
+          page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+          y -= 14;
+
+          for (const e of employees.slice(0, 10)) {
+            checkPageOverflow(16);
+            const name = `${e.surname} ${e.name}`;
+            const hireDate = e.hire_date ? new Date(e.hire_date).toLocaleDateString('it-IT') : '-';
+            page.drawText(name.length > 30 ? name.substring(0, 27) + '...' : name, { x: 50, y, size: 8.5, font });
+            page.drawText(e.role, { x: 250, y, size: 8.5, font });
+            page.drawText(hireDate, { x: 420, y, size: 8.5, font });
+            y -= 12;
+          }
         }
         y -= 15;
       }
@@ -1375,7 +1549,7 @@ export async function generateAndSendMonthlyAdminReport(
       );
 
       checkPageOverflow(60);
-      page.drawText('3. Pipeline ATS (Nuovi Candidati del Mese)', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
+      page.drawText('3. Selezione & Pipeline ATS', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
       page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.79, 0.59, 0.23) });
       y -= 22;
 
@@ -1384,22 +1558,71 @@ export async function generateAndSendMonthlyAdminReport(
         page.drawText('Nessun nuovo candidato inserito nel periodo selezionato.', { x: 50, y, size: 9, font: fontItalic });
         y -= 15;
       } else {
+        // Aggregate candidates by stage
+        let totalCand = candidates.length;
+        let cRec = 0, cRev = 0, cInt = 0, cHir = 0, cRej = 0;
+        for (const c of candidates) {
+          const s = (c.status || '').toLowerCase();
+          if (s.includes('received')) cRec++;
+          else if (s.includes('review')) cRev++;
+          else if (s.includes('interview')) cInt++;
+          else if (s.includes('hired')) cHir++;
+          else if (s.includes('rejected')) cRej++;
+          else cRec++;
+        }
+
+        // Draw pipeline summary box
+        checkPageOverflow(40);
+        page.drawRectangle({
+          x: 50,
+          y: y - 24,
+          width: 512,
+          height: 24,
+          color: rgb(0.96, 0.97, 0.98),
+        });
+        page.drawText(`Pipeline ATS del Mese: Totale: ${totalCand}  |  Nuovi: ${cRec}  ·  In Valutazione: ${cRev}  ·  Colloquio: ${cInt}  ·  Assunti: ${cHir}  ·  Rifiutati: ${cRej}`, {
+          x: 62,
+          y: y - 16,
+          size: 8.5,
+          font: fontBold,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        y -= 36;
+
+        page.drawText('Ultimi Candidati Registrati (Esempio dei primi 10):', { x: 50, y, size: 9.5, font: fontBold, color: rgb(0.3, 0.3, 0.3) });
+        y -= 14;
+
+        // Draw table headers
         checkPageOverflow(20);
-        page.drawText('Candidato', { x: 50, y, size: 9, font: fontBold });
-        page.drawText('Posizione desiderata', { x: 210, y, size: 9, font: fontBold });
-        page.drawText('Stato Pipeline', { x: 360, y, size: 9, font: fontBold });
-        page.drawText('Data Inserimento', { x: 460, y, size: 9, font: fontBold });
+        page.drawText('Candidato', { x: 50, y, size: 8.5, font: fontBold });
+        page.drawText('Posizione Desiderata', { x: 230, y, size: 8.5, font: fontBold });
+        page.drawText('Stato Pipeline', { x: 380, y, size: 8.5, font: fontBold });
+        page.drawText('Data Inserimento', { x: 480, y, size: 8.5, font: fontBold });
         page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
         y -= 14;
 
-        for (const c of candidates) {
+        for (const c of candidates.slice(0, 10)) {
           checkPageOverflow(16);
           const name = c.full_name || '';
           const dateIns = c.created_at ? new Date(c.created_at).toLocaleDateString('it-IT') : '-';
-          page.drawText(name.length > 25 ? name.substring(0, 22) + '...' : name, { x: 50, y, size: 9, font });
-          page.drawText(c.position || '-', { x: 210, y, size: 9, font });
-          page.drawText(c.status || '-', { x: 360, y, size: 9, font });
-          page.drawText(dateIns, { x: 460, y, size: 9, font });
+          
+          let statusText = c.status || '-';
+          if (statusText === 'received') statusText = 'Ricevuto';
+          else if (statusText === 'in_review') statusText = 'In Valutazione';
+          else if (statusText === 'phone_interview') statusText = 'Coll. Telefonico';
+          else if (statusText === 'interview') statusText = 'Colloquio di Persona';
+          else if (statusText === 'hired') statusText = 'Assunto';
+          else if (statusText === 'rejected') statusText = 'Rifiutato';
+
+          const isHired = statusText === 'Assunto';
+          const isRejected = statusText === 'Rifiutato';
+          const isInt = statusText.includes('Colloquio') || statusText.includes('Coll.');
+          const textClr = isHired ? rgb(0.08, 0.5, 0.24) : (isRejected ? rgb(0.86, 0.15, 0.15) : (isInt ? rgb(0.1, 0.5, 0.8) : rgb(0.2, 0.2, 0.2)));
+
+          page.drawText(name.length > 25 ? name.substring(0, 22) + '...' : name, { x: 50, y, size: 8.5, font });
+          page.drawText((c.position || '-').length > 22 ? (c.position || '-').substring(0, 19) + '...' : c.position || '-', { x: 230, y, size: 8.5, font });
+          page.drawText(statusText, { x: 380, y, size: 8.5, font: (isHired || isInt || isRejected) ? fontBold : font, color: textClr });
+          page.drawText(dateIns, { x: 480, y, size: 8.5, font });
           y -= 12;
         }
         y -= 15;
@@ -1456,10 +1679,14 @@ export async function generateAndSendMonthlyAdminReport(
           const tot = parseInt(od.total_tasks, 10);
           const comp = parseInt(od.completed_tasks, 10);
           const pct = Math.round((comp * 100) / tot);
+          
+          const isLagging = pct < 50;
+          const pctClr = isLagging ? rgb(0.9, 0.45, 0) : rgb(0.08, 0.5, 0.24);
+
           page.drawText(name, { x: 50, y, size: 9, font });
           page.drawText(hireDate, { x: 210, y, size: 9, font });
           page.drawText(`${comp} di ${tot}`, { x: 330, y, size: 9, font });
-          page.drawText(`${pct}%`, { x: 460, y, size: 9, font: fontBold });
+          page.drawText(`${pct}%${isLagging ? ' ⚠️ RITARDO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: pctClr });
           y -= 12;
         }
         y -= 15;
@@ -1507,10 +1734,14 @@ export async function generateAndSendMonthlyAdminReport(
           const tot = parseInt(sc.total_shifts, 10);
           const conf = parseInt(sc.confirmed_shifts || '0', 10);
           const pct = tot > 0 ? Math.round((conf * 100) / tot) : 0;
+          
+          const isCritical = pct < 85;
+          const covClr = pct >= 90 ? rgb(0.08, 0.5, 0.24) : (isCritical ? rgb(0.86, 0.15, 0.15) : rgb(0.7, 0.45, 0.0));
+
           page.drawText(sc.store_name, { x: 50, y, size: 9, font });
           page.drawText(String(tot), { x: 210, y, size: 9, font });
           page.drawText(String(conf), { x: 360, y, size: 9, font });
-          page.drawText(`${pct}%`, { x: 460, y, size: 9, font: fontBold, color: pct >= 80 ? rgb(0.08, 0.5, 0.24) : rgb(0.7, 0.45, 0.0) });
+          page.drawText(`${pct}%${isCritical ? ' ⚠️ CRITICO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: covClr });
           y -= 12;
         }
         y -= 15;
@@ -1584,7 +1815,7 @@ export async function generateAndSendMonthlyAdminReport(
       );
 
       checkPageOverflow(60);
-      page.drawText('7. Registro Presenze (Primi 100 Eventi)', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
+      page.drawText('7. Registro Presenze (Attività del Mese)', { x: 50, y, size: 12, font: fontBold, color: rgb(0.79, 0.59, 0.23) });
       page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.79, 0.59, 0.23) });
       y -= 22;
 
@@ -1593,23 +1824,57 @@ export async function generateAndSendMonthlyAdminReport(
         page.drawText('Nessun evento presenza registrato nel periodo.', { x: 50, y, size: 9, font: fontItalic });
         y -= 15;
       } else {
-        checkPageOverflow(20);
-        page.drawText('Collaboratore', { x: 50, y, size: 9, font: fontBold });
-        page.drawText('Tipo', { x: 230, y, size: 9, font: fontBold });
-        page.drawText('Data/Ora', { x: 300, y, size: 9, font: fontBold });
-        page.drawText('Sede', { x: 430, y, size: 9, font: fontBold });
-        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
-        y -= 16;
+        // Aggregate activity
+        let ins = 0, outs = 0, brks = 0;
+        for (const a of attendance) {
+          if (a.event_type === 'checkin') ins++;
+          else if (a.event_type === 'checkout') outs++;
+          else brks++;
+        }
 
-        for (const r of attendance) {
+        // Draw attendance activity summary banner
+        checkPageOverflow(40);
+        page.drawRectangle({
+          x: 50,
+          y: y - 24,
+          width: 512,
+          height: 24,
+          color: rgb(0.96, 0.97, 0.98),
+        });
+        page.drawText(`Attività Rilevata:  Totale Eventi: ${attendance.length}  |  Check-In: ${ins}  ·  Check-Out: ${outs}  ·  Pause/Break: ${brks}`, {
+          x: 62,
+          y: y - 16,
+          size: 8.5,
+          font: fontBold,
+          color: rgb(0.2, 0.2, 0.2),
+        });
+        y -= 36;
+
+        page.drawText('Ultimi Eventi di Presenza Registrati (Max 15):', { x: 50, y, size: 9.5, font: fontBold, color: rgb(0.3, 0.3, 0.3) });
+        y -= 14;
+
+        // Draw table headers
+        checkPageOverflow(20);
+        page.drawText('Collaboratore', { x: 50, y, size: 8.5, font: fontBold });
+        page.drawText('Tipo Evento', { x: 230, y, size: 8.5, font: fontBold });
+        page.drawText('Data / Ora Registrazione', { x: 340, y, size: 8.5, font: fontBold });
+        page.drawText('Sede', { x: 480, y, size: 8.5, font: fontBold });
+        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+        y -= 14;
+
+        for (const r of attendance.slice(0, 15)) {
           checkPageOverflow(16);
           const name = `${r.surname} ${r.name}`;
           const time = new Date(r.event_time).toLocaleString('it-IT');
           const type = r.event_type === 'checkin' ? 'Check-In' : r.event_type === 'checkout' ? 'Check-Out' : r.event_type === 'break_start' ? 'Inizio Pausa' : 'Fine Pausa';
-          page.drawText(name.length > 30 ? name.substring(0, 27) + '...' : name, { x: 50, y, size: 9, font });
-          page.drawText(type, { x: 230, y, size: 9, font });
-          page.drawText(time, { x: 300, y, size: 9, font });
-          page.drawText(r.store_name || '-', { x: 430, y, size: 9, font });
+          
+          const isCheckin = r.event_type === 'checkin';
+          const typeClr = isCheckin ? rgb(0.08, 0.5, 0.24) : rgb(0.2, 0.2, 0.2);
+
+          page.drawText(name.length > 25 ? name.substring(0, 22) + '...' : name, { x: 50, y, size: 8.5, font });
+          page.drawText(type, { x: 230, y, size: 8.5, font: isCheckin ? fontBold : font, color: typeClr });
+          page.drawText(time, { x: 340, y, size: 8.5, font });
+          page.drawText((r.store_name || '-').length > 15 ? (r.store_name || '-').substring(0, 12) + '...' : r.store_name || '-', { x: 480, y, size: 8.5, font });
           y -= 12;
         }
         y -= 15;
@@ -1723,25 +1988,59 @@ export async function generateAndSendMonthlyAdminReport(
         page.drawText('Nessuna anomalia rilevata nel periodo di analisi.', { x: 50, y, size: 9, font: fontItalic });
         y -= 15;
       } else {
+        const highA = anomaliesList.filter(a => a.severity === 'Alta').length;
+        const medA = anomaliesList.filter(a => a.severity === 'Media').length;
+
+        // Draw anomalies summary box
+        checkPageOverflow(40);
+        page.drawRectangle({
+          x: 50,
+          y: y - 24,
+          width: 512,
+          height: 24,
+          color: highA > 0 ? rgb(0.99, 0.95, 0.95) : rgb(0.96, 0.97, 0.98),
+        });
+        page.drawText(`Riepilogo Anomalie: Totale Rilevate: ${anomaliesList.length}  |  🚨 Gravità Alta: ${highA}  ·  ⚠️ Gravità Media: ${medA}`, {
+          x: 62,
+          y: y - 16,
+          size: 8.5,
+          font: fontBold,
+          color: highA > 0 ? rgb(0.75, 0.1, 0.1) : rgb(0.2, 0.2, 0.2),
+        });
+        y -= 36;
+
         checkPageOverflow(20);
-        page.drawText('Collaboratore', { x: 50, y, size: 9, font: fontBold });
-        page.drawText('Data', { x: 210, y, size: 9, font: fontBold });
-        page.drawText('Dettagli Anomalia', { x: 280, y, size: 9, font: fontBold });
-        page.drawText('Gravità', { x: 480, y, size: 9, font: fontBold });
+        page.drawText('Collaboratore', { x: 50, y, size: 8.5, font: fontBold });
+        page.drawText('Data', { x: 210, y, size: 8.5, font: fontBold });
+        page.drawText('Dettagli Anomalia', { x: 280, y, size: 8.5, font: fontBold });
+        page.drawText('Gravità', { x: 480, y, size: 8.5, font: fontBold });
         page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
         y -= 16;
 
         for (const a of anomaliesList.slice(0, 50)) {
           checkPageOverflow(16);
-          page.drawText(a.name.length > 25 ? a.name.substring(0, 22) + '...' : a.name, { x: 50, y, size: 9, font });
-          page.drawText(a.date, { x: 210, y, size: 9, font });
-          page.drawText(a.desc, { x: 280, y, size: 9, font });
+          const isHigh = a.severity === 'Alta';
+
+          // Highlight high severity anomalies with soft warning background row
+          if (isHigh) {
+            page.drawRectangle({
+              x: 50,
+              y: y - 2,
+              width: 512,
+              height: 12,
+              color: rgb(0.99, 0.94, 0.94),
+            });
+          }
+
+          page.drawText(a.name.length > 25 ? a.name.substring(0, 22) + '...' : a.name, { x: 50, y, size: 8.5, font });
+          page.drawText(a.date, { x: 210, y, size: 8.5, font });
+          page.drawText(a.desc, { x: 280, y, size: 8.5, font });
           page.drawText(a.severity, {
             x: 480,
             y,
-            size: 9,
+            size: 8.5,
             font: fontBold,
-            color: a.severity === 'Alta' ? rgb(0.86, 0.15, 0.15) : rgb(0.7, 0.45, 0.0),
+            color: isHigh ? rgb(0.86, 0.15, 0.15) : rgb(0.7, 0.45, 0.0),
           });
           y -= 12;
         }
