@@ -2245,6 +2245,28 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
         const expirationDate = job.expirationDate
           ? new Date(job.expirationDate).toISOString()
           : null;
+        const companyUpper = company.slug.replace(/-/g, '_').toUpperCase();
+        const companySlugShort = company.slug.split('-')[0].toUpperCase(); // e.g. FUSARO
+        const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] ||
+                         process.env[`INDEED_APPLY_API_TOKEN_${companySlugShort}`] ||
+                         process.env.INDEED_APPLY_API_TOKEN ||
+                         'mock_veylohr_indeed_token_2026';
+
+        const backendBase = resolveBackendBase(req);
+        const indeedApplyParams = new URLSearchParams({
+          'indeed-apply-apiToken': apiToken,
+          'indeed-apply-jobUrl': jobUrl,
+          'indeed-apply-jobTitle': title,
+          'indeed-apply-jobLocation': `${city}, ${country}`,
+          'indeed-apply-jobCompanyName': job.companyName || company.name,
+          'indeed-apply-jobId': String(job.id),
+          'indeed-apply-postUrl': `${backendBase}/api/public/indeed-apply/${company.slug}`,
+          'indeed-apply-name': 'true',
+          'indeed-apply-email': 'true',
+          'indeed-apply-resume': 'true',
+          'indeed-apply-questions': `${backendBase}/api/public/indeed-apply-questions/${company.slug}/${job.id}`
+        });
+        const indeedApplyData = indeedApplyParams.toString();
 
         const xmlFields: string[] = [
           '  <job>',
@@ -2256,6 +2278,7 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           `    <company>${wrapCdata(job.companyName || company.name)}</company>`,
           `    <sourcename>${wrapCdata(job.companyGroupName || job.companyName || company.name)}</sourcename>`,
           `    <email>${wrapCdata(job.companyEmail || company.companyEmail || 'recruitment@fusarouomo.it')}</email>`,
+          `    <indeed-apply-data>${wrapCdata(indeedApplyData)}</indeed-apply-data>`,
           `    <city>${wrapCdata(city)}</city>`,
         ];
 

@@ -43,6 +43,7 @@ import automationsRoutes from './modules/automations/automations.routes';
 import reportsRoutes from './modules/reports/reports.routes';
 import { processEscalationLogic } from './modules/leave/leave.controller';
 import locationRoutes from './modules/location/location.routes';
+import { ssrRendererMiddleware } from './middleware/ssr-renderer.middleware';
 
 dotenv.config();
 
@@ -74,7 +75,14 @@ app.use(cors({
     cb(new Error(`CORS: origin ${origin} not allowed`));
   },
 }));
-app.use(express.json());
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/public/indeed-apply/')) {
+    next();
+  } else {
+    express.json()(req, res, next);
+  }
+});
+app.use(ssrRendererMiddleware);
 
 // Serve uploaded files (avatars) behind authentication — prevents unauthenticated PII access
 const uploadsRoot = process.env.UPLOADS_DIR
