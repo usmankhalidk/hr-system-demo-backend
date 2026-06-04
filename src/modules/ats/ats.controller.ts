@@ -23,6 +23,7 @@ import {
   JobLanguage,
   JobType,
   RemoteType,
+  getIndeedStats,
 } from './ats.service';
 import { getHRAlerts } from './ats.alerts.service';
 import { evaluateAllJobRisks } from './ats.risk.service';
@@ -228,11 +229,13 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
             c.slug AS company_slug,
             c.name AS company_name,
             c.company_email AS company_email,
-            c.city AS company_city,
-            c.state AS company_state,
-            c.country AS company_country
+            COALESCE(j.job_city, c.city) AS resolved_city,
+            COALESCE(j.job_state, c.state) AS resolved_state,
+            COALESCE(j.job_country, c.country) AS resolved_country,
+            COALESCE(j.job_postal_code, s.cap) AS resolved_postal_code
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
+     LEFT JOIN stores s ON s.id = j.store_id
      WHERE (${jobId ? 'j.id = $1' : 'j.reference_id = $1'}) AND j.company_id = $2`,
     [jobId ?? referenceId, companyId],
   );
@@ -256,11 +259,15 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
     jobType: job.job_type,
     isRemote: job.is_remote,
     remoteType: job.remote_type,
-    city: job.job_city || job.company_city || '',
-    state: job.job_state || job.company_state || '',
-    country: job.job_country || job.company_country || '',
+    city: job.resolved_city || '',
+    state: job.resolved_state || '',
+    country: job.resolved_country || '',
+    postalCode: job.resolved_postal_code || '',
     publishedAt: job.published_at,
     createdAt: job.created_at,
+    expirationDate: job.expiration_date || null,
+    indeedApplyTokenConfigured: !!process.env.INDEED_APPLY_API_TOKEN,
+    indeedApplyPostUrl: process.env.INDEED_APPLY_POST_URL || `https://veylohr.com/api/public/indeed-apply/${job.company_slug}`,
   };
 
   ok(res, { job: mappedJob });
@@ -400,6 +407,11 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
       badRequest(res, storeError, 'INVALID_STORE');
       return;
     }
+  }
+
+  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
+    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
+    return;
   }
 
   let job;
@@ -653,6 +665,11 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
   const normalizedStoreId = targetCompanyId !== effectiveCompanyId && requestedStoreId === undefined
     ? null
     : requestedStoreId;
+
+  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
+    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
+    return;
+  }
 
   let updated;
   try {
@@ -1633,6 +1650,32 @@ export const getRisksHandler = asyncHandler(async (req: Request, res: Response) 
   ok(res, { risks });
 });
 
+export const getIndeedStatsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const isSuperAdmin = req.user!.is_super_admin === true;
+  
+  let companyId: number | null = null;
+  
+  const explicitCompanyId = typeof req.query.company_id === 'string'
+    ? Number.parseInt(req.query.company_id, 10)
+    : null;
+
+  if (explicitCompanyId !== null && !Number.isNaN(explicitCompanyId)) {
+    if (!allowedCompanyIds.includes(explicitCompanyId)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+    companyId = explicitCompanyId;
+  } else if (!isSuperAdmin) {
+    companyId = req.user!.companyId ?? allowedCompanyIds[0];
+  }
+
+  const stats = await getIndeedStats(companyId);
+  ok(res, stats);
+});
+
 // ---------------------------------------------------------------------------
 // Public job feed (no auth) — Indeed XML + generic RSS feed
 // ---------------------------------------------------------------------------
@@ -2124,6 +2167,29 @@ export const translatePreviewHandler = asyncHandler(async (req: Request, res: Re
   });
 });
 
+function normalizeState(state: string | null | undefined, city: string | null | undefined): string {
+  if (!state) {
+    if (city) {
+      const lowerCity = city.trim().toLowerCase();
+      if (lowerCity === 'milano' || lowerCity === 'milan') return 'MI';
+      if (lowerCity === 'salerno') return 'SA';
+    }
+    return '';
+  }
+  
+  const cleaned = state.trim();
+  
+  const conversionMap: Record<string, string> = {
+    '25': 'MI',
+    '72': 'SA',
+    'milano': 'MI',
+    'milan': 'MI',
+    'salerno': 'SA',
+  };
+  
+  return conversionMap[cleaned] || conversionMap[cleaned.toLowerCase()] || cleaned;
+}
+
 export const jobFeedHandler = async (req: Request, res: Response): Promise<void> => {
   try {
     const { slug } = req.params;
@@ -2161,12 +2227,13 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
         const descriptionRaw = job.description ?? job.title;
         const description = sanitizeFeedDescription(descriptionRaw) || `<p>${title}</p>`;
 
-        const state = isFullRemote ? '' : (job.state ?? '').trim();
+        const state = isFullRemote ? '' : normalizeState(job.state, city);
         const postalCode = isFullRemote ? '' : (job.postalCode ?? '').trim();
+        const streetAddress = isFullRemote ? '' : (job.address ?? '').trim();
 
         const language = normalizeLanguage(job.language);
         const jobType = normalizeJobType(job.jobType);
-        const referenceNumber = `JOB-${job.id}`;
+        const referenceNumber = job.referenceId || `JOB-${job.id}`;
         const jobCompanySlug = encodeURIComponent(job.companySlug);
         const baseJobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
         const jobUrl = baseJobUrl + (baseJobUrl.includes('?') ? '&' : '?') + 'source=Indeed';
@@ -2187,14 +2254,27 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           `    <requisitionid>REQ-${job.id}</requisitionid>`,
           `    <url>${wrapCdata(jobUrl)}</url>`,
           `    <company>${wrapCdata(job.companyName || company.name)}</company>`,
+          `    <sourcename>${wrapCdata(job.companyGroupName || job.companyName || company.name)}</sourcename>`,
+          `    <email>${wrapCdata(job.companyEmail || company.companyEmail || 'recruitment@fusarouomo.it')}</email>`,
           `    <city>${wrapCdata(city)}</city>`,
-          `    <state>${wrapCdata(state)}</state>`,
-          `    <country>${wrapCdata(country)}</country>`,
-          `    <postalcode>${wrapCdata(postalCode)}</postalcode>`,
-          `    <description>${wrapCdata(description)}</description>`,
-          `    <jobtype>${wrapCdata(jobType)}</jobtype>`,
-          `    <language>${wrapCdata(language)}</language>`,
         ];
+
+        if (state) {
+          xmlFields.push(`    <state>${wrapCdata(state)}</state>`);
+        }
+        if (country) {
+          xmlFields.push(`    <country>${wrapCdata(country)}</country>`);
+        }
+        if (postalCode) {
+          xmlFields.push(`    <postalcode>${wrapCdata(postalCode)}</postalcode>`);
+        }
+        if (streetAddress) {
+          xmlFields.push(`    <streetaddress>${wrapCdata(streetAddress)}</streetaddress>`);
+        }
+
+        xmlFields.push(`    <description>${wrapCdata(description)}</description>`);
+        xmlFields.push(`    <jobtype>${wrapCdata(jobType)}</jobtype>`);
+        xmlFields.push(`    <language>${wrapCdata(language)}</language>`);
 
         if (salaryText) {
           xmlFields.push(`    <salary>${wrapCdata(salaryText)}</salary>`);

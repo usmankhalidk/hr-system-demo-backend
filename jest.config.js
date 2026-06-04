@@ -3,7 +3,7 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
-  testMatch: ['**/__tests__/**/*.test.ts', '**/*.test.ts'],
+  testMatch: ['**/__tests__/**/*.test.ts', '**/*.test.ts', '**/__tests__/**/*.spec.ts', '**/*.spec.ts'],
   moduleFileExtensions: ['ts', 'js', 'json'],
   maxWorkers: 1,
   setupFiles: ['<rootDir>/jest.setup.ts'],
