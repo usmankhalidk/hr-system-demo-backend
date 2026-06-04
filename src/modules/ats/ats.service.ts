@@ -82,6 +82,7 @@ export interface JobPosting {
   status: JobStatus;
   source: string;
   indeedPostId: string | null;
+  referenceId: string | null;
   createdById: number | null;
   createdByName: string | null;
   createdBySurname: string | null;
@@ -272,6 +273,7 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     status: row.status as JobStatus,
     source: row.source as string,
     indeedPostId: row.indeed_post_id as string | null,
+    referenceId: (row.reference_id as string | null) ?? null,
     createdById: row.created_by_id as number | null,
     createdByName: (row.created_by_name as string | null) ?? null,
     createdBySurname: (row.created_by_surname as string | null) ?? null,
@@ -609,6 +611,25 @@ export async function createJob(
     targetRole?: string;
   },
 ): Promise<JobPosting> {
+  const company = await queryOne<{ slug: string }>(
+    `SELECT slug FROM companies WHERE id = $1 LIMIT 1`,
+    [companyId]
+  );
+  if (!company) {
+    throw new Error('Company not found');
+  }
+  const cleanSlug = company.slug.replace(/[^a-zA-Z]/g, '');
+  const prefixRaw = cleanSlug.length >= 2 ? cleanSlug : company.slug;
+  const slugPrefix = prefixRaw.slice(0, 2).toUpperCase().padEnd(2, 'X');
+
+  const countRow = await queryOne<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM job_postings WHERE company_id = $1`,
+    [companyId]
+  );
+  const nextSeq = (countRow?.count ?? 0) + 1;
+  const seqStr = String(nextSeq).padStart(4, '0');
+  const referenceId = `VY-${slugPrefix}-${seqStr}`;
+
   const row = await queryOne<{ id: number }>(
     `INSERT INTO job_postings (
        company_id,
@@ -634,9 +655,10 @@ export async function createJob(
        salary_max,
        salary_period,
        target_role,
+       reference_id,
        published_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
      RETURNING id`,
     [
       companyId,
@@ -664,6 +686,7 @@ export async function createJob(
       data.salaryMax ?? null,
       data.salaryPeriod ?? null,
       data.targetRole ?? null,
+      referenceId,
     ],
   );
   const createdId = row?.id as number | undefined;

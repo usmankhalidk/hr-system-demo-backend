@@ -214,6 +214,58 @@ export const getJobHandler = asyncHandler(async (req: Request, res: Response) =>
   ok(res, { job });
 });
 
+export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const { identifier } = req.params;
+  const isNumeric = /^\d+$/.test(identifier);
+  const jobId = isNumeric ? parseInt(identifier, 10) : null;
+  const referenceId = isNumeric ? null : identifier;
+
+  const job = await queryOne<Record<string, unknown>>(
+    `SELECT j.*,
+            c.slug AS company_slug,
+            c.name AS company_name,
+            c.company_email AS company_email,
+            c.city AS company_city,
+            c.state AS company_state,
+            c.country AS company_country
+     FROM job_postings j
+     JOIN companies c ON c.id = j.company_id
+     WHERE (${jobId ? 'j.id = $1' : 'j.reference_id = $1'}) AND j.company_id = $2`,
+    [jobId ?? referenceId, companyId],
+  );
+
+  if (!job) { notFound(res, 'Annuncio non trovato'); return; }
+
+  const mappedJob = {
+    id: job.id,
+    companyId: job.company_id,
+    companySlug: job.company_slug,
+    companyName: job.company_name,
+    companyEmail: job.company_email,
+    title: job.title,
+    description: job.description,
+    tags: job.tags || [],
+    status: job.status,
+    source: job.source,
+    indeedPostId: job.indeed_post_id,
+    referenceId: job.reference_id,
+    language: job.language,
+    jobType: job.job_type,
+    isRemote: job.is_remote,
+    remoteType: job.remote_type,
+    city: job.job_city || job.company_city || '',
+    state: job.job_state || job.company_state || '',
+    country: job.job_country || job.company_country || '',
+    publishedAt: job.published_at,
+    createdAt: job.created_at,
+  };
+
+  ok(res, { job: mappedJob });
+});
+
 export const createJobHandler = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.user!;
   const companyId = await resolveAtsCompanyId(req);
@@ -2091,15 +2143,20 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
     const jobItems = jobs
       .map((job) => {
         const isFullRemote = job.remoteType === 'remote';
-        const city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
-        const country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
+        let city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
+        let country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
 
         if (!city || !country) {
-          console.warn(`[ATS feed] Skipping job ${job.id}: missing city or country`);
-          return null;
+          if (!city) {
+            city = 'Remote';
+          }
+          if (!country) {
+            country = 'IT';
+          }
+          console.log(`Warning: job ${job.id} missing location — using fallback values`);
         }
 
-        const pubDate = new Date(job.publishedAt ?? job.createdAt).toUTCString();
+        const pubDate = new Date(job.publishedAt ?? job.createdAt).toISOString();
         const title = job.title.trim();
         const descriptionRaw = job.description ?? job.title;
         const description = sanitizeFeedDescription(descriptionRaw) || `<p>${title}</p>`;
@@ -2111,14 +2168,15 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
         const jobType = normalizeJobType(job.jobType);
         const referenceNumber = `JOB-${job.id}`;
         const jobCompanySlug = encodeURIComponent(job.companySlug);
-        const jobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
+        const baseJobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
+        const jobUrl = baseJobUrl + (baseJobUrl.includes('?') ? '&' : '?') + 'source=Indeed';
         const salaryText = buildSalaryText(job.salaryMin, job.salaryMax, job.salaryPeriod ?? null);
         const category = (job.category ?? '').trim() || (job.tags.length > 0 ? job.tags.join(', ') : '');
         const experience = (job.experience ?? '').trim();
         const education = (job.education ?? '').trim();
 
         const expirationDate = job.expirationDate
-          ? new Date(job.expirationDate).toUTCString()
+          ? new Date(job.expirationDate).toISOString()
           : null;
 
         const xmlFields: string[] = [
@@ -2126,6 +2184,7 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           `    <title>${wrapCdata(title)}</title>`,
           `    <date>${wrapCdata(pubDate)}</date>`,
           `    <referencenumber>${wrapCdata(referenceNumber)}</referencenumber>`,
+          `    <requisitionid>REQ-${job.id}</requisitionid>`,
           `    <url>${wrapCdata(jobUrl)}</url>`,
           `    <company>${wrapCdata(job.companyName || company.name)}</company>`,
           `    <city>${wrapCdata(city)}</city>`,
@@ -2157,8 +2216,11 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           xmlFields.push(`    <expirationdate>${wrapCdata(expirationDate)}</expirationdate>`);
         }
 
+        const isHybrid = job.remoteType === 'hybrid';
         if (isFullRemote) {
-          xmlFields.push(`    <remotetype>${wrapCdata('fullremote')}</remotetype>`);
+          xmlFields.push(`    <remotetype>${wrapCdata('Fully remote')}</remotetype>`);
+        } else if (isHybrid) {
+          xmlFields.push(`    <remotetype>${wrapCdata('Hybrid remote')}</remotetype>`);
         }
 
         xmlFields.push('  </job>');
@@ -2171,7 +2233,7 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
 <source>
   <publisher>${wrapCdata(company.name)}</publisher>
   <publisherurl>${wrapCdata(publisherUrl)}</publisherurl>
-  <lastBuildDate>${wrapCdata(new Date().toUTCString())}</lastBuildDate>
+  <lastBuildDate>${wrapCdata(new Date().toISOString())}</lastBuildDate>
 ${jobItems}
 </source>`;
 

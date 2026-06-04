@@ -42,7 +42,7 @@ const storage = multer.diskStorage({
 
 const multerInstance = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIME.includes(file.mimetype)) {
       cb(null, true);
@@ -59,7 +59,7 @@ export const storeLogoUploadMiddleware = (req: Request, res: Response, next: Nex
       return;
     }
     if (err.code === 'LIMIT_FILE_SIZE') {
-      badRequest(res, 'Il file supera il limite di 2MB', 'FILE_TOO_LARGE');
+      badRequest(res, 'Il file supera il limite di 8MB', 'STORE_LOGO_TOO_LARGE');
       return;
     }
     if (err.message === 'INVALID_FILE_TYPE') {

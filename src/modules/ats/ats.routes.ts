@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { authenticate, requireRole, requireModulePermission } from '../../middleware/auth';
 import {
-  listJobsHandler, getJobHandler, createJobHandler, updateJobHandler,
+  listJobsHandler, getJobHandler, getJobComplianceHandler, createJobHandler, updateJobHandler,
   deleteJobHandler, publishJobHandler, syncJobHandler,
   listCandidatesHandler, getCandidateHandler, createCandidateHandler,
   updateCandidateHandler, updateCandidateTagsHandler, deleteCandidateHandler,
@@ -30,10 +30,11 @@ router.use(authenticate);
 router.use(requireModulePermission('ats'));
 
 // Job postings
-router.get('/jobs',               listJobsHandler);
-router.post('/jobs',              requireRole('admin', 'hr'), createJobHandler);
-router.get('/jobs/:id',           getJobHandler);
-router.patch('/jobs/:id',         requireRole('admin', 'hr'), updateJobHandler);
+router.get('/jobs',                         listJobsHandler);
+router.post('/jobs',                        requireRole('admin', 'hr'), createJobHandler);
+router.get('/jobs/:id',                     getJobHandler);
+router.get('/jobs/:identifier/compliance',  requireRole('admin', 'hr'), getJobComplianceHandler);
+router.patch('/jobs/:id',                   requireRole('admin', 'hr'), updateJobHandler);
 router.delete('/jobs/:id',        requireRole('admin', 'hr'), deleteJobHandler);
 router.post('/jobs/:id/publish',  requireRole('admin', 'hr'), publishJobHandler);
 router.post('/jobs/:id/sync',     requireRole('admin', 'hr'), syncJobHandler);
