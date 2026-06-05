@@ -15,6 +15,7 @@ import {
   listInterviewNotificationsHandler, sendInterviewNotificationHandler,
   candidateProfilePdfHandler,
   getIndeedStatsHandler,
+  testSsrHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
 
@@ -76,5 +77,6 @@ router.post('/interviews/:id/notifications/send', requireRole('admin', 'hr'), se
 router.get('/alerts', requireRole('admin', 'hr', 'area_manager', 'store_manager'), getAlertsHandler);
 router.get('/risks',  requireRole('admin', 'hr'), getRisksHandler);
 router.get('/indeed-stats', requireRole('admin', 'hr'), getIndeedStatsHandler);
+router.get('/test-ssr', requireRole('admin', 'hr'), testSsrHandler);
 
 export default router;

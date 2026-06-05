@@ -1673,7 +1673,24 @@ export const getIndeedStatsHandler = asyncHandler(async (req: Request, res: Resp
   }
 
   const stats = await getIndeedStats(companyId);
-  ok(res, stats);
+  
+  let companySlug = 'all';
+  if (companyId) {
+    const comp = await queryOne<{ slug: string }>('SELECT slug FROM companies WHERE id = $1', [companyId]);
+    if (comp) {
+      companySlug = comp.slug;
+    }
+  }
+  
+  const companyUpper = companySlug.replace(/-/g, '_').toUpperCase();
+  const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] || process.env.INDEED_APPLY_API_TOKEN;
+  const isIndeedApplyConfigured = !!apiToken;
+
+  ok(res, {
+    ...stats,
+    isIndeedApplyConfigured,
+    companySlug,
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3177,3 +3194,34 @@ async function sendProfessionalInterviewEmail(params: {
     console.error(`[sendProfessionalInterviewEmail] Failed to send email to ${recipientEmail}:`, err);
   }
 }
+
+export const testSsrHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { url } = req.query;
+  if (typeof url !== 'string' || !url.startsWith('http')) {
+    badRequest(res, 'URL non valido', 'INVALID_URL');
+    return;
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; Indeedbot/1.0)',
+      },
+    });
+
+    const text = await response.text();
+    const isSsrWorking = text.includes('addetto vendite') || text.includes('careers') || text.includes('Position Not Found') || text.includes('Posizioni Aperte') || text.includes('Informativa sui Cookie') || text.includes('Privacy Policy');
+    
+    ok(res, {
+      success: true,
+      isSsrWorking,
+      snippet: text.slice(0, 1000),
+    });
+  } catch (err: any) {
+    ok(res, {
+      success: false,
+      isSsrWorking: false,
+      error: err.message,
+    });
+  }
+});
