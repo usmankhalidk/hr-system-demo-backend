@@ -35,6 +35,7 @@ import onboardingRoutes from './modules/onboarding/onboarding.routes';
 import windowDisplayRoutes from './modules/window-display/window-display.routes';
 import publicCareersRoutes from './modules/publicCareers/publicCareers.routes';
 import emailRoutes from './modules/email/email.routes';
+import { getPublishedJobsForFeed } from './modules/ats/ats.service';
 import { startScheduler } from './jobs/scheduler';
 import transfersRoutes from './modules/transfers/transfers.routes';
 import deviceRoutes from './modules/device/device.routes';
@@ -471,6 +472,68 @@ app.get('/public-cv/:filename', (req, res, next) => {
 app.get('/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Dynamic sitemap.xml
+app.get('/sitemap.xml', async (req, res, next) => {
+  try {
+    const frontendBase = resolveFrontendBase(req);
+    const { jobs } = await getPublishedJobsForFeed('all');
+
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n';
+
+    // Static pages
+    const staticPages = [
+      { path: '/careers', freq: 'daily', priority: '0.8' },
+      { path: '/privacy', freq: 'monthly', priority: '0.5' },
+      { path: '/terms', freq: 'monthly', priority: '0.5' },
+      { path: '/cookie-policy', freq: 'monthly', priority: '0.5' }
+    ];
+
+    for (const page of staticPages) {
+      xml += '  <url>\n';
+      xml += `    <loc>${frontendBase}${page.path}</loc>\n`;
+      xml += `    <changefreq>${page.freq}</changefreq>\n`;
+      xml += `    <priority>${page.priority}</priority>\n`;
+      xml += '  </url>\n';
+    }
+
+    // Dynamic job pages
+    for (const job of jobs) {
+      const jobCompanySlug = encodeURIComponent(job.companySlug);
+      const lastmodDate = job.publishedAt || job.updatedAt;
+      const lastmodStr = lastmodDate ? new Date(lastmodDate).toISOString() : new Date().toISOString();
+
+      xml += '  <url>\n';
+      xml += `    <loc>${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}</loc>\n`;
+      xml += `    <lastmod>${lastmodStr}</lastmod>\n`;
+      xml += '    <changefreq>weekly</changefreq>\n';
+      xml += '    <priority>0.9</priority>\n';
+      xml += '  </url>\n';
+    }
+
+    xml += '</urlset>\n';
+
+    res.header('Content-Type', 'application/xml');
+    res.status(200).send(xml);
+  } catch (err) {
+    next(err);
+  }
+});
+
+function resolveFrontendBase(req: express.Request): string {
+  const raw = process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
+  if (raw && raw.trim() !== '') {
+    return raw.replace(/\/+$/, '');
+  }
+
+  const host = req.get('host');
+  if (host) {
+    return `${req.protocol}://${host}`.replace(/\/+$/, '');
+  }
+
+  return 'http://localhost:5173';
+}
 
 // Phase 1 API Routes
 app.use('/api/auth', authRoutes);

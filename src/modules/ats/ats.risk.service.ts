@@ -40,8 +40,8 @@ export async function evaluateJobRisk(jobPostingId: number, companyId: number): 
   // Flag 1: Fewer than 3 received candidates in last 7 days
   const candRow = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count FROM candidates
-     WHERE job_posting_id = $1 AND status = 'received' AND created_at >= NOW() - INTERVAL '7 days'`,
-    [jobPostingId],
+     WHERE job_posting_id = $1 AND company_id = $2 AND status = 'received' AND created_at >= NOW() - INTERVAL '7 days'`,
+    [jobPostingId, companyId],
   );
   const lowCandidates = parseInt(candRow?.count ?? '0', 10) < 3;
 
@@ -51,8 +51,8 @@ export async function evaluateJobRisk(jobPostingId: number, companyId: number): 
     const intRow = await queryOne<{ count: string }>(
       `SELECT COUNT(*) AS count FROM interviews i
        JOIN candidates c ON c.id = i.candidate_id
-       WHERE c.job_posting_id = $1`,
-      [jobPostingId],
+       WHERE c.job_posting_id = $1 AND c.company_id = $2`,
+      [jobPostingId, companyId],
     );
     noInterviews = parseInt(intRow?.count ?? '0', 10) === 0;
   }
@@ -61,8 +61,8 @@ export async function evaluateJobRisk(jobPostingId: number, companyId: number): 
   let noHires = false;
   if (daysPublished > 30) {
     const hireRow = await queryOne<{ count: string }>(
-      `SELECT COUNT(*) AS count FROM candidates WHERE job_posting_id = $1 AND status = 'hired'`,
-      [jobPostingId],
+      `SELECT COUNT(*) AS count FROM candidates WHERE job_posting_id = $1 AND company_id = $2 AND status = 'hired'`,
+      [jobPostingId, companyId],
     );
     noHires = parseInt(hireRow?.count ?? '0', 10) === 0;
   }
