@@ -41,7 +41,7 @@ const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
 
 const multerInstance = multer({
   storage,
-  limits: { fileSize: 2 * 1024 * 1024 },
+  limits: { fileSize: 8 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIME.includes(file.mimetype)) {
       cb(null, true);
@@ -62,7 +62,7 @@ const bannerStorage = multer.diskStorage({
 
 const bannerMulterInstance = multer({
   storage: bannerStorage,
-  limits: { fileSize: 4 * 1024 * 1024 },
+  limits: { fileSize: 12 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     if (ALLOWED_MIME.includes(file.mimetype)) {
       cb(null, true);
@@ -76,7 +76,7 @@ export const companyLogoUploadMiddleware = (req: Request, res: Response, next: N
   multerInstance(req, res, (err: any) => {
     if (!err) { next(); return; }
     if (err.code === 'LIMIT_FILE_SIZE') {
-      badRequest(res, 'Il file supera il limite di 2MB', 'FILE_TOO_LARGE');
+      badRequest(res, 'Il file supera il limite di 8MB', 'COMPANY_LOGO_TOO_LARGE');
       return;
     }
     if (err.message === 'INVALID_FILE_TYPE') {
@@ -91,7 +91,7 @@ export const companyBannerUploadMiddleware = (req: Request, res: Response, next:
   bannerMulterInstance(req, res, (err: any) => {
     if (!err) { next(); return; }
     if (err.code === 'LIMIT_FILE_SIZE') {
-      badRequest(res, 'Il file supera il limite di 4MB', 'FILE_TOO_LARGE');
+      badRequest(res, 'Il file supera il limite di 12MB', 'COMPANY_BANNER_TOO_LARGE');
       return;
     }
     if (err.message === 'INVALID_FILE_TYPE') {

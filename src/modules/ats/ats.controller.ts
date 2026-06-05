@@ -23,6 +23,7 @@ import {
   JobLanguage,
   JobType,
   RemoteType,
+  getIndeedStats,
 } from './ats.service';
 import { getHRAlerts } from './ats.alerts.service';
 import { evaluateAllJobRisks } from './ats.risk.service';
@@ -214,6 +215,64 @@ export const getJobHandler = asyncHandler(async (req: Request, res: Response) =>
   ok(res, { job });
 });
 
+export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const { identifier } = req.params;
+  const isNumeric = /^\d+$/.test(identifier);
+  const jobId = isNumeric ? parseInt(identifier, 10) : null;
+  const referenceId = isNumeric ? null : identifier;
+
+  const job = await queryOne<Record<string, unknown>>(
+    `SELECT j.*,
+            c.slug AS company_slug,
+            c.name AS company_name,
+            c.company_email AS company_email,
+            COALESCE(j.job_city, c.city) AS resolved_city,
+            COALESCE(j.job_state, c.state) AS resolved_state,
+            COALESCE(j.job_country, c.country) AS resolved_country,
+            COALESCE(j.job_postal_code, s.cap) AS resolved_postal_code
+     FROM job_postings j
+     JOIN companies c ON c.id = j.company_id
+     LEFT JOIN stores s ON s.id = j.store_id
+     WHERE (${jobId ? 'j.id = $1' : 'j.reference_id = $1'}) AND j.company_id = $2`,
+    [jobId ?? referenceId, companyId],
+  );
+
+  if (!job) { notFound(res, 'Annuncio non trovato'); return; }
+
+  const mappedJob = {
+    id: job.id,
+    companyId: job.company_id,
+    companySlug: job.company_slug,
+    companyName: job.company_name,
+    companyEmail: job.company_email,
+    title: job.title,
+    description: job.description,
+    tags: job.tags || [],
+    status: job.status,
+    source: job.source,
+    indeedPostId: job.indeed_post_id,
+    referenceId: job.reference_id,
+    language: job.language,
+    jobType: job.job_type,
+    isRemote: job.is_remote,
+    remoteType: job.remote_type,
+    city: job.resolved_city || '',
+    state: job.resolved_state || '',
+    country: job.resolved_country || '',
+    postalCode: job.resolved_postal_code || '',
+    publishedAt: job.published_at,
+    createdAt: job.created_at,
+    expirationDate: job.expiration_date || null,
+    indeedApplyTokenConfigured: !!process.env.INDEED_APPLY_API_TOKEN,
+    indeedApplyPostUrl: process.env.INDEED_APPLY_POST_URL || `https://veylohr.com/api/public/indeed-apply/${job.company_slug}`,
+  };
+
+  ok(res, { job: mappedJob });
+});
+
 export const createJobHandler = asyncHandler(async (req: Request, res: Response) => {
   const { userId } = req.user!;
   const companyId = await resolveAtsCompanyId(req);
@@ -348,6 +407,11 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
       badRequest(res, storeError, 'INVALID_STORE');
       return;
     }
+  }
+
+  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
+    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
+    return;
   }
 
   let job;
@@ -601,6 +665,11 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
   const normalizedStoreId = targetCompanyId !== effectiveCompanyId && requestedStoreId === undefined
     ? null
     : requestedStoreId;
+
+  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
+    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
+    return;
+  }
 
   let updated;
   try {
@@ -1581,6 +1650,49 @@ export const getRisksHandler = asyncHandler(async (req: Request, res: Response) 
   ok(res, { risks });
 });
 
+export const getIndeedStatsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const isSuperAdmin = req.user!.is_super_admin === true;
+  
+  let companyId: number | null = null;
+  
+  const explicitCompanyId = typeof req.query.company_id === 'string'
+    ? Number.parseInt(req.query.company_id, 10)
+    : null;
+
+  if (explicitCompanyId !== null && !Number.isNaN(explicitCompanyId)) {
+    if (!allowedCompanyIds.includes(explicitCompanyId)) {
+      forbidden(res, 'Nessuna azienda valida selezionata');
+      return;
+    }
+    companyId = explicitCompanyId;
+  } else if (!isSuperAdmin) {
+    companyId = req.user!.companyId ?? allowedCompanyIds[0];
+  }
+
+  const stats = await getIndeedStats(companyId);
+  
+  let companySlug = 'all';
+  if (companyId) {
+    const comp = await queryOne<{ slug: string }>('SELECT slug FROM companies WHERE id = $1', [companyId]);
+    if (comp) {
+      companySlug = comp.slug;
+    }
+  }
+  
+  const companyUpper = companySlug.replace(/-/g, '_').toUpperCase();
+  const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] || process.env.INDEED_APPLY_API_TOKEN;
+  const isIndeedApplyConfigured = !!apiToken;
+
+  ok(res, {
+    ...stats,
+    isIndeedApplyConfigured,
+    companySlug,
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Public job feed (no auth) — Indeed XML + generic RSS feed
 // ---------------------------------------------------------------------------
@@ -2072,6 +2184,29 @@ export const translatePreviewHandler = asyncHandler(async (req: Request, res: Re
   });
 });
 
+function normalizeState(state: string | null | undefined, city: string | null | undefined): string {
+  if (!state) {
+    if (city) {
+      const lowerCity = city.trim().toLowerCase();
+      if (lowerCity === 'milano' || lowerCity === 'milan') return 'MI';
+      if (lowerCity === 'salerno') return 'SA';
+    }
+    return '';
+  }
+  
+  const cleaned = state.trim();
+  
+  const conversionMap: Record<string, string> = {
+    '25': 'MI',
+    '72': 'SA',
+    'milano': 'MI',
+    'milan': 'MI',
+    'salerno': 'SA',
+  };
+  
+  return conversionMap[cleaned] || conversionMap[cleaned.toLowerCase()] || cleaned;
+}
+
 export const jobFeedHandler = async (req: Request, res: Response): Promise<void> => {
   try {
     const { slug } = req.params;
@@ -2091,51 +2226,95 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
     const jobItems = jobs
       .map((job) => {
         const isFullRemote = job.remoteType === 'remote';
-        const city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
-        const country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
+        let city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
+        let country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
 
         if (!city || !country) {
-          console.warn(`[ATS feed] Skipping job ${job.id}: missing city or country`);
-          return null;
+          if (!city) {
+            city = 'Remote';
+          }
+          if (!country) {
+            country = 'IT';
+          }
+          console.log(`Warning: job ${job.id} missing location — using fallback values`);
         }
 
-        const pubDate = new Date(job.publishedAt ?? job.createdAt).toUTCString();
+        const pubDate = new Date(job.publishedAt ?? job.createdAt).toISOString();
         const title = job.title.trim();
         const descriptionRaw = job.description ?? job.title;
         const description = sanitizeFeedDescription(descriptionRaw) || `<p>${title}</p>`;
 
-        const state = isFullRemote ? '' : (job.state ?? '').trim();
+        const state = isFullRemote ? '' : normalizeState(job.state, city);
         const postalCode = isFullRemote ? '' : (job.postalCode ?? '').trim();
+        const streetAddress = isFullRemote ? '' : (job.address ?? '').trim();
 
         const language = normalizeLanguage(job.language);
         const jobType = normalizeJobType(job.jobType);
-        const referenceNumber = `JOB-${job.id}`;
+        const referenceNumber = job.referenceId || `JOB-${job.id}`;
         const jobCompanySlug = encodeURIComponent(job.companySlug);
-        const jobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
+        const baseJobUrl = `${frontendBase}/careers/${jobCompanySlug}/jobs/${job.id}`;
+        const jobUrl = baseJobUrl + (baseJobUrl.includes('?') ? '&' : '?') + 'source=Indeed';
         const salaryText = buildSalaryText(job.salaryMin, job.salaryMax, job.salaryPeriod ?? null);
         const category = (job.category ?? '').trim() || (job.tags.length > 0 ? job.tags.join(', ') : '');
         const experience = (job.experience ?? '').trim();
         const education = (job.education ?? '').trim();
 
         const expirationDate = job.expirationDate
-          ? new Date(job.expirationDate).toUTCString()
+          ? new Date(job.expirationDate).toISOString()
           : null;
+        const companyUpper = company.slug.replace(/-/g, '_').toUpperCase();
+        const companySlugShort = company.slug.split('-')[0].toUpperCase(); // e.g. FUSARO
+        const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] ||
+                         process.env[`INDEED_APPLY_API_TOKEN_${companySlugShort}`] ||
+                         process.env.INDEED_APPLY_API_TOKEN ||
+                         'mock_veylohr_indeed_token_2026';
+
+        const backendBase = resolveBackendBase(req);
+        const indeedApplyParams = new URLSearchParams({
+          'indeed-apply-apiToken': apiToken,
+          'indeed-apply-jobUrl': jobUrl,
+          'indeed-apply-jobTitle': title,
+          'indeed-apply-jobLocation': `${city}, ${country}`,
+          'indeed-apply-jobCompanyName': job.companyName || company.name,
+          'indeed-apply-jobId': String(job.id),
+          'indeed-apply-postUrl': `${backendBase}/api/public/indeed-apply/${company.slug}`,
+          'indeed-apply-name': 'true',
+          'indeed-apply-email': 'true',
+          'indeed-apply-resume': 'true',
+          'indeed-apply-questions': `${backendBase}/api/public/indeed-apply-questions/${company.slug}/${job.id}`
+        });
+        const indeedApplyData = indeedApplyParams.toString();
 
         const xmlFields: string[] = [
           '  <job>',
           `    <title>${wrapCdata(title)}</title>`,
           `    <date>${wrapCdata(pubDate)}</date>`,
           `    <referencenumber>${wrapCdata(referenceNumber)}</referencenumber>`,
+          `    <requisitionid>REQ-${job.id}</requisitionid>`,
           `    <url>${wrapCdata(jobUrl)}</url>`,
           `    <company>${wrapCdata(job.companyName || company.name)}</company>`,
+          `    <sourcename>${wrapCdata(job.companyGroupName || job.companyName || company.name)}</sourcename>`,
+          `    <email>${wrapCdata(job.companyEmail || company.companyEmail || 'recruitment@fusarouomo.it')}</email>`,
+          `    <indeed-apply-data>${wrapCdata(indeedApplyData)}</indeed-apply-data>`,
           `    <city>${wrapCdata(city)}</city>`,
-          `    <state>${wrapCdata(state)}</state>`,
-          `    <country>${wrapCdata(country)}</country>`,
-          `    <postalcode>${wrapCdata(postalCode)}</postalcode>`,
-          `    <description>${wrapCdata(description)}</description>`,
-          `    <jobtype>${wrapCdata(jobType)}</jobtype>`,
-          `    <language>${wrapCdata(language)}</language>`,
         ];
+
+        if (state) {
+          xmlFields.push(`    <state>${wrapCdata(state)}</state>`);
+        }
+        if (country) {
+          xmlFields.push(`    <country>${wrapCdata(country)}</country>`);
+        }
+        if (postalCode) {
+          xmlFields.push(`    <postalcode>${wrapCdata(postalCode)}</postalcode>`);
+        }
+        if (streetAddress) {
+          xmlFields.push(`    <streetaddress>${wrapCdata(streetAddress)}</streetaddress>`);
+        }
+
+        xmlFields.push(`    <description>${wrapCdata(description)}</description>`);
+        xmlFields.push(`    <jobtype>${wrapCdata(jobType)}</jobtype>`);
+        xmlFields.push(`    <language>${wrapCdata(language)}</language>`);
 
         if (salaryText) {
           xmlFields.push(`    <salary>${wrapCdata(salaryText)}</salary>`);
@@ -2157,8 +2336,11 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           xmlFields.push(`    <expirationdate>${wrapCdata(expirationDate)}</expirationdate>`);
         }
 
+        const isHybrid = job.remoteType === 'hybrid';
         if (isFullRemote) {
-          xmlFields.push(`    <remotetype>${wrapCdata('fullremote')}</remotetype>`);
+          xmlFields.push(`    <remotetype>${wrapCdata('Fully remote')}</remotetype>`);
+        } else if (isHybrid) {
+          xmlFields.push(`    <remotetype>${wrapCdata('Hybrid remote')}</remotetype>`);
         }
 
         xmlFields.push('  </job>');
@@ -2171,7 +2353,7 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
 <source>
   <publisher>${wrapCdata(company.name)}</publisher>
   <publisherurl>${wrapCdata(publisherUrl)}</publisherurl>
-  <lastBuildDate>${wrapCdata(new Date().toUTCString())}</lastBuildDate>
+  <lastBuildDate>${wrapCdata(new Date().toISOString())}</lastBuildDate>
 ${jobItems}
 </source>`;
 
@@ -3012,3 +3194,34 @@ async function sendProfessionalInterviewEmail(params: {
     console.error(`[sendProfessionalInterviewEmail] Failed to send email to ${recipientEmail}:`, err);
   }
 }
+
+export const testSsrHandler = asyncHandler(async (req: Request, res: Response) => {
+  const { url } = req.query;
+  if (typeof url !== 'string' || !url.startsWith('http')) {
+    badRequest(res, 'URL non valido', 'INVALID_URL');
+    return;
+  }
+
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (compatible; Indeedbot/1.0)',
+      },
+    });
+
+    const text = await response.text();
+    const isSsrWorking = text.includes('addetto vendite') || text.includes('careers') || text.includes('Position Not Found') || text.includes('Posizioni Aperte') || text.includes('Informativa sui Cookie') || text.includes('Privacy Policy');
+    
+    ok(res, {
+      success: true,
+      isSsrWorking,
+      snippet: text.slice(0, 1000),
+    });
+  } catch (err: any) {
+    ok(res, {
+      success: false,
+      isSsrWorking: false,
+      error: err.message,
+    });
+  }
+});

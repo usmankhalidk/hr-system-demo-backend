@@ -82,6 +82,7 @@ export interface JobPosting {
   status: JobStatus;
   source: string;
   indeedPostId: string | null;
+  referenceId: string | null;
   createdById: number | null;
   createdByName: string | null;
   createdBySurname: string | null;
@@ -139,6 +140,7 @@ export interface FeedCompany {
   state: string | null;
   country: string | null;
   address: string | null;
+  companyEmail?: string | null;
 }
 
 export interface FeedJob extends JobPosting {
@@ -153,6 +155,7 @@ export interface FeedJob extends JobPosting {
   companyState: string | null;
   companyCountry: string | null;
   companyAddress: string | null;
+  companyEmail?: string | null;
 }
 
 export interface Interview {
@@ -272,6 +275,7 @@ function mapJobPosting(row: Record<string, unknown>): JobPosting {
     status: row.status as JobStatus,
     source: row.source as string,
     indeedPostId: row.indeed_post_id as string | null,
+    referenceId: (row.reference_id as string | null) ?? null,
     createdById: row.created_by_id as number | null,
     createdByName: (row.created_by_name as string | null) ?? null,
     createdBySurname: (row.created_by_surname as string | null) ?? null,
@@ -338,6 +342,7 @@ function mapFeedJob(row: Record<string, unknown>): FeedJob {
     companyState: row.company_state as string | null,
     companyCountry: row.company_country as string | null,
     companyAddress: row.company_address as string | null,
+    companyEmail: row.company_email as string | null,
   };
 }
 
@@ -468,6 +473,8 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
       `SELECT j.*,
               c.name AS company_name,
               c.slug AS company_slug,
+              c.company_email AS company_email,
+              cg.name AS company_group_name,
               s.name AS store_name,
               s.address AS store_address,
               s.cap AS store_postal_code,
@@ -486,6 +493,7 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
               CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
        FROM job_postings j
        JOIN companies c ON c.id = j.company_id
+       LEFT JOIN company_groups cg ON cg.id = c.group_id
        LEFT JOIN stores s ON s.id = j.store_id
        WHERE c.is_active = true
          AND j.status = 'published'
@@ -501,6 +509,7 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
         state: null,
         country: null,
         address: null,
+        companyEmail: 'recruitment@veylohr.com',
       },
       jobs: rows.map(mapFeedJob),
     };
@@ -509,11 +518,11 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
   const numericId = /^\d+$/.test(identifier) ? parseInt(identifier, 10) : null;
   const company = await queryOne<FeedCompany>(
     numericId
-      ? `SELECT id, name, slug, city, state, country, address
+      ? `SELECT id, name, slug, city, state, country, address, company_email AS "companyEmail"
          FROM companies
          WHERE id = $1 AND is_active = true
          LIMIT 1`
-      : `SELECT id, name, slug, city, state, country, address
+      : `SELECT id, name, slug, city, state, country, address, company_email AS "companyEmail"
          FROM companies
          WHERE slug = $1 AND is_active = true
          LIMIT 1`,
@@ -525,6 +534,8 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
       `SELECT j.*,
         c.name AS company_name,
         c.slug AS company_slug,
+        c.company_email AS company_email,
+        cg.name AS company_group_name,
             s.name AS store_name,
             s.address AS store_address,
             s.cap AS store_postal_code,
@@ -543,6 +554,7 @@ export async function getPublishedJobsForFeed(identifier: string): Promise<{ com
           CONCAT_WS(', ', COALESCE(j.job_city, c.city), COALESCE(j.job_state, c.state), COALESCE(j.job_country, c.country)) AS location
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
+     LEFT JOIN company_groups cg ON cg.id = c.group_id
      LEFT JOIN stores s ON s.id = j.store_id
      WHERE j.company_id = $1 AND j.status = 'published'
      ORDER BY COALESCE(j.published_at, j.created_at) DESC`,
@@ -609,6 +621,25 @@ export async function createJob(
     targetRole?: string;
   },
 ): Promise<JobPosting> {
+  const company = await queryOne<{ slug: string }>(
+    `SELECT slug FROM companies WHERE id = $1 LIMIT 1`,
+    [companyId]
+  );
+  if (!company) {
+    throw new Error('Company not found');
+  }
+  const cleanSlug = company.slug.replace(/[^a-zA-Z]/g, '');
+  const prefixRaw = cleanSlug.length >= 2 ? cleanSlug : company.slug;
+  const slugPrefix = prefixRaw.slice(0, 2).toUpperCase().padEnd(2, 'X');
+
+  const countRow = await queryOne<{ count: number }>(
+    `SELECT COUNT(*)::int AS count FROM job_postings WHERE company_id = $1`,
+    [companyId]
+  );
+  const nextSeq = (countRow?.count ?? 0) + 1;
+  const seqStr = String(nextSeq).padStart(4, '0');
+  const referenceId = `VY-${slugPrefix}-${seqStr}`;
+
   const row = await queryOne<{ id: number }>(
     `INSERT INTO job_postings (
        company_id,
@@ -634,9 +665,10 @@ export async function createJob(
        salary_max,
        salary_period,
        target_role,
+       reference_id,
        published_at
      )
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
      RETURNING id`,
     [
       companyId,
@@ -664,6 +696,7 @@ export async function createJob(
       data.salaryMax ?? null,
       data.salaryPeriod ?? null,
       data.targetRole ?? null,
+      referenceId,
     ],
   );
   const createdId = row?.id as number | undefined;
@@ -1680,3 +1713,129 @@ export async function listAllInterviewFeedbackComments(
     updatedAt: r.updated_at as string,
   }));
 }
+
+export interface IndeedStats {
+  companiesOnFeed: number;
+  livePositions: number;
+  indeedCandidatesThisMonth: number;
+  totalIndeedCandidates: number;
+  totalDirectCandidates: number;
+  monthlyTrend: Array<{
+    month: string;
+    indeedCandidates: number;
+    directCandidates: number;
+    newPositionsPublished: number;
+  }>;
+}
+
+export async function getIndeedStats(companyId: number | null): Promise<IndeedStats> {
+  // Query 1: companiesOnFeed
+  const companiesOnFeedQuery = companyId
+    ? `SELECT COUNT(DISTINCT company_id)::int AS count FROM job_postings WHERE status = 'published' AND company_id = $1`
+    : `SELECT COUNT(DISTINCT company_id)::int AS count FROM job_postings WHERE status = 'published'`;
+  const companiesOnFeedParams = companyId ? [companyId] : [];
+  const companiesOnFeedRow = await queryOne<{ count: number }>(companiesOnFeedQuery, companiesOnFeedParams);
+  const companiesOnFeed = companiesOnFeedRow?.count ?? 0;
+
+  // Query 2: livePositions
+  const livePositionsQuery = companyId
+    ? `SELECT COUNT(*)::int AS count FROM job_postings WHERE status = 'published' AND company_id = $1`
+    : `SELECT COUNT(*)::int AS count FROM job_postings WHERE status = 'published'`;
+  const livePositionsParams = companyId ? [companyId] : [];
+  const livePositionsRow = await queryOne<{ count: number }>(livePositionsQuery, livePositionsParams);
+  const livePositions = livePositionsRow?.count ?? 0;
+
+  // Query 3: indeedCandidatesThisMonth
+  const indeedCandidatesThisMonthQuery = companyId
+    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP) AND company_id = $1`
+    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP)`;
+  const indeedCandidatesThisMonthParams = companyId ? [companyId] : [];
+  const indeedCandidatesThisMonthRow = await queryOne<{ count: number }>(indeedCandidatesThisMonthQuery, indeedCandidatesThisMonthParams);
+  const indeedCandidatesThisMonth = indeedCandidatesThisMonthRow?.count ?? 0;
+
+  // Query 4: totalIndeedCandidates
+  const totalIndeedCandidatesQuery = companyId
+    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND company_id = $1`
+    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed'`;
+  const totalIndeedCandidatesParams = companyId ? [companyId] : [];
+  const totalIndeedCandidatesRow = await queryOne<{ count: number }>(totalIndeedCandidatesQuery, totalIndeedCandidatesParams);
+  const totalIndeedCandidates = totalIndeedCandidatesRow?.count ?? 0;
+
+  // Query 5: totalDirectCandidates
+  const totalDirectCandidatesQuery = companyId
+    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source != 'indeed' AND company_id = $1`
+    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source != 'indeed'`;
+  const totalDirectCandidatesParams = companyId ? [companyId] : [];
+  const totalDirectCandidatesRow = await queryOne<{ count: number }>(totalDirectCandidatesQuery, totalDirectCandidatesParams);
+  const totalDirectCandidates = totalDirectCandidatesRow?.count ?? 0;
+
+  // Query 6: monthlyTrend (last 6 calendar months)
+  const trendQuery = `
+    WITH months AS (
+      SELECT DATE_TRUNC('month', m) as m_start,
+             DATE_TRUNC('month', m) + INTERVAL '1 month' as m_end
+      FROM GENERATE_SERIES(
+        DATE_TRUNC('month', CURRENT_TIMESTAMP) - INTERVAL '5 months',
+        DATE_TRUNC('month', CURRENT_TIMESTAMP),
+        INTERVAL '1 month'
+      ) m
+    )
+    SELECT 
+      months.m_start as month_start,
+      COALESCE(c_indeed.count, 0)::int as indeed_candidates,
+      COALESCE(c_direct.count, 0)::int as direct_candidates,
+      COALESCE(j_pub.count, 0)::int as new_positions_published
+    FROM months
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int as count
+      FROM candidates
+      WHERE source = 'indeed'
+        AND created_at >= months.m_start
+        AND created_at < months.m_end
+        AND ($1::int IS NULL OR company_id = $1)
+    ) c_indeed ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int as count
+      FROM candidates
+      WHERE source != 'indeed'
+        AND created_at >= months.m_start
+        AND created_at < months.m_end
+        AND ($1::int IS NULL OR company_id = $1)
+    ) c_direct ON TRUE
+    LEFT JOIN LATERAL (
+      SELECT COUNT(*)::int as count
+      FROM job_postings
+      WHERE status = 'published'
+        AND published_at >= months.m_start
+        AND published_at < months.m_end
+        AND ($1::int IS NULL OR company_id = $1)
+    ) j_pub ON TRUE
+    ORDER BY months.m_start DESC
+  `;
+
+  const trendRows = await query<Record<string, unknown>>(trendQuery, [companyId]);
+
+  const monthsList = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  
+  const monthlyTrend = trendRows.map(row => {
+    const d = new Date(row.month_start as string | Date);
+    const monthName = monthsList[d.getMonth()];
+    const year = d.getFullYear();
+    return {
+      month: `${monthName} ${year}`,
+      indeedCandidates: row.indeed_candidates as number,
+      directCandidates: row.direct_candidates as number,
+      newPositionsPublished: row.new_positions_published as number
+    };
+  });
+
+  return {
+    companiesOnFeed,
+    livePositions,
+    indeedCandidatesThisMonth,
+    totalIndeedCandidates,
+    totalDirectCandidates,
+    monthlyTrend
+  };
+}
+

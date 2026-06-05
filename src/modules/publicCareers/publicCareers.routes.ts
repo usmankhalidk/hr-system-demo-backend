@@ -1,13 +1,17 @@
 import fs from 'fs';
 import path from 'path';
-import { NextFunction, Request, Response, Router } from 'express';
+import crypto from 'crypto';
+import { NextFunction, Request, Response, Router, raw } from 'express';
 import multer from 'multer';
 import { query, queryOne } from '../../config/database';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { badRequest, conflict, created, notFound, ok } from '../../utils/response';
 import { sendEmailForCompany } from '../../services/email.service';
+import { createCandidate } from '../ats/ats.service';
+import { sendNotification } from '../notifications/notifications.service';
+import { t } from '../../utils/i18n';
 
-type PublicJobRow = {
+export type PublicJobRow = {
   id: number;
   status: string;
   company_id: number;
@@ -61,7 +65,7 @@ type PublicJobRow = {
   posted_by_store_name: string | null;
 };
 
-type PublicCompanyRow = {
+export type PublicCompanyRow = {
   id: number;
   name: string;
   slug: string;
@@ -79,7 +83,7 @@ type PublicCompanyRow = {
   open_roles_count: number;
 };
 
-type PublicHiringContactRow = {
+export type PublicHiringContactRow = {
   id: number;
   name: string;
   surname: string | null;
@@ -188,7 +192,7 @@ function resumeUploadMiddleware(req: Request, res: Response, next: NextFunction)
   });
 }
 
-function mapPublicJob(row: PublicJobRow): Record<string, unknown> {
+export function mapPublicJob(row: PublicJobRow): Record<string, any> {
   const language = row.language ?? 'it';
   const jobType = row.job_type ?? 'fulltime';
   const remoteType = row.remote_type ?? ((row.is_remote ?? false) ? 'remote' : 'onsite');
@@ -288,7 +292,7 @@ function mapHiringContact(row: PublicHiringContactRow): Record<string, unknown> 
   };
 }
 
-async function getPublicCompanyBySlug(companySlug: string): Promise<PublicCompanyRow | null> {
+export async function getPublicCompanyBySlug(companySlug: string): Promise<PublicCompanyRow | null> {
   return queryOne<PublicCompanyRow>(
     `SELECT c.id,
             c.name,
@@ -320,7 +324,7 @@ async function getPublicCompanyBySlug(companySlug: string): Promise<PublicCompan
   );
 }
 
-async function getPublicCompanyById(companyId: number): Promise<PublicCompanyRow | null> {
+export async function getPublicCompanyById(companyId: number): Promise<PublicCompanyRow | null> {
   return queryOne<PublicCompanyRow>(
     `SELECT c.id,
             c.name,
@@ -352,7 +356,7 @@ async function getPublicCompanyById(companyId: number): Promise<PublicCompanyRow
   );
 }
 
-async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
+export async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
   const params: unknown[] = [];
   let whereClause = `c.is_active = true AND j.status IN ('published', 'closed')`;
 
@@ -439,7 +443,7 @@ async function listPublicJobs(companySlug?: string): Promise<PublicJobRow[]> {
   );
 }
 
-async function getPublicJobById(jobId: number, companySlug?: string): Promise<PublicJobRow | null> {
+export async function getPublicJobById(jobId: number, companySlug?: string): Promise<PublicJobRow | null> {
   const params: unknown[] = [jobId];
   const companyFilter = companySlug
     ? ` AND c.slug = $2`
@@ -898,5 +902,175 @@ router.get('/:companySlug/jobs/:jobId', asyncHandler(async (req: Request, res: R
     hiring_team: hiringTeam.map(mapHiringContact),
   });
 }));
+
+// Route 2: GET /api/public/indeed-apply-questions/:companySlug/:jobId
+router.get(
+  '/indeed-apply-questions/:companySlug/:jobId',
+  asyncHandler(async (req: Request, res: Response) => {
+    res.json({ questions: [] });
+  })
+);
+
+// Route 1: POST /api/public/indeed-apply/:companySlug
+router.post(
+  '/indeed-apply/:companySlug',
+  raw({ type: '*/*' }),
+  asyncHandler(async (req: Request, res: Response) => {
+    const { companySlug } = req.params;
+    const signature = req.headers['x-indeed-signature'] as string;
+    const rawBody = req.body; // Buffer, since we used raw() middleware
+
+    // Send HTTP 200 immediately
+    res.status(200).send('OK');
+
+    // Run signature verification and candidate creation asynchronously
+    setImmediate(async () => {
+      try {
+        // Resolve company-specific or default secret
+        const companyUpper = (companySlug || '').replace(/-/g, '_').toUpperCase();
+        const companySlugShort = (companySlug || '').split('-')[0].toUpperCase();
+        const secret = process.env[`INDEED_APPLY_SECRET_${companyUpper}`] ||
+                       process.env[`INDEED_APPLY_SECRET_${companySlugShort}`] ||
+                       process.env.INDEED_APPLY_SECRET ||
+                       'mock_veylohr_indeed_secret_2026';
+
+        // Calculate HMAC signature
+        const hmac = crypto.createHmac('sha1', secret);
+        hmac.update(rawBody || '');
+        const expectedSig = hmac.digest('base64');
+
+        if (!signature || signature !== expectedSig) {
+          console.warn('Indeed Apply: invalid HMAC signature — payload discarded');
+          return;
+        }
+
+        // Parse JSON payload
+        let payload: any;
+        try {
+          payload = JSON.parse(rawBody.toString());
+        } catch (err: any) {
+          console.error('Indeed Apply: malformed JSON payload:', err.message);
+          return;
+        }
+
+        const { applicant, job: indeedJob, screenerQuestionsAndAnswers } = payload;
+        const fullName = applicant?.fullName || '';
+        const email = applicant?.email || '';
+        const phone = applicant?.phoneNumber || '';
+        const resumeData = applicant?.resume?.file?.data || null;  // Base64
+        const resumeFileName = applicant?.resume?.file?.fileName || 'resume.pdf';
+        const jobIdStr = indeedJob?.jobId || '';
+
+        const jobId = parseInt(jobIdStr, 10);
+        if (Number.isNaN(jobId)) {
+          console.error(`Indeed Apply: invalid job ID: ${jobIdStr}`);
+          return;
+        }
+
+        // Verify job and company exist
+        const job = await queryOne<{ id: number; company_id: number; store_id: number | null; status: string; title: string; company_name: string }>(
+          `SELECT j.id, j.company_id, j.store_id, j.status, j.title, c.name AS company_name
+           FROM job_postings j
+           JOIN companies c ON c.id = j.company_id
+           WHERE j.id = $1`,
+          [jobId],
+        );
+
+        if (!job) {
+          console.error(`Indeed Apply: job with ID ${jobId} not found`);
+          return;
+        }
+
+        const company = await queryOne<{ id: number; slug: string; name: string }>(
+          `SELECT id, slug, name FROM companies WHERE id = $1 LIMIT 1`,
+          [job.company_id],
+        );
+
+        if (!company || company.slug !== companySlug) {
+          console.error(`Indeed Apply: company slug mismatch: URL slug "${companySlug}", job company slug "${company?.slug}"`);
+          return;
+        }
+
+        // Decode and save resume
+        let resumeRelativePath: string | undefined = undefined;
+        if (resumeData) {
+          try {
+            const resumeBuffer = Buffer.from(resumeData, 'base64');
+            const ext = path.extname(resumeFileName) || '.pdf';
+            const baseName = path.basename(resumeFileName, ext);
+            const random = Math.random().toString(36).slice(2, 10);
+            const uniqueFileName = `indeed-${baseName}-${Date.now()}-${random}${ext}`;
+            const absolutePath = path.join(RESUME_UPLOAD_DIR, uniqueFileName);
+
+            fs.writeFileSync(absolutePath, resumeBuffer);
+            resumeRelativePath = `public-cv/${uniqueFileName}`;
+          } catch (fileErr: any) {
+            console.error('Indeed Apply: failed to save resume file:', fileErr.message);
+          }
+        }
+
+        // Create candidate record
+        const sourceRef = JSON.stringify({
+          channel: 'indeed',
+          application_source: 'indeed',
+          application_channel: 'indeed',
+          screener_answers: screenerQuestionsAndAnswers || [],
+          phone,
+          resume_filename: resumeFileName,
+        });
+
+        const candidate = await createCandidate(job.company_id, {
+          fullName,
+          email: email || undefined,
+          phone: phone || undefined,
+          jobPostingId: job.id,
+          storeId: job.store_id || undefined,
+          tags: ['indeed-apply', 'external'],
+          cvPath: resumeRelativePath,
+          resumePath: resumeRelativePath,
+          source: 'indeed',
+          sourceRef,
+          gdprConsent: true,
+          appliedAt: new Date().toISOString(),
+        });
+
+        // Trigger recruiter notification flow
+        const recruiters = await query<{ id: number; locale: string | null }>(
+          `SELECT id, locale FROM users
+           WHERE company_id = $1 AND role IN ('admin', 'hr') AND status = 'active'`,
+          [job.company_id],
+        );
+
+        for (const recruiter of recruiters) {
+          const recLocale = recruiter.locale || 'it';
+          const title = t(recLocale, 'notifications.ats_candidate_received.title');
+          const baseMsg = t(recLocale, 'notifications.ats_candidate_received.message', { name: candidate.fullName });
+          const message = recLocale === 'it'
+            ? `${baseMsg} (Fonte: Indeed)`
+            : `${baseMsg} (Source: Indeed)`;
+
+          await sendNotification({
+            companyId: job.company_id,
+            userId: recruiter.id,
+            type: 'ats.candidate_received',
+            title,
+            message,
+            priority: 'high',
+            locale: recLocale,
+            channels: ['in_app', 'email'],
+            emailSubject: recLocale === 'it'
+              ? `Nuova candidatura da Indeed: ${candidate.fullName}`
+              : `New application from Indeed: ${candidate.fullName}`,
+            emailBody: recLocale === 'it'
+              ? `<p>Il candidato <strong>${candidate.fullName}</strong> ha inviato la sua candidatura da <strong>Indeed</strong> per la posizione di <strong>${job.title}</strong>.</p>`
+              : `<p>Candidate <strong>${candidate.fullName}</strong> has submitted their application from <strong>Indeed</strong> for the position of <strong>${job.title}</strong>.</p>`,
+          });
+        }
+      } catch (err: any) {
+        console.error('Indeed Apply: error in asynchronous processing:', err.message);
+      }
+    });
+  })
+);
 
 export default router;
