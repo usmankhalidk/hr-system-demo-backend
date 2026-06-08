@@ -3225,3 +3225,149 @@ export const testSsrHandler = asyncHandler(async (req: Request, res: Response) =
     });
   }
 });
+
+export const listScreenerQuestionsHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const jobId = parseInt(req.params.jobId, 10);
+  if (Number.isNaN(jobId)) { badRequest(res, 'ID annuncio non valido'); return; }
+
+  const job = await queryOne('SELECT id FROM job_postings WHERE id = $1 AND company_id = $2', [jobId, companyId]);
+  if (!job) { notFound(res, 'Annuncio non trovato'); return; }
+
+  const questions = await query(
+    `SELECT id, job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order, created_at, updated_at
+     FROM job_screener_questions
+     WHERE job_id = $1 AND company_id = $2
+     ORDER BY display_order ASC, id ASC`,
+    [jobId, companyId]
+  );
+  ok(res, { questions });
+});
+
+export const createScreenerQuestionHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const jobId = parseInt(req.params.jobId, 10);
+  if (Number.isNaN(jobId)) { badRequest(res, 'ID annuncio non valido'); return; }
+
+  const job = await queryOne('SELECT id FROM job_postings WHERE id = $1 AND company_id = $2', [jobId, companyId]);
+  if (!job) { notFound(res, 'Annuncio non trovato'); return; }
+
+  const { question_text, question_type, options, is_knockout, knockout_value, display_order } = req.body;
+  if (!question_text || !question_type) {
+    badRequest(res, 'Testo e tipo della domanda richiesti');
+    return;
+  }
+  const validTypes = ['radio', 'checkbox', 'text', 'number'];
+  if (!validTypes.includes(question_type)) {
+    badRequest(res, 'Tipo della domanda non valido');
+    return;
+  }
+
+  const result = await queryOne(
+    `INSERT INTO job_screener_questions (job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+     RETURNING *`,
+    [
+      jobId,
+      companyId,
+      question_text.trim(),
+      question_type,
+      options ? (typeof options === 'string' ? options : JSON.stringify(options)) : '[]',
+      !!is_knockout,
+      knockout_value ?? null,
+      parseInt(display_order, 10) || 0
+    ]
+  );
+  created(res, { question: result });
+});
+
+export const updateScreenerQuestionHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const jobId = parseInt(req.params.jobId, 10);
+  if (Number.isNaN(jobId)) { badRequest(res, 'ID annuncio non valido'); return; }
+
+  const qId = parseInt(req.params.qId, 10);
+  if (Number.isNaN(qId)) { badRequest(res, 'ID domanda non valido'); return; }
+
+  const existing = await queryOne(
+    'SELECT id FROM job_screener_questions WHERE id = $1 AND job_id = $2 AND company_id = $3',
+    [qId, jobId, companyId]
+  );
+  if (!existing) { notFound(res, 'Domanda non trovata'); return; }
+
+  const { question_text, question_type, options, is_knockout, knockout_value, display_order } = req.body;
+
+  const updates: string[] = [];
+  const params: any[] = [qId, jobId, companyId];
+  let paramIndex = 4;
+
+  if (question_text !== undefined) {
+    updates.push(`question_text = $${paramIndex++}`);
+    params.push(question_text.trim());
+  }
+  if (question_type !== undefined) {
+    const validTypes = ['radio', 'checkbox', 'text', 'number'];
+    if (!validTypes.includes(question_type)) {
+      badRequest(res, 'Tipo della domanda non valido');
+      return;
+    }
+    updates.push(`question_type = $${paramIndex++}`);
+    params.push(question_type);
+  }
+  if (options !== undefined) {
+    updates.push(`options = $${paramIndex++}`);
+    params.push(typeof options === 'string' ? options : JSON.stringify(options));
+  }
+  if (is_knockout !== undefined) {
+    updates.push(`is_knockout = $${paramIndex++}`);
+    params.push(!!is_knockout);
+  }
+  if (knockout_value !== undefined) {
+    updates.push(`knockout_value = $${paramIndex++}`);
+    params.push(knockout_value);
+  }
+  if (display_order !== undefined) {
+    updates.push(`display_order = $${paramIndex++}`);
+    params.push(parseInt(display_order, 10) || 0);
+  }
+
+  updates.push(`updated_at = NOW()`);
+
+  const updated = await queryOne(
+    `UPDATE job_screener_questions
+     SET ${updates.join(', ')}
+     WHERE id = $1 AND job_id = $2 AND company_id = $3
+     RETURNING *`,
+    params
+  );
+  ok(res, { question: updated });
+});
+
+export const deleteScreenerQuestionHandler = asyncHandler(async (req: Request, res: Response) => {
+  const companyId = await resolveAtsCompanyId(req);
+  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  const jobId = parseInt(req.params.jobId, 10);
+  if (Number.isNaN(jobId)) { badRequest(res, 'ID annuncio non valido'); return; }
+
+  const qId = parseInt(req.params.qId, 10);
+  if (Number.isNaN(qId)) { badRequest(res, 'ID domanda non valido'); return; }
+
+  const existing = await queryOne(
+    'SELECT id FROM job_screener_questions WHERE id = $1 AND job_id = $2 AND company_id = $3',
+    [qId, jobId, companyId]
+  );
+  if (!existing) { notFound(res, 'Domanda non trovata'); return; }
+
+  await query(
+    'DELETE FROM job_screener_questions WHERE id = $1 AND job_id = $2 AND company_id = $3',
+    [qId, jobId, companyId]
+  );
+  ok(res, { success: true });
+});
