@@ -2277,11 +2277,11 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           'indeed-apply-jobLocation': `${city}, ${country}`,
           'indeed-apply-jobCompanyName': job.companyName || company.name,
           'indeed-apply-jobId': String(job.id),
-          'indeed-apply-postUrl': `${backendBase}/api/public/indeed-apply/${company.slug}`,
+          'indeed-apply-postUrl': `${backendBase}/api/public/indeed-apply/${job.companySlug}`,
           'indeed-apply-name': 'true',
           'indeed-apply-email': 'true',
           'indeed-apply-resume': 'true',
-          'indeed-apply-questions': `${backendBase}/api/public/indeed-apply-questions/${company.slug}/${job.id}`
+          'indeed-apply-questions': `${backendBase}/api/public/indeed-apply-questions/${job.companySlug}/${job.id}`
         });
         const indeedApplyData = indeedApplyParams.toString();
 
