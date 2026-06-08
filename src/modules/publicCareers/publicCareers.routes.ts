@@ -965,11 +965,40 @@ router.get(
       };
 
       if (row.question_type === 'radio' || row.question_type === 'checkbox') {
-        formatted.options = optionsArray.map((opt: any) => {
-          const label = typeof opt === 'string' ? opt : (opt.label || opt.value || '');
-          const value = typeof opt === 'string' ? opt : (opt.value || opt.label || '');
-          return { label, value };
-        });
+        const isYesNo = row.question_type === 'radio' && optionsArray.length === 2 && (() => {
+          const opt0 = typeof optionsArray[0] === 'string' ? optionsArray[0] : (optionsArray[0]?.value || optionsArray[0]?.label || '');
+          const opt1 = typeof optionsArray[1] === 'string' ? optionsArray[1] : (optionsArray[1]?.value || optionsArray[1]?.label || '');
+          const norm0 = String(opt0).toLowerCase().trim();
+          const norm1 = String(opt1).toLowerCase().trim();
+          return (norm0 === 'yes' || norm0 === 'sì' || norm0 === 'si') && (norm1 === 'no');
+        })();
+
+        if (isYesNo) {
+          formatted.options = [
+            { label: 'Sì', value: 'yes' },
+            { label: 'No', value: 'no' }
+          ];
+          if (row.is_knockout && row.knockout_value) {
+            const kValNorm = String(row.knockout_value).toLowerCase().trim();
+            const targetVal = (kValNorm === 'yes' || kValNorm === 'sì' || kValNorm === 'si') ? 'yes' : 'no';
+            formatted.options = formatted.options.map((opt: any) => {
+              if (opt.value === targetVal) {
+                return { ...opt, isKnockout: true };
+              }
+              return opt;
+            });
+          }
+        } else {
+          formatted.options = optionsArray.map((opt: any) => {
+            const label = typeof opt === 'string' ? opt : (opt.label || opt.value || '');
+            const value = typeof opt === 'string' ? opt : (opt.value || opt.label || '');
+            const optionObj: any = { label, value };
+            if (row.is_knockout && row.knockout_value && String(row.knockout_value).trim() === String(value).trim()) {
+              optionObj.isKnockout = true;
+            }
+            return optionObj;
+          });
+        }
       }
 
       return formatted;
