@@ -323,7 +323,10 @@ function getCookiePolicyHtml(): string {
 }
 
 export const ssrRendererMiddleware = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
-  const path = req.path.toLowerCase().replace(/\/$/, ''); // Normalize trailing slash
+  const rawPath = req.path.toLowerCase().replace(/\/$/, ''); // Normalize trailing slash
+  const isSsrPrefix = rawPath.startsWith('/ssr/');
+  const path = isSsrPrefix ? rawPath.substring(4) : rawPath;
+
   const userAgent = req.get('user-agent') || '';
   const isBot = /Indeedbot|Googlebot|Bingbot|facebookexternalhit|Twitterbot/i.test(userAgent);
 
@@ -365,8 +368,9 @@ export const ssrRendererMiddleware = async (req: Request, res: Response, next: N
   }
 
   // If a human hits this on the backend port directly (e.g. testing or deep linking),
-  // redirect them to the actual frontend SPA to prevent backend 404s
-  if (!isBot) {
+  // redirect them to the actual frontend SPA to prevent backend 404s.
+  // Bypass this check if the request has the /ssr/ prefix so curl tests can render the page.
+  if (!isBot && !isSsrPrefix) {
     const frontendUrl = resolveFrontendBase(req) + req.originalUrl;
     res.redirect(frontendUrl);
     return;
@@ -394,57 +398,99 @@ export const ssrRendererMiddleware = async (req: Request, res: Response, next: N
 
       const jobRow = await getPublicJobById(jobId, companySlug);
       if (!jobRow) {
-        const errorHtml = wrapPageTemplate('Position Not Found', `
-          <div class="card" style="text-align: center;">
-            <h2>Posizione non trovata</h2>
-            <p>L'annuncio cercato non è disponibile o è stato rimosso.</p>
-            <p style="margin-top: 15px;"><a href="/careers" class="btn-apply">Torna alle Careers</a></p>
-          </div>
-        `);
-        res.status(404).setHeader('Content-Type', 'text/html; charset=UTF-8').send(errorHtml);
+        res.status(404).setHeader('Content-Type', 'text/html; charset=UTF-8').send(`<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <title>Posizione non trovata</title>
+</head>
+<body>
+  <h1>Posizione non trovata</h1>
+  <p>L'annuncio cercato non è disponibile o è stato rimosso.</p>
+</body>
+</html>`);
         return;
       }
 
       const job = mapPublicJob(jobRow);
-      const applyUrl = `${frontendBase}/careers/${job.company_slug}/jobs/${job.id}`;
 
-      // Build descriptive details
-      const isHybrid = job.remote_type === 'hybrid';
-      const isRemote = job.remote_type === 'remote';
-      const locationText = isRemote ? 'Fully remote' : `${job.job_city || ''}, ${job.job_state || ''}, ${job.job_country || 'IT'}`.replace(/^,\s*/, '');
-      const typeLabel = job.job_type === 'fulltime' ? 'Tempo Pieno / Full-time' : 'Part-time';
+      // Strip HTML tags for meta description (simple regex replace)
+      const plainDesc = (job.description || '')
+        .replace(/<[^>]*>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      const shortDesc = plainDesc.slice(0, 160);
 
-      let salaryText = '';
-      if (job.salary_min != null || job.salary_max != null) {
-        salaryText = job.salary_min != null && job.salary_max != null
-          ? `€${job.salary_min} - €${job.salary_max}`
-          : job.salary_min != null ? `€${job.salary_min}+` : `Fino a €${job.salary_max}`;
-        if (job.salary_period) salaryText += ` / ${job.salary_period}`;
+      // JSON-LD JobPosting schema mapping
+      const mapEmploymentType = (jobType: string | null | undefined): string => {
+        const t = (jobType || '').toLowerCase().replace(/[-_]/g, '');
+        if (t === 'fulltime') return 'FULL_TIME';
+        if (t === 'parttime') return 'PART_TIME';
+        if (t === 'contractor') return 'CONTRACTOR';
+        return 'FULL_TIME';
+      };
+
+      const ldJson = {
+        "@context": "https://schema.org",
+        "@type": "JobPosting",
+        "title": job.title,
+        "description": plainDesc.slice(0, 5000),
+        "datePosted": job.published_at ? new Date(job.published_at).toISOString() : new Date(job.created_at).toISOString(),
+        "employmentType": mapEmploymentType(job.job_type),
+        "hiringOrganization": {
+          "@type": "Organization",
+          "name": job.company_name
+        },
+        "jobLocation": {
+          "@type": "Place",
+          "address": {
+            "@type": "PostalAddress",
+            "addressLocality": job.job_city || '',
+            "addressRegion": job.job_state || '',
+            "postalCode": job.job_postal_code || '',
+            "addressCountry": job.job_country || 'IT'
+          }
+        }
+      };
+
+      // Construct salary HTML block if salary_min is present
+      let salaryHtml = '';
+      if (job.salary_min != null) {
+        const maxPart = job.salary_max != null ? `–${job.salary_max}` : '';
+        const periodPart = job.salary_period ? ` ${job.salary_period}` : '';
+        salaryHtml = `<p>Stipendio: ${job.salary_min}${maxPart}${periodPart}</p>`;
       }
 
-      const content = `
-        <div class="card">
-          <h2>${escapeHtml(job.title)}</h2>
-          <div class="meta-group">
-            <span class="badge primary">${escapeHtml(job.company_name)}</span>
-            <span class="badge">${escapeHtml(typeLabel)}</span>
-            <span class="badge">${escapeHtml(locationText)}</span>
-            ${isRemote ? '<span class="badge primary">Fully remote</span>' : isHybrid ? '<span class="badge primary">Hybrid remote</span>' : ''}
-            ${salaryText ? `<span class="badge">${escapeHtml(salaryText)}</span>` : ''}
-          </div>
-          <div class="divider"></div>
-          <div class="rich-text">
-            ${job.description || '<p>Nessuna descrizione fornita.</p>'}
-          </div>
-          <div class="divider"></div>
-          <p style="text-align: center; margin-top: 30px;">
-            <a href="${escapeHtml(applyUrl)}" class="btn-apply">Candidati Ora / Apply Now</a>
-          </p>
-        </div>
-      `;
+      const companySlugForUrl = companySlug || job.company_slug || 'fusaro-uomo';
 
-      const title = `${job.title} presso ${job.company_name} | Careers`;
-      const html = wrapPageTemplate(title, content);
+      const html = `<!DOCTYPE html>
+<html lang="it">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(job.title)} | ${escapeHtml(job.company_name)}</title>
+  <meta name="description" content="${escapeHtml(shortDesc)}">
+  <meta property="og:title" content="${escapeHtml(job.title)}">
+  <meta property="og:description" content="${escapeHtml(shortDesc)}">
+  <link rel="canonical" href="https://veylohr.com/careers/${escapeHtml(companySlugForUrl)}/jobs/${jobId}">
+  <script type="application/ld+json">
+  ${JSON.stringify(ldJson, null, 2)}
+  </script>
+</head>
+<body>
+  <nav><a href="https://veylohr.com/careers/${escapeHtml(companySlugForUrl)}">${escapeHtml(job.company_name)} — Posizioni aperte</a></nav>
+  <main>
+    <h1>${escapeHtml(job.title)}</h1>
+    <p>${escapeHtml(job.job_city || '')}, ${escapeHtml(job.job_country || '')}</p>
+    <p>${escapeHtml(job.company_name)}</p>
+    ${salaryHtml}
+    <section>${job.description || ''}</section>
+    <a href="https://veylohr.com/careers/${escapeHtml(companySlugForUrl)}/jobs/${jobId}">
+      Candidati per questa posizione
+    </a>
+  </main>
+</body>
+</html>`;
 
       // Cache result
       renderCache.set(cacheKey, { html, expiry: Date.now() + CACHE_TTL_MS });

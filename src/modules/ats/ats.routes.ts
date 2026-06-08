@@ -16,6 +16,10 @@ import {
   candidateProfilePdfHandler,
   getIndeedStatsHandler,
   testSsrHandler,
+  listScreenerQuestionsHandler,
+  createScreenerQuestionHandler,
+  updateScreenerQuestionHandler,
+  deleteScreenerQuestionHandler,
 } from './ats.controller';
 import { optionalInternalResumeUpload } from './atsCvUpload';
 
@@ -40,6 +44,12 @@ router.patch('/jobs/:id',                   requireRole('admin', 'hr'), updateJo
 router.delete('/jobs/:id',        requireRole('admin', 'hr'), deleteJobHandler);
 router.post('/jobs/:id/publish',  requireRole('admin', 'hr'), publishJobHandler);
 router.post('/jobs/:id/sync',     requireRole('admin', 'hr'), syncJobHandler);
+
+// Job screener questions
+router.get('/jobs/:jobId/screener-questions', listScreenerQuestionsHandler);
+router.post('/jobs/:jobId/screener-questions', requireRole('admin', 'hr'), createScreenerQuestionHandler);
+router.put('/jobs/:jobId/screener-questions/:qId', requireRole('admin', 'hr'), updateScreenerQuestionHandler);
+router.delete('/jobs/:jobId/screener-questions/:qId', requireRole('admin', 'hr'), deleteScreenerQuestionHandler);
 
 // Candidates
 router.get('/candidates',         listCandidatesHandler);

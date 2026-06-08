@@ -907,7 +907,104 @@ router.get('/:companySlug/jobs/:jobId', asyncHandler(async (req: Request, res: R
 router.get(
   '/indeed-apply-questions/:companySlug/:jobId',
   asyncHandler(async (req: Request, res: Response) => {
-    res.json({ questions: [] });
+    const { companySlug, jobId: jobIdStr } = req.params;
+    const jobId = parseInt(jobIdStr, 10);
+    if (Number.isNaN(jobId)) {
+      res.json({ questions: [] });
+      return;
+    }
+
+    // Verify that the job exists and matches companySlug
+    const job = await queryOne<{ id: number }>(
+      `SELECT j.id
+       FROM job_postings j
+       JOIN companies c ON c.id = j.company_id
+       WHERE j.id = $1 AND c.slug = $2 AND j.status = 'published'`,
+      [jobId, companySlug]
+    );
+    if (!job) {
+      res.json({ questions: [] });
+      return;
+    }
+
+    const rows = await query<{
+      id: number;
+      question_text: string;
+      question_type: string;
+      options: any;
+      is_knockout: boolean;
+      knockout_value: string | null;
+    }>(
+      `SELECT id, question_text, question_type, options, is_knockout, knockout_value
+       FROM job_screener_questions
+       WHERE job_id = $1
+       ORDER BY display_order ASC, id ASC`,
+      [jobId]
+    );
+
+    const questions = rows.map((row) => {
+      let optionsArray: any[] = [];
+      if (row.options) {
+        if (typeof row.options === 'string') {
+          try {
+            optionsArray = JSON.parse(row.options);
+          } catch {
+            optionsArray = [];
+          }
+        } else if (Array.isArray(row.options)) {
+          optionsArray = row.options;
+        }
+      }
+
+      const formatted: any = {
+        id: `q_${row.id}`,
+        type: row.question_type,
+        label: row.question_text,
+        required: true,
+        isKnockout: !!row.is_knockout
+      };
+
+      if (row.question_type === 'radio' || row.question_type === 'checkbox') {
+        const isYesNo = row.question_type === 'radio' && optionsArray.length === 2 && (() => {
+          const opt0 = typeof optionsArray[0] === 'string' ? optionsArray[0] : (optionsArray[0]?.value || optionsArray[0]?.label || '');
+          const opt1 = typeof optionsArray[1] === 'string' ? optionsArray[1] : (optionsArray[1]?.value || optionsArray[1]?.label || '');
+          const norm0 = String(opt0).toLowerCase().trim();
+          const norm1 = String(opt1).toLowerCase().trim();
+          return (norm0 === 'yes' || norm0 === 'sì' || norm0 === 'si') && (norm1 === 'no');
+        })();
+
+        if (isYesNo) {
+          formatted.options = [
+            { label: 'Sì', value: 'yes' },
+            { label: 'No', value: 'no' }
+          ];
+          if (row.is_knockout && row.knockout_value) {
+            const kValNorm = String(row.knockout_value).toLowerCase().trim();
+            const targetVal = (kValNorm === 'yes' || kValNorm === 'sì' || kValNorm === 'si') ? 'yes' : 'no';
+            formatted.options = formatted.options.map((opt: any) => {
+              if (opt.value === targetVal) {
+                return { ...opt, isKnockout: true };
+              }
+              return opt;
+            });
+          }
+        } else {
+          formatted.options = optionsArray.map((opt: any) => {
+            const label = typeof opt === 'string' ? opt : (opt.label || opt.value || '');
+            const value = typeof opt === 'string' ? opt : (opt.value || opt.label || '');
+            const optionObj: any = { label, value };
+            if (row.is_knockout && row.knockout_value && String(row.knockout_value).trim() === String(value).trim()) {
+              optionObj.isKnockout = true;
+            }
+            return optionObj;
+          });
+        }
+      }
+
+      return formatted;
+    });
+
+    res.json({ questions });
   })
 );
 
