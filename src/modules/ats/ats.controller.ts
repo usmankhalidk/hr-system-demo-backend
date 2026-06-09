@@ -2189,6 +2189,7 @@ function normalizeState(state: string | null | undefined, city: string | null | 
     if (city) {
       const lowerCity = city.trim().toLowerCase();
       if (lowerCity === 'milano' || lowerCity === 'milan') return 'MI';
+      if (lowerCity === 'napoli' || lowerCity === 'naples') return 'NA';
       if (lowerCity === 'salerno') return 'SA';
     }
     return '';
@@ -2198,9 +2199,12 @@ function normalizeState(state: string | null | undefined, city: string | null | 
   
   const conversionMap: Record<string, string> = {
     '25': 'MI',
+    '63': 'NA',
     '72': 'SA',
     'milano': 'MI',
     'milan': 'MI',
+    'napoli': 'NA',
+    'naples': 'NA',
     'salerno': 'SA',
   };
   
@@ -2269,7 +2273,7 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
                          process.env.INDEED_APPLY_API_TOKEN ||
                          'mock_veylohr_indeed_token_2026';
 
-        const backendBase = resolveBackendBase(req);
+        const baseUrl = process.env.APP_BASE_URL || 'https://veylohr.com';
         const indeedApplyParams = new URLSearchParams({
           'indeed-apply-apiToken': apiToken,
           'indeed-apply-jobUrl': jobUrl,
@@ -2277,11 +2281,11 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           'indeed-apply-jobLocation': `${city}, ${country}`,
           'indeed-apply-jobCompanyName': job.companyName || company.name,
           'indeed-apply-jobId': String(job.id),
-          'indeed-apply-postUrl': `${backendBase}/api/public/indeed-apply/${job.companySlug}`,
+          'indeed-apply-postUrl': `${baseUrl}/api/public/indeed-apply/${job.companySlug}`,
           'indeed-apply-name': 'true',
           'indeed-apply-email': 'true',
           'indeed-apply-resume': 'true',
-          'indeed-apply-questions': `${backendBase}/api/public/indeed-apply-questions/${job.companySlug}/${job.id}`
+          'indeed-apply-questions': `${baseUrl}/api/public/indeed-apply-questions/${job.companySlug}/${job.id}`
         });
         const indeedApplyData = indeedApplyParams.toString();
 
