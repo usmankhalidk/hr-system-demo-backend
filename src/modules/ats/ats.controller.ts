@@ -267,7 +267,7 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
     createdAt: job.created_at,
     expirationDate: job.expiration_date || null,
     indeedApplyTokenConfigured: !!process.env.INDEED_APPLY_API_TOKEN,
-    indeedApplyPostUrl: process.env.INDEED_APPLY_POST_URL || `https://veylohr.com/api/public/indeed-apply/${job.company_slug}`,
+    indeedApplyPostUrl: process.env.INDEED_APPLY_POST_URL || `${process.env.APP_BASE_URL || 'https://veylohr.com'}/api/public/indeed-apply/${job.company_slug}`,
   };
 
   ok(res, { job: mappedJob });
@@ -1783,7 +1783,7 @@ function normalizeCountryCode(value: string): string {
 }
 
 function resolveFrontendBase(req: Request): string {
-  const raw = process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
+  const raw = process.env.APP_BASE_URL ?? process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
   if (raw && raw.trim() !== '') {
     return raw.replace(/\/+$/, '');
   }
@@ -1797,7 +1797,7 @@ function resolveFrontendBase(req: Request): string {
 }
 
 function resolveBackendBase(req: Request): string {
-  const raw = process.env.PUBLIC_API_URL ?? process.env.BACKEND_URL ?? process.env.API_URL;
+  const raw = process.env.PUBLIC_API_URL ?? process.env.BACKEND_URL ?? process.env.API_URL ?? process.env.APP_BASE_URL;
   if (raw && raw.trim() !== '') {
     const cleaned = raw.trim().replace(/\/+$/, '');
     return cleaned.endsWith('/api') ? cleaned.slice(0, -4) : cleaned;

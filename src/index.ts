@@ -522,7 +522,7 @@ app.get('/sitemap.xml', async (req, res, next) => {
 });
 
 function resolveFrontendBase(req: express.Request): string {
-  const raw = process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
+  const raw = process.env.APP_BASE_URL ?? process.env.FRONTEND_URL ?? process.env.PUBLIC_APP_URL ?? process.env.CORS_ORIGIN?.split(',')[0];
   if (raw && raw.trim() !== '') {
     return raw.replace(/\/+$/, '');
   }
