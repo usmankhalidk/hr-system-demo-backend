@@ -44,8 +44,8 @@ describe('POST /api/attendance/sync', () => {
     expect(typeof res.body.data.failed).toBe('number');
   });
 
-  it('returns 403 for non-terminal role', async () => {
-    const token = await login('employee1@acme-test.com');
+  it('returns 403 for unauthorized role', async () => {
+    const token = await login('manager.roma@acme-test.com');
     const res = await request
       .post('/api/attendance/sync')
       .set('Authorization', `Bearer ${token}`)

@@ -26,7 +26,7 @@ router.post(
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
-  // Functionality vs Visibility: marking attendance does not require the 'presenze' permission
+  requireModulePermission('presenze', 'read'),
   validate(checkinSchema),
   checkin,
 );
@@ -79,7 +79,7 @@ router.post(
   authenticate,
   requireRole('store_terminal', 'employee'),
   enforceCompany,
-  // Functionality vs Visibility: marking attendance does not require the 'presenze' permission
+  requireModulePermission('presenze', 'read'),
   validate(syncSchema),
   syncEvents,
 );
@@ -90,7 +90,7 @@ router.get(
   authenticate,
   requireRole(...managementRoles),
   enforceCompany,
-  requireModulePermission('presenze', 'read'),
+  requireModulePermission('anomalie', 'read'),
   getAnomalies,
 );
 

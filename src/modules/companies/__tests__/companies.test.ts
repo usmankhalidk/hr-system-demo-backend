@@ -53,11 +53,11 @@ describe('GET /api/companies', () => {
     expect(res.body.success).toBe(true);
   });
 
-  it('area_manager → 200 (area_manager can list companies for cross-company employee access)', async () => {
+  it('area_manager → 403 (area_manager cannot list companies)', async () => {
     const token = await loginAs('area@acme-test.com');
     const res = await request.get('/api/companies').set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-    expect(res.body.success).toBe(true);
+    expect(res.status).toBe(403);
+    expect(res.body.success).toBe(false);
   });
 
   it('admin → 200 (cross-company list)', async () => {

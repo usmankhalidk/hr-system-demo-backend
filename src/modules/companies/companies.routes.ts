@@ -81,16 +81,16 @@ const updateCompanySettingsSchema = z.object({
   show_leave_balance_to_employee: z.boolean(),
 });
 
-router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, listCompanies);
+router.get('/', authenticate, requireRole('admin', 'hr'), enforceCompany, listCompanies);
 router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, requireModulePermission('impostazioni', 'read'), getCompanySettings);
-router.get('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, getCompanyById);
+router.get('/:id', authenticate, requireRole('admin', 'hr'), enforceCompany, getCompanyById);
 router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, requireModulePermission('impostazioni', 'write'), validate(updateCompanySettingsSchema), updateCompanySettings);
-router.put('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
-router.patch('/:id/owner', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, validate(transferOwnershipSchema), auditLog('company'), transferCompanyOwnership);
-router.post('/:id/logo', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, companyLogoUploadMiddleware, uploadCompanyLogo);
-router.delete('/:id/logo', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, deleteCompanyLogo);
-router.post('/:id/banner', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, companyBannerUploadMiddleware, uploadCompanyBanner);
-router.delete('/:id/banner', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, deleteCompanyBanner);
+router.put('/:id', authenticate, requireRole('admin', 'hr'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
+router.patch('/:id/owner', authenticate, requireRole('admin', 'hr'), enforceCompany, validate(transferOwnershipSchema), auditLog('company'), transferCompanyOwnership);
+router.post('/:id/logo', authenticate, requireRole('admin', 'hr'), enforceCompany, companyLogoUploadMiddleware, uploadCompanyLogo);
+router.delete('/:id/logo', authenticate, requireRole('admin', 'hr'), enforceCompany, deleteCompanyLogo);
+router.post('/:id/banner', authenticate, requireRole('admin', 'hr'), enforceCompany, companyBannerUploadMiddleware, uploadCompanyBanner);
+router.delete('/:id/banner', authenticate, requireRole('admin', 'hr'), enforceCompany, deleteCompanyBanner);
 router.post('/', authenticate, requireSuperAdmin, validate(createCompanySchema), auditLog('company'), createCompany);
 
 // Super Admin: deactivate / activate / delete a company

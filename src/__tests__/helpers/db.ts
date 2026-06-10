@@ -345,20 +345,22 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
   );
 
   // Seed module permissions for both companies
-  const modules = ['dipendenti','turni','trasferimenti','presenze','permessi','negozi','messaggi','documenti','ats','report','impostazioni'];
+  const modules = ['dipendenti','turni','trasferimenti','presenze','permessi','negozi','messaggi','documenti','ats','report','impostazioni','anomalie'];
   const roles = ['admin','hr','area_manager','store_manager','employee','store_terminal'];
   for (const cid of [acme.id, beta.id]) {
     for (const role of roles) {
       for (const mod of modules) {
         const enabled =
-          (mod === 'dipendenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
-          || (mod === 'turni' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
-          || (mod === 'trasferimenti' && ['admin', 'hr', 'area_manager', 'store_manager'].includes(role))
-          || (mod === 'presenze' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 'store_terminal'].includes(role))
-          || (mod === 'permessi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
-          || (mod === 'negozi' && ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'].includes(role))
-          || (mod === 'messaggi' && ['admin', 'hr', 'area_manager', 'store_manager', 'employee'].includes(role))
-          || (mod === 'impostazioni' && ['admin', 'hr', 'area_manager'].includes(role));
+          ['admin', 'hr'].includes(role)
+          || (mod === 'dipendenti' && ['area_manager', 'store_manager'].includes(role))
+          || (mod === 'turni' && ['area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'trasferimenti' && ['area_manager', 'store_manager'].includes(role))
+          || (mod === 'presenze' && ['area_manager', 'store_manager', 'employee', 'store_terminal'].includes(role))
+          || (mod === 'permessi' && ['area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'negozi' && ['area_manager', 'store_manager', 'store_terminal'].includes(role))
+          || (mod === 'messaggi' && ['area_manager', 'store_manager', 'employee'].includes(role))
+          || (mod === 'impostazioni' && ['area_manager'].includes(role))
+          || (mod === 'anomalie' && ['area_manager', 'store_manager'].includes(role));
         await testPool.query(
           `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
            VALUES ($1, $2, $3, $4)
@@ -385,7 +387,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
   // Seed a today shift for employee1 (used by QR checkin tests)
   const { rows: [todayShift] } = await testPool.query(
     `INSERT INTO shifts (company_id, store_id, user_id, date, start_time, end_time, status, created_by)
-     VALUES ($1, $2, $3, CURRENT_DATE, '09:00', '17:00', 'scheduled', $4) RETURNING id`,
+     VALUES ($1, $2, $3, CURRENT_DATE, '00:00', '23:59', 'scheduled', $4) RETURNING id`,
     [acme.id, romaStore.id, employee1.id, admin.id]
   );
 
