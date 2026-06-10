@@ -1837,18 +1837,33 @@ function getPdfTokenSecret(): string {
   return process.env.JWT_SECRET ?? process.env.QR_SECRET ?? 'ats-pdf-token-secret';
 }
 
-function signCandidatePdfToken(candidateId: number, companyId: number, interviewId: number): string {
+export function signCandidatePdfToken(candidateId: number, companyId: number, interviewId: number, recipientType: 'candidate' | 'interviewer'): string {
   const expiresAt = Math.floor(Date.now() / 1000) + 7 * 24 * 60 * 60;
-  const payload = `${candidateId}.${companyId}.${interviewId}.${expiresAt}`;
+  const payload = `${candidateId}.${companyId}.${interviewId}.${recipientType}.${expiresAt}`;
   const signature = crypto.createHmac('sha256', getPdfTokenSecret()).update(payload).digest('hex');
   return `${payload}.${signature}`;
 }
 
-function verifyCandidatePdfToken(token: string, expectedCandidateId: number): { companyId: number; interviewId: number } | null {
+export function verifyCandidatePdfToken(token: string, expectedCandidateId: number): { companyId: number; interviewId: number; recipientType: 'candidate' | 'interviewer' } | null {
   const parts = token.split('.');
-  if (parts.length !== 5) return null;
+  if (parts.length !== 5 && parts.length !== 6) return null;
 
-  const [candidateIdRaw, companyIdRaw, interviewIdRaw, expiresAtRaw, signature] = parts;
+  let candidateIdRaw: string;
+  let companyIdRaw: string;
+  let interviewIdRaw: string;
+  let expiresAtRaw: string;
+  let signature: string;
+  let recipientType: 'candidate' | 'interviewer' = 'candidate';
+
+  if (parts.length === 6) {
+    const recipientTypeRaw = parts[3];
+    recipientType = recipientTypeRaw === 'interviewer' ? 'interviewer' : 'candidate';
+    [candidateIdRaw, companyIdRaw, interviewIdRaw, , expiresAtRaw, signature] = parts;
+  } else {
+    // Old token format (parts.length === 5)
+    [candidateIdRaw, companyIdRaw, interviewIdRaw, expiresAtRaw, signature] = parts;
+  }
+
   const candidateId = Number.parseInt(candidateIdRaw, 10);
   const companyId = Number.parseInt(companyIdRaw, 10);
   const interviewId = Number.parseInt(interviewIdRaw, 10);
@@ -1865,7 +1880,13 @@ function verifyCandidatePdfToken(token: string, expectedCandidateId: number): { 
     return null;
   }
 
-  const payload = `${candidateId}.${companyId}.${interviewId}.${expiresAt}`;
+  let payload: string;
+  if (parts.length === 6) {
+    payload = `${candidateId}.${companyId}.${interviewId}.${parts[3]}.${expiresAt}`;
+  } else {
+    payload = `${candidateId}.${companyId}.${interviewId}.${expiresAt}`;
+  }
+
   const expected = crypto.createHmac('sha256', getPdfTokenSecret()).update(payload).digest('hex');
   const expectedBuffer = Buffer.from(expected, 'hex');
   const actualBuffer = Buffer.from(signature, 'hex');
@@ -1874,7 +1895,7 @@ function verifyCandidatePdfToken(token: string, expectedCandidateId: number): { 
     return null;
   }
 
-  return { companyId, interviewId };
+  return { companyId, interviewId, recipientType };
 }
 
 function pdfText(value: unknown): string {
@@ -1913,7 +1934,7 @@ function formatPdfDate(value: unknown): string {
   });
 }
 
-async function buildCandidateProfilePdf(candidateId: number, companyId: number): Promise<Buffer | null> {
+async function buildCandidateProfilePdf(candidateId: number, companyId: number, recipientType: 'candidate' | 'interviewer' = 'candidate'): Promise<Buffer | null> {
   const candidate = await queryOne<Record<string, unknown>>(
     `SELECT c.*,
             jp.title AS position_title,
@@ -2028,7 +2049,7 @@ async function buildCandidateProfilePdf(candidateId: number, companyId: number):
     color: rgb(0.05, 0.13, 0.22),
   });
   page.drawText('VEYLO HR', { x: margin, y: pageSize[1] - 52, size: 15, font: fontBold, color: rgb(0.95, 0.78, 0.35) });
-  page.drawText('Candidate Profile & Comments', { x: margin, y: pageSize[1] - 82, size: 21, font: fontBold, color: rgb(1, 1, 1) });
+  page.drawText(recipientType === 'interviewer' ? 'Candidate Profile & Comments' : 'Candidate Profile', { x: margin, y: pageSize[1] - 82, size: 21, font: fontBold, color: rgb(1, 1, 1) });
   page.drawText(`Generated: ${formatPdfDate(new Date().toISOString())}`, { x: margin, y: pageSize[1] - 100, size: 8.5, font, color: rgb(0.82, 0.87, 0.93) });
   y = pageSize[1] - 145;
 
@@ -2071,30 +2092,32 @@ async function buildCandidateProfilePdf(candidateId: number, companyId: number):
     drawLine(candidate.cover_letter as string, { indent: 14 });
   }
 
-  section('Candidate comments');
-  if (candidateComments.length === 0) {
-    drawLine('No candidate comments recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
-  } else {
-    candidateComments.forEach((comment, index) => {
-      const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
-      drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
-      drawLine(comment.body as string, { indent: 14 });
-      y -= 4;
-    });
-  }
+  if (recipientType === 'interviewer') {
+    section('Candidate comments');
+    if (candidateComments.length === 0) {
+      drawLine('No candidate comments recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
+    } else {
+      candidateComments.forEach((comment, index) => {
+        const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
+        drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
+        drawLine(comment.body as string, { indent: 14 });
+        y -= 4;
+      });
+    }
 
-  section('Interview feedback');
-  if (interviewFeedback.length === 0) {
-    drawLine('No interview feedback recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
-  } else {
-    interviewFeedback.forEach((comment, index) => {
-      const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
-      const interviewLabel = `${comment.interview_type === 'phone' ? 'Phone' : 'In-person'} interview ${formatPdfDate(comment.scheduled_at as string)}`;
-      drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
-      drawLine(interviewLabel, { italic: true, indent: 14, color: rgb(0.42, 0.46, 0.53) });
-      drawLine(comment.body as string, { indent: 14 });
-      y -= 4;
-    });
+    section('Interview feedback');
+    if (interviewFeedback.length === 0) {
+      drawLine('No interview feedback recorded.', { italic: true, color: rgb(0.42, 0.46, 0.53) });
+    } else {
+      interviewFeedback.forEach((comment, index) => {
+        const author = `${comment.name ?? ''} ${comment.surname ?? ''}`.trim() || 'User';
+        const interviewLabel = `${comment.interview_type === 'phone' ? 'Phone' : 'In-person'} interview ${formatPdfDate(comment.scheduled_at as string)}`;
+        drawLine(`${index + 1}. ${author} (${comment.role ?? '-'}) - ${formatPdfDate(comment.created_at as string)}`, { bold: true });
+        drawLine(interviewLabel, { italic: true, indent: 14, color: rgb(0.42, 0.46, 0.53) });
+        drawLine(comment.body as string, { indent: 14 });
+        y -= 4;
+      });
+    }
   }
 
   return Buffer.from(await pdfDoc.save());
@@ -2114,7 +2137,7 @@ export const candidateProfilePdfHandler = asyncHandler(async (req: Request, res:
     return;
   }
 
-  const pdf = await buildCandidateProfilePdf(candidateId, verified.companyId);
+  const pdf = await buildCandidateProfilePdf(candidateId, verified.companyId, verified.recipientType);
   if (!pdf) {
     notFound(res, 'Candidato non trovato');
     return;
@@ -2939,7 +2962,7 @@ async function sendProfessionalInterviewEmail(params: {
 
     const frontendBase = resolveFrontendBase(req);
     const backendBase = resolveBackendBase(req);
-    const candidatePdfToken = signCandidatePdfToken(interviewRow.candidate_id, companyId, interviewId);
+    const candidatePdfToken = signCandidatePdfToken(interviewRow.candidate_id, companyId, interviewId, recipientType);
     const candidateUrl = `${backendBase}/api/ats/candidates/${encodeURIComponent(String(interviewRow.candidate_id))}/profile.pdf?token=${encodeURIComponent(candidatePdfToken)}`;
     const scheduledDate = interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at) : new Date();
     const candidateName = `${firstName} ${lastName}`.trim() || recipientName || 'Candidato';
@@ -3016,15 +3039,15 @@ async function sendProfessionalInterviewEmail(params: {
             </table>
           </div>
 
+          ${recipientType === 'interviewer' ? `
           <div style="text-align: center; margin: 40px 0;">
             <a href="${candidateUrl}" style="background-color: #c9973a; color: #ffffff; padding: 16px 32px; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 16px; display: inline-block; box-shadow: 0 4px 6px rgba(201,151,58,0.2);">Apri Profilo Candidato & CV</a>
           </div>
 
           <p style="font-size: 14px; color: #64748b; text-align: center; margin-bottom: 30px;">
-            ${recipientType === 'interviewer' 
-              ? 'Clicca sul pulsante sopra per accedere direttamente al profilo del candidato, visualizzare il CV e aggiungere i tuoi commenti.'
-              : 'Puoi visualizzare i dettagli della tua candidatura cliccando sul pulsante sopra.'}
+            Clicca sul pulsante sopra per accedere direttamente al profilo del candidato, visualizzare il CV e aggiungere i tuoi commenti.
           </p>
+          ` : ''}
 
           <div style="background-color: #fffbeb; padding: 15px; border-radius: 8px; border: 1px solid #fef3c7; margin-bottom: 30px;">
             <p style="margin: 0; font-size: 13px; color: #92400e; text-align: center;">
@@ -3118,6 +3141,7 @@ async function sendProfessionalInterviewEmail(params: {
                         </tr>
                       </table>
 
+                      ${recipientType === 'interviewer' ? `
                       <table role="presentation" width="100%" cellspacing="0" cellpadding="0" border="0">
                         <tr>
                           <td align="center" style="padding:30px 0 18px;">
@@ -3127,10 +3151,9 @@ async function sendProfessionalInterviewEmail(params: {
                       </table>
 
                       <p style="margin:0 0 24px; font-size:13px; line-height:21px; color:#667386; text-align:center;">
-                        ${recipientType === 'interviewer'
-                          ? 'Clicca sul pulsante sopra per accedere direttamente al profilo del candidato, visualizzare il CV e aggiungere i tuoi commenti.'
-                          : 'Puoi visualizzare i dettagli della tua candidatura cliccando sul pulsante sopra.'}
+                        Clicca sul pulsante sopra per accedere direttamente al profilo del candidato, visualizzare il CV e aggiungere i tuoi commenti.
                       </p>
+                      ` : ''}
 
                       <div style="background:#fff8e6; border:1px solid #f3dfab; border-radius:10px; padding:14px 16px;">
                         <p style="margin:0; font-size:13px; line-height:20px; color:#7c5b14; text-align:center;">
@@ -3163,7 +3186,7 @@ async function sendProfessionalInterviewEmail(params: {
       `Tipo: ${interviewTypeLabel}`,
       interviewRow.location ? `Luogo / Link: ${interviewRow.location}` : '',
       interviewRow.description ? `Note: ${interviewRow.description}` : '',
-      `Profilo candidato e CV: ${candidateUrl}`,
+      recipientType === 'interviewer' ? `Profilo candidato e CV: ${candidateUrl}` : '',
       "In allegato trovi il file interview.ics per aggiungere l'evento al tuo calendario.",
     ].filter(Boolean).join('\n\n');
 
