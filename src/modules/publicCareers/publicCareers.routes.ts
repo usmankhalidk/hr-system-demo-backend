@@ -10,6 +10,7 @@ import { sendEmailForCompany } from '../../services/email.service';
 import { createCandidate } from '../ats/ats.service';
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
+import { authenticate, requireSuperAdmin } from '../../middleware/auth';
 
 export type PublicJobRow = {
   id: number;
@@ -81,6 +82,7 @@ export type PublicCompanyRow = {
   owner_surname: string | null;
   owner_avatar_filename: string | null;
   open_roles_count: number;
+  company_email: string | null;
 };
 
 export type PublicHiringContactRow = {
@@ -277,6 +279,7 @@ function mapPublicCompany(row: PublicCompanyRow): Record<string, unknown> {
     owner_surname: row.owner_surname,
     owner_avatar_filename: row.owner_avatar_filename,
     open_roles_count: row.open_roles_count,
+    company_email: row.company_email,
   };
 }
 
@@ -313,7 +316,8 @@ export async function getPublicCompanyBySlug(companySlug: string): Promise<Publi
               FROM job_postings j
               WHERE j.company_id = c.id
                 AND j.status = 'published'
-            ) AS open_roles_count
+            ) AS open_roles_count,
+            c.company_email AS company_email
      FROM companies c
      LEFT JOIN company_groups cg ON cg.id = c.group_id
      LEFT JOIN users owner ON owner.id = c.owner_user_id
@@ -345,7 +349,8 @@ export async function getPublicCompanyById(companyId: number): Promise<PublicCom
               FROM job_postings j
               WHERE j.company_id = c.id
                 AND j.status = 'published'
-            ) AS open_roles_count
+            ) AS open_roles_count,
+            c.company_email AS company_email
      FROM companies c
      LEFT JOIN company_groups cg ON cg.id = c.group_id
      LEFT JOIN users owner ON owner.id = c.owner_user_id
@@ -1165,6 +1170,93 @@ router.post(
         }
       } catch (err: any) {
         console.error('Indeed Apply: error in asynchronous processing:', err.message);
+      }
+    });
+  })
+);
+
+// ── Legal Documents Endpoints ────────────────────────────────────────────────
+// GET /api/public/legal-documents/:key (Public)
+router.get(
+  '/legal-documents/:key',
+  asyncHandler(async (req: Request, res: Response) => {
+    const { key } = req.params;
+    const lang = (req.query.lang as string) === 'en' ? 'en' : 'it';
+
+    if (!['privacy', 'terms', 'cookie'].includes(key)) {
+      return notFound(res, 'Documento non trovato');
+    }
+
+    const doc = await queryOne<{
+      id: number;
+      document_key: string;
+      language: string;
+      title: string;
+      content: string;
+      updated_at: string;
+      updated_by_name: string | null;
+    }>(
+      `SELECT ld.id, ld.document_key, ld.language, ld.title, ld.content, ld.updated_at,
+              CONCAT(u.name, ' ', u.surname) as updated_by_name
+       FROM legal_documents ld
+       LEFT JOIN users u ON u.id = ld.updated_by
+       WHERE ld.document_key = $1 AND ld.language = $2`,
+      [key, lang]
+    );
+
+    if (!doc) {
+      return notFound(res, 'Documento non trovato');
+    }
+
+    return ok(res, {
+      document: doc
+    });
+  })
+);
+
+// PUT /api/public/legal-documents/:key (Super Admin Only)
+router.put(
+  '/legal-documents/:key',
+  authenticate,
+  requireSuperAdmin,
+  asyncHandler(async (req: Request, res: Response) => {
+    const { key } = req.params;
+    const { language, title, content } = req.body;
+    const userId = req.user!.userId;
+
+    if (!['privacy', 'terms', 'cookie'].includes(key)) {
+      return badRequest(res, 'Chiave documento non valida', 'INVALID_KEY');
+    }
+    if (!language || !title || content === undefined) {
+      return badRequest(res, 'Parametri obbligatori mancanti', 'MISSING_PARAMS');
+    }
+    if (!['it', 'en'].includes(language)) {
+      return badRequest(res, 'Lingua non supportata', 'UNSUPPORTED_LANGUAGE');
+    }
+
+    const queryText = `
+      INSERT INTO legal_documents (document_key, language, title, content, updated_by, updated_at)
+      VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+      ON CONFLICT (document_key, language) DO UPDATE
+      SET title = EXCLUDED.title,
+          content = EXCLUDED.content,
+          updated_by = EXCLUDED.updated_by,
+          updated_at = CURRENT_TIMESTAMP
+      RETURNING id, document_key, language, title, content, updated_at
+    `;
+    const result = await queryOne(queryText, [key, language, title, content, userId]);
+
+    // Fetch user full name for response metadata
+    const user = await queryOne<{ name: string; surname: string | null }>(
+      `SELECT name, surname FROM users WHERE id = $1`,
+      [userId]
+    );
+    const updatedByName = user ? `${user.name} ${user.surname ?? ''}`.trim() : '';
+
+    return ok(res, {
+      document: {
+        ...result,
+        updated_by_name: updatedByName
       }
     });
   })
