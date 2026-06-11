@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import { UAParser } from 'ua-parser-js';
 import { queryOne, query } from '../../config/database';
 import { ok, badRequest, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
@@ -18,9 +19,14 @@ function hashDeviceFingerprint(fingerprint: string): string {
 
 export const getDeviceStatus = asyncHandler(async (req: Request, res: Response) => {
   const { userId, companyId } = req.user!;
+  const fingerprint = req.query.fingerprint as string | undefined;
 
-  const user = await queryOne<{ registered_device_token: string | null; device_reset_pending: boolean }>(
-    `SELECT registered_device_token, device_reset_pending
+  const user = await queryOne<{
+    registered_device_token: string | null;
+    device_reset_pending: boolean;
+    registered_device_metadata: any;
+  }>(
+    `SELECT registered_device_token, device_reset_pending, registered_device_metadata
      FROM users
      WHERE id = $1 AND company_id = $2`,
     [userId, companyId],
@@ -31,33 +37,72 @@ export const getDeviceStatus = asyncHandler(async (req: Request, res: Response) 
     return;
   }
 
+  let ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (ipAddress.startsWith('::ffff:')) {
+    ipAddress = ipAddress.substring(7);
+  }
+
+  // Update last seen
+  await query(
+    `UPDATE users
+     SET last_seen_ip = $1, last_seen_at = NOW(), updated_at = NOW()
+     WHERE id = $2`,
+    [ipAddress, userId],
+  );
+
   const isDeviceRegistered = user.registered_device_token != null;
   const requiresDeviceRegistration = !isDeviceRegistered || user.device_reset_pending === true;
+
+  let isDeviceMatched = false;
+  if (isDeviceRegistered) {
+    if (fingerprint) {
+      const hashedToken = hashDeviceFingerprint(fingerprint);
+      isDeviceMatched = hashedToken === user.registered_device_token;
+    }
+
+    if (!isDeviceMatched) {
+      // Log mismatch block
+      query(
+        `INSERT INTO device_events (user_id, event_type, ip_address, user_agent)
+         VALUES ($1, 'mismatch_blocked', $2, $3)`,
+        [userId, ipAddress, req.headers['user-agent'] || ''],
+      ).catch(() => {});
+    } else {
+      // Check for suspicious IP address change
+      const registeredIp = user.registered_device_metadata?.ipAddress;
+      if (registeredIp && ipAddress !== registeredIp) {
+        query(
+          `INSERT INTO device_events (user_id, event_type, ip_address, user_agent, metadata)
+           VALUES ($1, 'suspicious_ip', $2, $3, $4)`,
+          [userId, ipAddress, req.headers['user-agent'] || '', { registeredIp }],
+        ).catch(() => {});
+      }
+    }
+  }
 
   ok(res, {
     isDeviceRegistered,
     deviceResetPending: user.device_reset_pending === true,
     requiresDeviceRegistration,
+    isDeviceMatched,
   });
 });
 
 export const registerDevice = asyncHandler(async (req: Request, res: Response) => {
   const { userId, companyId } = req.user!;
 
-  const { fingerprint, metadata } = req.body as { fingerprint: string; metadata?: Record<string, unknown> };
+  const { fingerprint, metadata } = req.body as { fingerprint: string; metadata?: any };
 
   if (!fingerprint || typeof fingerprint !== 'string') {
     badRequest(res, 'Device fingerprint obbligatorio', 'VALIDATION_ERROR');
     return;
   }
 
-  // Only allow the operation when device binding is actually required:
-  // - first login (no token stored)
-  // - after HR reset toggle ON
+  // Only allow the operation when device binding is actually required
   const user = await queryOne<{ registered_device_token: string | null; device_reset_pending: boolean }>(
     `SELECT registered_device_token, device_reset_pending
      FROM users
-     WHERE id = $1 AND company_id = $2 AND role = 'employee'`,
+     WHERE id = $1 AND company_id = $2 AND role IN ('employee', 'store_terminal')`,
     [userId, companyId],
   );
 
@@ -76,8 +121,7 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
 
   const token = hashDeviceFingerprint(fingerprint);
 
-  // Prevent multiple employees from registering the same device.
-  // We check if this token is already used by another active user.
+  // Prevent multiple employees/terminals from registering the same device.
   const existingUser = await queryOne<{ id: number; name: string; surname: string }>(
     `SELECT id, name, surname FROM users WHERE registered_device_token = $1 AND id <> $2`,
     [token, userId],
@@ -92,9 +136,33 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  // Pass a plain object for JSONB — node-pg serializes it; avoid JSON.stringify (double-encoding risk).
-  const metadataJson: Record<string, unknown> | null =
-    metadata && typeof metadata === 'object' && !Array.isArray(metadata) ? metadata : null;
+  let ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (ipAddress.startsWith('::ffff:')) {
+    ipAddress = ipAddress.substring(7);
+  }
+  const ua = req.headers['user-agent'] || '';
+  const parser = new UAParser(ua);
+  const uaResult = parser.getResult();
+
+  // Combine metadata with parsed user-agent details and IP
+  const mergedMetadata = {
+    ...metadata,
+    ipAddress,
+    userAgent: ua,
+    browser: {
+      name: metadata?.browser?.name || uaResult.browser.name || null,
+      version: metadata?.browser?.version || uaResult.browser.version || null,
+    },
+    os: {
+      name: metadata?.os?.name || uaResult.os.name || null,
+      version: metadata?.os?.version || uaResult.os.version || null,
+    },
+    device: {
+      model: metadata?.device?.model || uaResult.device.model || null,
+      vendor: metadata?.device?.vendor || uaResult.device.vendor || null,
+      type: metadata?.device?.type || uaResult.device.type || null,
+    },
+  };
 
   await query(
     `UPDATE users
@@ -105,8 +173,17 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
          updated_at = NOW()
      WHERE id = $3 AND company_id = $4
      RETURNING id`,
-    [token, metadataJson, userId, companyId],
+    [token, mergedMetadata, userId, companyId],
   );
+
+  // Log to device_events table
+  await query(
+    `INSERT INTO device_events (user_id, event_type, ip_address, user_agent, metadata)
+     VALUES ($1, 'registered', $2, $3, $4)`,
+    [userId, 'registered', ipAddress, ua, mergedMetadata]
+  ).catch(err => {
+    console.error('Failed to log device registration event:', err);
+  });
 
   // Best-effort audit trail (never block the registration request if it fails)
   query(
@@ -127,3 +204,28 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
   }, 'Device registrata correttamente');
 });
 
+export const getDeviceHistory = asyncHandler(async (req: Request, res: Response) => {
+  const { userId } = req.params;
+  const { companyId } = req.user!;
+
+  const userExists = await queryOne(
+    `SELECT 1 FROM users WHERE id = $1 AND company_id = $2`,
+    [userId, companyId]
+  );
+
+  if (!userExists) {
+    forbidden(res, 'Utente non trovato o non autorizzato', 'USER_NOT_FOUND');
+    return;
+  }
+
+  const events = await query(
+    `SELECT id, event_type, ip_address, user_agent, metadata, created_at
+     FROM device_events
+     WHERE user_id = $1
+     ORDER BY created_at DESC
+     LIMIT 10`,
+    [userId]
+  );
+
+  ok(res, events);
+});

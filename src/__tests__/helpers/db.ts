@@ -191,10 +191,24 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       ADD COLUMN IF NOT EXISTS device_reset_pending BOOLEAN NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS registered_device_token VARCHAR(128),
       ADD COLUMN IF NOT EXISTS registered_device_metadata JSONB,
-      ADD COLUMN IF NOT EXISTS registered_device_registered_at TIMESTAMPTZ;
+      ADD COLUMN IF NOT EXISTS registered_device_registered_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS last_seen_ip VARCHAR(45),
+      ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
 
     CREATE INDEX IF NOT EXISTS idx_users_registered_device_token
       ON users(registered_device_token);
+
+    CREATE TABLE IF NOT EXISTS device_events (
+      id SERIAL PRIMARY KEY,
+      user_id INT REFERENCES users(id) ON DELETE CASCADE,
+      event_type VARCHAR(50) NOT NULL,
+      ip_address VARCHAR(45),
+      user_agent TEXT,
+      metadata JSONB,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_device_events_user_time ON device_events(user_id, created_at DESC);
   `);
 
   // Companies

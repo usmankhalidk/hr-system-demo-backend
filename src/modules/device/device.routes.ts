@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { getDeviceStatus, registerDevice } from './device.controller';
+import { getDeviceStatus, registerDevice, getDeviceHistory } from './device.controller';
 
 const router = Router();
 
@@ -17,7 +17,7 @@ const registerDeviceSchema = z.object({
 router.get(
   '/status',
   authenticate,
-  requireRole('employee'),
+  requireRole('employee', 'store_terminal'),
   enforceCompany,
   getDeviceStatus,
 );
@@ -25,10 +25,18 @@ router.get(
 router.post(
   '/register',
   authenticate,
-  requireRole('employee'),
+  requireRole('employee', 'store_terminal'),
   enforceCompany,
   validate(registerDeviceSchema),
   registerDevice,
+);
+
+router.get(
+  '/history/:userId',
+  authenticate,
+  requireRole('admin', 'hr'),
+  enforceCompany,
+  getDeviceHistory,
 );
 
 export default router;

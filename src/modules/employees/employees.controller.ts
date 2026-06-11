@@ -30,6 +30,9 @@ const LIST_FIELDS = `
   u.device_reset_pending,
   (u.registered_device_token IS NOT NULL) AS device_registered,
   u.registered_device_registered_at AS device_registered_at,
+  u.registered_device_metadata AS device_metadata,
+  u.last_seen_ip,
+  u.last_seen_at,
   s.name AS store_name,
   CONCAT(sup.name, ' ', sup.surname) AS supervisor_name
 `;
@@ -1337,18 +1340,32 @@ export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Respon
          updated_at = NOW()
      WHERE id = $1
        AND company_id = ANY($2)
-       AND role = 'employee'
+       AND role IN ('employee', 'store_terminal')
        AND status = 'active'
      RETURNING id, company_id, device_reset_pending,
                (registered_device_token IS NOT NULL) AS device_registered,
                registered_device_registered_at AS device_registered_at`,
-    [empId, allowedCompanyIds],
+     [empId, allowedCompanyIds],
   );
 
   if (!employee) {
     notFound(res, 'Dipendente non trovato');
     return;
   }
+
+  // Log reset event in device_events
+  let ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (ipAddress.startsWith('::ffff:')) {
+    ipAddress = ipAddress.substring(7);
+  }
+  const ua = req.headers['user-agent'] || '';
+  await query(
+    `INSERT INTO device_events (user_id, event_type, ip_address, user_agent)
+     VALUES ($1, 'reset', $2, $3)`,
+    [empId, ipAddress, ua]
+  ).catch(err => {
+    console.error('Failed to log device reset event:', err);
+  });
 
   // Real-time update for HR/Admin
   emitToCompany((employee as any).company_id, 'DEVICE_RESET', { userId: employee.id });
