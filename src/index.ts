@@ -73,6 +73,13 @@ app.use(cors({
     // Allow requests with no origin (curl, mobile apps, server-to-server)
     if (!origin) return cb(null, true);
     if (allowedOrigins.includes(origin)) return cb(null, true);
+    
+    // In development, dynamically allow local network IP origins (e.g. http://192.168.x.x:5173)
+    if (process.env.NODE_ENV !== 'production') {
+      const isLocalIp = /^http:\/\/(localhost|127\.0\.0\.1|192\.168\.\d+\.\d+|10\.\d+\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+)(:\d+)?$/.test(origin);
+      if (isLocalIp) return cb(null, true);
+    }
+    
     cb(new Error(`CORS: origin ${origin} not allowed`));
   },
 }));
