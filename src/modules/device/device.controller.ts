@@ -1,5 +1,6 @@
 import { Request, Response } from 'express';
 import crypto from 'crypto';
+import bcrypt from 'bcryptjs';
 import { UAParser } from 'ua-parser-js';
 import { queryOne, query } from '../../config/database';
 import { ok, badRequest, forbidden } from '../../utils/response';
@@ -228,4 +229,99 @@ export const getDeviceHistory = asyncHandler(async (req: Request, res: Response)
   );
 
   ok(res, events);
+});
+
+export const reRegisterDevice = asyncHandler(async (req: Request, res: Response) => {
+  const { userId, companyId } = req.user!;
+  const { email, password, fingerprint, metadata } = req.body as { email: string; password: string; fingerprint: string; metadata?: any };
+
+  if (!email || !password || !fingerprint) {
+    return badRequest(res, 'Email, password and fingerprint are required');
+  }
+
+  // Fetch the logged-in user
+  const user = await queryOne<{ id: number; company_id: number; email: string; password_hash: string; role: string }>(
+    `SELECT id, company_id, email, password_hash, role
+     FROM users 
+     WHERE id = $1 AND company_id = $2`,
+    [userId, companyId]
+  );
+
+  if (!user) {
+    return forbidden(res, 'User not found');
+  }
+
+  // Validate that the email entered matches the logged-in user's email (case-insensitive)
+  if (user.email.toLowerCase() !== email.toLowerCase()) {
+    return forbidden(res, 'Credentials do not match the current logged-in user');
+  }
+
+  // Verify password
+  if (!(await bcrypt.compare(password, user.password_hash))) {
+    return forbidden(res, 'Invalid password');
+  }
+
+  // Calculate new token
+  const token = hashDeviceFingerprint(fingerprint);
+
+  // Parse user-agent and metadata
+  let ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (ipAddress.startsWith('::ffff:')) {
+    ipAddress = ipAddress.substring(7);
+  }
+  const ua = req.headers['user-agent'] || '';
+  const parser = new UAParser(ua);
+  const uaResult = parser.getResult();
+
+  const mergedMetadata = {
+    ...metadata,
+    ipAddress,
+    userAgent: ua,
+    browser: {
+      name: metadata?.browser?.name || uaResult.browser.name || null,
+      version: metadata?.browser?.version || uaResult.browser.version || null,
+    },
+    os: {
+      name: metadata?.os?.name || uaResult.os.name || null,
+      version: metadata?.os?.version || uaResult.os.version || null,
+    },
+    device: {
+      model: metadata?.device?.model || uaResult.device.model || null,
+      vendor: metadata?.device?.vendor || uaResult.device.vendor || null,
+      type: metadata?.device?.type || uaResult.device.type || null,
+    },
+  };
+
+  // Run updates: clear and bind
+  await query(
+    `UPDATE users
+     SET registered_device_token = $1,
+         registered_device_metadata = $2,
+         registered_device_registered_at = NOW(),
+         device_reset_pending = false,
+         updated_at = NOW()
+     WHERE id = $3`,
+    [token, mergedMetadata, userId]
+  );
+
+  // Log reset and registered events
+  await query(
+    `INSERT INTO device_events (user_id, event_type, ip_address, user_agent)
+     VALUES ($1, 'reset', $2, $3)`,
+    [userId, ipAddress, ua]
+  ).catch(() => {});
+
+  await query(
+    `INSERT INTO device_events (user_id, event_type, ip_address, user_agent, metadata)
+     VALUES ($1, 'registered', $2, $3, $4)`,
+    [userId, ipAddress, ua, mergedMetadata]
+  ).catch(() => {});
+
+  // Emit real-time events
+  if (companyId) {
+    emitToCompany(companyId, 'DEVICE_RESET', { userId });
+    emitToCompany(companyId, 'DEVICE_REGISTERED', { userId });
+  }
+
+  ok(res, { success: true }, 'Terminal re-registered successfully');
 });

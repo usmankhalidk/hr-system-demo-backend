@@ -73,6 +73,12 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
       u.company_id, 
       u.store_id,
       u.plain_password,
+      u.device_reset_pending,
+      (u.registered_device_token IS NOT NULL) AS device_registered,
+      u.registered_device_registered_at AS device_registered_at,
+      u.registered_device_metadata AS device_metadata,
+      u.last_seen_ip,
+      u.last_seen_at,
       c.name as company_name,
       s.name as store_name
     FROM users u
@@ -184,17 +190,14 @@ export const createTerminal = asyncHandler(async (req: Request, res: Response) =
 
 export const updateTerminal = asyncHandler(async (req: Request, res: Response) => {
   const terminalId = parseInt(req.params.id, 10);
-  const { password } = req.body;
+  const { email, password } = req.body;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
 
   if (isNaN(terminalId)) return badRequest(res, 'Invalid terminal ID');
-  if (!password || password.length < 8) {
-    return badRequest(res, 'Password must be at least 8 characters');
-  }
 
   // Verify terminal exists, is a terminal, and is in scope
-  const terminal = await queryOne(
-    `SELECT u.id, u.company_id 
+  const terminal = await queryOne<{ id: number; company_id: number; email: string; plain_password?: string }>(
+    `SELECT u.id, u.company_id, u.email, u.plain_password
      FROM users u 
      WHERE u.id = $1 AND u.role = 'store_terminal' AND u.company_id = ANY($2)`,
     [terminalId, allowedCompanyIds]
@@ -202,13 +205,41 @@ export const updateTerminal = asyncHandler(async (req: Request, res: Response) =
 
   if (!terminal) return notFound(res, 'Terminal not found or access denied');
 
-  const passwordHash = await bcrypt.hash(password, 12);
+  const updates: string[] = [];
+  const params: any[] = [];
+
+  if (email && email !== terminal.email) {
+    // Check if email is available
+    const emailExists = await queryOne('SELECT id FROM users WHERE email = $1 AND id <> $2', [email, terminalId]);
+    if (emailExists) {
+      return conflict(res, 'Email already in use');
+    }
+    params.push(email);
+    updates.push(`email = $${params.length}`);
+  }
+
+  if (password && password !== terminal.plain_password) {
+    if (password.length < 8) {
+      return badRequest(res, 'Password must be at least 8 characters');
+    }
+    const passwordHash = await bcrypt.hash(password, 12);
+    params.push(passwordHash);
+    updates.push(`password_hash = $${params.length}`);
+    params.push(password);
+    updates.push(`plain_password = $${params.length}`);
+  }
+
+  if (updates.length === 0) {
+    return ok(res, null, 'No updates performed');
+  }
+
+  params.push(terminalId);
   await query(
-    'UPDATE users SET password_hash = $1, plain_password = $2, updated_at = NOW() WHERE id = $3',
-    [passwordHash, password, terminalId]
+    `UPDATE users SET ${updates.join(', ')}, updated_at = NOW() WHERE id = $${params.length}`,
+    params
   );
 
-  ok(res, null, 'Terminal password updated successfully');
+  ok(res, null, 'Terminal updated successfully');
 });
 
 export const deleteTerminal = asyncHandler(async (req: Request, res: Response) => {
