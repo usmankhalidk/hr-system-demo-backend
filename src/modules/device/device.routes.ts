@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { getDeviceStatus, registerDevice, getDeviceHistory } from './device.controller';
+import { getDeviceStatus, registerDevice, getDeviceHistory, reRegisterDevice } from './device.controller';
 
 const router = Router();
 
@@ -11,6 +11,13 @@ const router = Router();
 const registerDeviceSchema = z.object({
   fingerprint: z.string().min(10, 'Device fingerprint obbligatorio'),
   // Arbitrary client metadata (user-agent/screen/etc). Stored as JSONB.
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+const reRegisterDeviceSchema = z.object({
+  email: z.string().email('Email non valida'),
+  password: z.string().min(1, 'Password obbligatoria'),
+  fingerprint: z.string().min(10, 'Device fingerprint obbligatorio'),
   metadata: z.record(z.string(), z.unknown()).optional(),
 });
 
@@ -29,6 +36,15 @@ router.post(
   enforceCompany,
   validate(registerDeviceSchema),
   registerDevice,
+);
+
+router.post(
+  '/re-register',
+  authenticate,
+  requireRole('store_terminal', 'admin', 'hr', 'area_manager', 'store_manager'),
+  enforceCompany,
+  validate(reRegisterDeviceSchema),
+  reRegisterDevice,
 );
 
 router.get(

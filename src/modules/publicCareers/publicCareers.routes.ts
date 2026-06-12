@@ -1193,10 +1193,13 @@ router.get(
       language: string;
       title: string;
       content: string;
+      platform_company_name: string | null;
+      platform_company_email: string | null;
       updated_at: string;
       updated_by_name: string | null;
     }>(
-      `SELECT ld.id, ld.document_key, ld.language, ld.title, ld.content, ld.updated_at,
+      `SELECT ld.id, ld.document_key, ld.language, ld.title, ld.content,
+              ld.platform_company_name, ld.platform_company_email, ld.updated_at,
               CONCAT(u.name, ' ', u.surname) as updated_by_name
        FROM legal_documents ld
        LEFT JOIN users u ON u.id = ld.updated_by
@@ -1221,7 +1224,7 @@ router.put(
   requireSuperAdmin,
   asyncHandler(async (req: Request, res: Response) => {
     const { key } = req.params;
-    const { language, title, content } = req.body;
+    const { language, title, content, platform_company_name, platform_company_email } = req.body;
     const userId = req.user!.userId;
 
     if (!['privacy', 'terms', 'cookie'].includes(key)) {
@@ -1235,16 +1238,26 @@ router.put(
     }
 
     const queryText = `
-      INSERT INTO legal_documents (document_key, language, title, content, updated_by, updated_at)
-      VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+      INSERT INTO legal_documents (document_key, language, title, content, platform_company_name, platform_company_email, updated_by, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, CURRENT_TIMESTAMP)
       ON CONFLICT (document_key, language) DO UPDATE
       SET title = EXCLUDED.title,
           content = EXCLUDED.content,
+          platform_company_name = EXCLUDED.platform_company_name,
+          platform_company_email = EXCLUDED.platform_company_email,
           updated_by = EXCLUDED.updated_by,
           updated_at = CURRENT_TIMESTAMP
-      RETURNING id, document_key, language, title, content, updated_at
+      RETURNING id, document_key, language, title, content, platform_company_name, platform_company_email, updated_at
     `;
-    const result = await queryOne(queryText, [key, language, title, content, userId]);
+    const result = await queryOne(queryText, [key, language, title, content, platform_company_name || null, platform_company_email || null, userId]);
+
+    // Sync platform company name and email globally to all legal documents
+    await query(
+      `UPDATE legal_documents 
+       SET platform_company_name = $1, 
+           platform_company_email = $2`,
+      [platform_company_name || null, platform_company_email || null]
+    );
 
     // Fetch user full name for response metadata
     const user = await queryOne<{ name: string; surname: string | null }>(

@@ -5,7 +5,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const QR_SECRET = process.env.QR_SECRET;
 if (!JWT_SECRET) throw new Error('FATAL: JWT_SECRET environment variable is required');
 if (!QR_SECRET) throw new Error('FATAL: QR_SECRET environment variable is required');
-const QR_TOKEN_TTL = parseInt(process.env.QR_TOKEN_TTL || '60', 10);
+const QR_TOKEN_TTL = parseInt(process.env.QR_TOKEN_TTL || '180', 10);
 
 export type UserRole = 'admin' | 'hr' | 'area_manager' | 'store_manager' | 'employee' | 'store_terminal';
 
