@@ -96,7 +96,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   };
   // Employees can only check in for themselves — managers/terminals can specify any user
   let user_id: number;
-  if (role === 'employee') {
+  if (role === 'employee' || (role === 'store_manager' && !req.body.unique_id && !req.body.user_id)) {
     user_id = callerId;
   } else if (req.body.unique_id) {
     // Resolve unique_id → numeric user_id within this company
@@ -162,7 +162,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Device binding enforcement (employee self-service only)
-  if (role === 'employee') {
+  if (role === 'employee' || (role === 'store_manager' && user_id === callerId)) {
     if (!device_fingerprint || typeof device_fingerprint !== 'string') {
       forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
       return;
