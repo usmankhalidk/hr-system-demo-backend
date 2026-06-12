@@ -1415,7 +1415,7 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
       );
 
       if (interviewerNotifLog) {
-        const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+        const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' });
         const candidateName = candidateDetails?.full_name?.trim()
           || (interviewerLocale === 'it' ? 'il candidato' : 'the candidate');
         const locationSuffix = typeof location === 'string' && location.trim()
@@ -1431,7 +1431,7 @@ export const createInterviewHandler = asyncHandler(async (req: Request, res: Res
               title:   t(interviewerLocale, 'notifications.ats_interview_invite.title'),
               message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
                 candidate: candidateName,
-                date: scheduledDate.toLocaleDateString(dateLocale),
+                date: scheduledDate.toLocaleDateString(dateLocale, { timeZone: 'Europe/Rome' }),
                 time: scheduledTime,
                 location: locationSuffix,
               }),
@@ -1931,6 +1931,7 @@ function formatPdfDate(value: unknown): string {
     year: 'numeric',
     hour: '2-digit',
     minute: '2-digit',
+    timeZone: 'Europe/Rome',
   });
 }
 
@@ -2851,7 +2852,7 @@ export const sendInterviewNotificationHandler = asyncHandler(async (req: Request
         `SELECT full_name FROM candidates WHERE id = $1 LIMIT 1`,
         [interviewRow.candidate_id],
       );
-      const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit' });
+      const scheduledTime = scheduledDate.toLocaleTimeString(dateLocale, { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Rome' });
       const candidateName = candidateRow?.full_name?.trim()
         || (interviewerLocale === 'it' ? 'il candidato' : 'the candidate');
       const locationSuffix = interviewRow.location && interviewRow.location.trim()
@@ -2865,7 +2866,7 @@ export const sendInterviewNotificationHandler = asyncHandler(async (req: Request
         title: t(interviewerLocale, 'notifications.ats_interview_invite.title'),
         message: t(interviewerLocale, 'notifications.ats_interview_invite.message', {
           candidate: candidateName,
-          date: scheduledDate.toLocaleDateString(dateLocale),
+          date: scheduledDate.toLocaleDateString(dateLocale, { timeZone: 'Europe/Rome' }),
           time: scheduledTime,
           location: locationSuffix,
         }),
@@ -2972,10 +2973,12 @@ async function sendProfessionalInterviewEmail(params: {
       day: '2-digit',
       month: 'long',
       year: 'numeric',
+      timeZone: 'Europe/Rome',
     });
     const timeLabel = scheduledDate.toLocaleTimeString('it-IT', {
       hour: '2-digit',
       minute: '2-digit',
+      timeZone: 'Europe/Rome',
     });
     const logoPath = findEmailLogoPath();
     const logoCid = logoPath ? 'veylo-hr-logo' : null;
@@ -3020,7 +3023,7 @@ async function sendProfessionalInterviewEmail(params: {
             <table style="width: 100%; border-collapse: collapse;">
               <tr>
                 <td style="padding: 8px 0; color: #64748b; font-weight: 600; width: 140px;">Data e Ora</td>
-                <td style="padding: 8px 0; color: #0f172a;">${interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at).toLocaleString('it-IT') : 'N/A'}</td>
+                <td style="padding: 8px 0; color: #0f172a;">${interviewRow.scheduled_at ? new Date(interviewRow.scheduled_at).toLocaleString('it-IT', { timeZone: 'Europe/Rome' }) : 'N/A'}</td>
               </tr>
               <tr>
                 <td style="padding: 8px 0; color: #64748b; font-weight: 600;">Tipo</td>
