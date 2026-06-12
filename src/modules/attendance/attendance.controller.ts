@@ -190,36 +190,87 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     }
   }
 
-  // 4. Find an active shift window in UTC for this user/store, allowing 15 minutes early clock-in.
-  const currentShift = await queryOne<{
-    id: number;
-    shift_date: string;
-    shift_timezone: string;
-    start_at_utc: string;
-    end_at_utc: string;
-  }>(
-    `SELECT
-       s.id,
-       TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
-       ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
-       ${SHIFT_START_UTC_SQL} AS start_at_utc,
-       ${SHIFT_END_UTC_SQL} AS end_at_utc
-     FROM shifts s
-     WHERE s.company_id = $1
-       AND s.user_id = $2
-       AND s.store_id = $3
-       AND s.status != 'cancelled'
-       AND NOW() >= ${SHIFT_START_UTC_SQL} - INTERVAL '15 minutes'
-       AND NOW() <= ${SHIFT_END_UTC_SQL}
-     ORDER BY ${SHIFT_START_UTC_SQL}
-     LIMIT 1`,
-    [companyId, user_id, payload.storeId],
-  );
+  // 4. Find an active shift window in UTC for this user/store.
+  let currentShift;
+  if (event_type === 'checkin') {
+    currentShift = await queryOne<{
+      id: number;
+      shift_date: string;
+      shift_timezone: string;
+      start_at_utc: string;
+      end_at_utc: string;
+    }>(
+      `SELECT
+         s.id,
+         TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+         ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
+         ${SHIFT_START_UTC_SQL} AS start_at_utc,
+         ${SHIFT_END_UTC_SQL} AS end_at_utc
+       FROM shifts s
+       WHERE s.company_id = $1
+         AND s.user_id = $2
+         AND s.store_id = $3
+         AND s.status != 'cancelled'
+         AND NOW() >= ${SHIFT_START_UTC_SQL} - INTERVAL '15 minutes'
+         AND NOW() <= ${SHIFT_END_UTC_SQL}
+       ORDER BY ${SHIFT_START_UTC_SQL}
+       LIMIT 1`,
+      [companyId, user_id, payload.storeId],
+    );
+  } else {
+    currentShift = await queryOne<{
+      id: number;
+      shift_date: string;
+      shift_timezone: string;
+      start_at_utc: string;
+      end_at_utc: string;
+    }>(
+      `SELECT
+         s.id,
+         TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+         ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
+         ${SHIFT_START_UTC_SQL} AS start_at_utc,
+         ${SHIFT_END_UTC_SQL} AS end_at_utc
+       FROM shifts s
+       WHERE s.company_id = $1
+         AND s.user_id = $2
+         AND s.store_id = $3
+         AND s.status != 'cancelled'
+         AND s.date = (NOW() AT TIME ZONE ${SHIFT_TIMEZONE_SQL})::DATE
+       ORDER BY ${SHIFT_START_UTC_SQL}
+       LIMIT 1`,
+      [companyId, user_id, payload.storeId],
+    );
+  }
 
   // Shift and holiday rules:
   // - no attendance actions when no scheduled shift for today in this store
   // - no actions on approved leave day
   if (!currentShift) {
+    // Check if there is a shift scheduled today at a DIFFERENT store for this user
+    const otherStoreShift = await queryOne<{ store_name: string; start_time: string }>(
+      `SELECT st.name AS store_name, s.start_time
+       FROM shifts s
+       JOIN stores st ON s.store_id = st.id
+       WHERE s.company_id = $1
+         AND s.user_id = $2
+         AND s.store_id != $3
+         AND s.status != 'cancelled'
+         AND s.date = (NOW() AT TIME ZONE ${SHIFT_TIMEZONE_SQL})::DATE
+       LIMIT 1`,
+      [companyId, user_id, payload.storeId],
+    );
+
+    if (otherStoreShift) {
+      res.status(400).json({
+        success: false,
+        error: `Hai un turno programmato oggi presso il negozio "${otherStoreShift.store_name}", non in questo negozio.`,
+        code: 'SHIFT_STORE_MISMATCH',
+        storeName: otherStoreShift.store_name,
+      });
+      return;
+    }
+
     // Check if there is ANY shift scheduled for this user today at this store in their local timezone date
     const todayShift = await queryOne<{ start_time: string }>(
       `SELECT start_time
@@ -233,7 +284,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       [companyId, user_id, payload.storeId],
     );
 
-    if (todayShift) {
+    if (todayShift && event_type === 'checkin') {
       badRequest(
         res,
         `Hai un turno programmato oggi alle ${todayShift.start_time.slice(0, 5)}. Puoi timbrare al massimo 15 minuti prima dell'inizio del turno.`,
@@ -1478,12 +1529,15 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
   const today = localToday();
 
   // 1. Check if employee has a shift today (any non-cancelled shift for today)
-  const todayShift = await queryOne<{ id: number; shift_date: string; shift_timezone: string }>(
+  const todayShift = await queryOne<{ id: number; store_id: number; store_name: string; shift_date: string; shift_timezone: string }>(
     `SELECT
        s.id,
+       s.store_id,
+       st.name AS store_name,
        TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
        ${SHIFT_TIMEZONE_SQL} AS shift_timezone
      FROM shifts s
+     JOIN stores st ON s.store_id = st.id
      WHERE s.company_id = $1
        AND s.user_id = $2
        AND s.status != 'cancelled'
@@ -1515,14 +1569,16 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
     ok(res, {
       hasShift,
       hasLeave,
+      shiftStoreId: todayShift?.store_id,
+      shiftStoreName: todayShift?.store_name,
       state: { checkedIn: false, breakStarted: false, breakEnded: false, checkedOut: false },
     });
     return;
   }
 
   // 3. Fetch today's events for state derivation
-  const dayEvents = await query<{ event_type: string }>(
-    `SELECT event_type
+  const dayEvents = await query<{ event_type: string; event_time: Date }>(
+    `SELECT event_type, event_time
      FROM attendance_events
      WHERE company_id = $1
        AND user_id = $2
@@ -1533,12 +1589,22 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
   );
 
   const types = dayEvents.map((e) => e.event_type);
-  const state = {
-    checkedIn: types.includes('checkin'),
-    breakStarted: types.includes('break_start'),
-    breakEnded: types.includes('break_end'),
-    checkedOut: types.includes('checkout'),
+
+  const findTime = (type: string) => {
+    const found = dayEvents.find((e) => e.event_type === type);
+    return found ? found.event_time.toISOString() : null;
   };
 
-  ok(res, { hasShift, hasLeave, state });
+  const state = {
+    checkedIn: types.includes('checkin'),
+    checkedInTime: findTime('checkin'),
+    breakStarted: types.includes('break_start'),
+    breakStartedTime: findTime('break_start'),
+    breakEnded: types.includes('break_end'),
+    breakEndedTime: findTime('break_end'),
+    checkedOut: types.includes('checkout'),
+    checkedOutTime: findTime('checkout'),
+  };
+
+  ok(res, { hasShift, hasLeave, shiftStoreId: todayShift.store_id, shiftStoreName: todayShift.store_name, state });
 });
