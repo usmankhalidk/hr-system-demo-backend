@@ -198,13 +198,13 @@ export const globalSearch = asyncHandler(async (req: Request, res: Response) => 
               u.surname AS employee_surname,
               u.email AS employee_email,
               u.role AS employee_role,
-              eot.company_id,
+              ot.company_id,
               c.name AS company_name
        FROM employee_onboarding_tasks eot
        JOIN onboarding_templates ot ON ot.id = eot.template_id
        JOIN users u ON u.id = eot.employee_id
-       LEFT JOIN companies c ON c.id = eot.company_id
-       WHERE eot.company_id = ANY($1)
+       LEFT JOIN companies c ON c.id = ot.company_id
+       WHERE ot.company_id = ANY($1)
          AND (
            (ot.name ILIKE $2 OR ot.description ILIKE $2 OR u.name ILIKE $2 OR u.surname ILIKE $2)
            OR ($4::TEXT IS NOT NULL AND u.role::text = $4)

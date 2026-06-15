@@ -10,7 +10,6 @@ app.use(express.json());
 app.use('/api/auth', authRoutes);
 app.use('/api/search', searchRoutes);
 app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-  console.error("Test error middleware caught:", err);
   res.status(500).json({ success: false, error: err.message });
 });
 
