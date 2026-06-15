@@ -24,7 +24,7 @@ const reRegisterDeviceSchema = z.object({
 router.get(
   '/status',
   authenticate,
-  requireRole('employee', 'store_terminal'),
+  requireRole('employee', 'store_terminal', 'store_manager'),
   enforceCompany,
   getDeviceStatus,
 );
@@ -32,7 +32,7 @@ router.get(
 router.post(
   '/register',
   authenticate,
-  requireRole('employee', 'store_terminal'),
+  requireRole('employee', 'store_terminal', 'store_manager'),
   enforceCompany,
   validate(registerDeviceSchema),
   registerDevice,
