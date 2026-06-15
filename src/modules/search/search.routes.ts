@@ -4,7 +4,7 @@ import { authenticate, requireRole } from '../../middleware/auth';
 
 const router = Router();
 
-// Allow super admins, company admins, and HR users to perform global search
-router.get('/', authenticate, requireRole('admin', 'hr'), globalSearch);
+// Allow super admins, company admins, HR, and area managers to perform global search
+router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager', 'system_admin'), globalSearch);
 
 export default router;
