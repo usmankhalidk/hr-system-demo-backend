@@ -91,11 +91,14 @@ export const globalSearch = asyncHandler(async (req: Request, res: Response) => 
   if (queryCompanies) {
     queries.push(
       query(
-        `SELECT id, name, slug, logo_filename
-         FROM companies
-         WHERE id = ANY($1) 
-           AND (name ILIKE $2 OR slug ILIKE $2)
-         ORDER BY name
+        `SELECT c.id, c.name, c.slug, c.logo_filename, cg.name AS group_name,
+                (SELECT COUNT(*)::int FROM stores s WHERE s.company_id = c.id) AS store_count,
+                (SELECT COUNT(*)::int FROM users u WHERE u.company_id = c.id AND u.role::text != 'store_terminal') AS employee_count
+         FROM companies c
+         LEFT JOIN company_groups cg ON cg.id = c.group_id
+         WHERE c.id = ANY($1) 
+           AND (c.name ILIKE $2 OR c.slug ILIKE $2)
+         ORDER BY c.name
          LIMIT $3`,
         [allowedCompanyIds, searchPattern, limitVal]
       ).then((res) => {
@@ -183,20 +186,31 @@ export const globalSearch = asyncHandler(async (req: Request, res: Response) => 
     ) : Promise.resolve([]);
 
     const tasksQuery = query(
-      `SELECT u.id AS employee_id, u.name AS employee_name, u.surname AS employee_surname, u.email AS employee_email, u.role AS employee_role, u.company_id, c.name AS company_name,
-              COUNT(eot.id)::int AS total_tasks,
-              COUNT(CASE WHEN eot.completed = TRUE THEN 1 END)::int AS completed_tasks
-       FROM users u
-       LEFT JOIN companies c ON c.id = u.company_id
-       INNER JOIN employee_onboarding_tasks eot ON eot.employee_id = u.id
-       WHERE u.company_id = ANY($1)
+      `SELECT eot.id,
+              ot.name AS task_name,
+              ot.description AS task_description,
+              ot.category AS task_category,
+              ot.priority AS task_priority,
+              eot.completed,
+              eot.completed_at,
+              u.id AS employee_id,
+              u.name AS employee_name,
+              u.surname AS employee_surname,
+              u.email AS employee_email,
+              u.role AS employee_role,
+              eot.company_id,
+              c.name AS company_name
+       FROM employee_onboarding_tasks eot
+       JOIN onboarding_templates ot ON ot.id = eot.template_id
+       JOIN users u ON u.id = eot.employee_id
+       LEFT JOIN companies c ON c.id = eot.company_id
+       WHERE eot.company_id = ANY($1)
          AND (
-           (u.name ILIKE $2 OR u.surname ILIKE $2 OR u.email ILIKE $2)
+           (ot.name ILIKE $2 OR ot.description ILIKE $2 OR u.name ILIKE $2 OR u.surname ILIKE $2)
            OR ($4::TEXT IS NOT NULL AND u.role::text = $4)
          )
          AND ($5::TEXT IS NULL OR u.role::text = $5)
-       GROUP BY u.id, u.name, u.surname, u.email, u.role, u.company_id, c.name
-       ORDER BY u.surname, u.name
+       ORDER BY ot.name
        LIMIT $3`,
       [allowedCompanyIds, searchPattern, limitVal, queryRole, roleFilter]
     );
