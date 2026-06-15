@@ -253,7 +253,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         if (shiftStart.getTime() > nowTs) continue;
 
         if (!evGroup?.checkin) {
-          if (shiftEnd.getTime() < nowTs) {
+          if (shiftEnd.getTime() < nowTs || shiftStart.getTime() + LATE_MS < nowTs) {
             totalAbsences++;
           }
           continue;
@@ -309,7 +309,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       const [
         expiringContracts, newHires, totalEmployeesRes, monthlyHires, statusBreakdown, expiringTrainings, expiringMedicals,
         pendingShiftPreview, pendingShiftCountRow, pendingLeavePreview, pendingLeaveCountRow,
-        totalStoresRes, expiringContractsCountRes,
+        totalStoresRes, expiringContractsCountRes, nextShiftRow,
       ] = await Promise.all([
         query(
           `SELECT id, name, surname, store_id, termination_date AS contract_end_date FROM users
@@ -398,6 +398,20 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
           `SELECT COUNT(*) AS count FROM users WHERE company_id = ANY($1) AND status = 'active' AND role != 'store_terminal' AND termination_date BETWEEN CURRENT_DATE AND CURRENT_DATE + INTERVAL '30 days'`,
           [allowedCompanyIds]
         ),
+        // Caller's own next shift
+        queryOne(
+          `SELECT s.id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+                  s.start_time, s.end_time, s.status,
+                  st.name AS store_name
+           FROM shifts s
+           JOIN stores st ON st.id = s.store_id
+           WHERE s.user_id = $1 AND s.company_id = $2
+             AND s.status != 'cancelled'
+             AND s.date >= CURRENT_DATE
+           ORDER BY s.date, s.start_time
+           LIMIT 1`,
+          [userId, companyId]
+        ),
       ]);
       ok(res, {
         expiringContracts,
@@ -413,6 +427,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         pendingLeaveCount: parseInt(pendingLeaveCountRow?.c ?? '0', 10),
         totalStores: parseInt(totalStoresRes?.count || '0', 10),
         expiringContractsCount: parseInt(expiringContractsCountRes?.count || '0', 10),
+        nextShift: nextShiftRow ?? null,
       });
       break;
     }
@@ -545,12 +560,27 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         );
         pendingLeaveCount = parseInt(plc?.c ?? '0', 10);
       }
+      const nextShiftRow = await queryOne(
+        `SELECT s.id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+                s.start_time, s.end_time, s.status,
+                st.name AS store_name
+         FROM shifts s
+         JOIN stores st ON st.id = s.store_id
+         WHERE s.user_id = $1 AND s.company_id = $2
+           AND s.status != 'cancelled'
+           AND s.date >= CURRENT_DATE
+         ORDER BY s.date, s.start_time
+         LIMIT 1`,
+        [userId, companyId]
+      );
+
       ok(res, {
         assignedStores,
         pendingShiftPreview,
         pendingShiftCount,
         pendingLeavePreview,
         pendingLeaveCount,
+        nextShift: nextShiftRow ?? null,
         stats: {
           totalStores: visibleStoreIds.length,
           activeEmployees: activeEmployeesCount,
