@@ -77,7 +77,7 @@ const syncSchema = z.object({
 router.post(
   '/sync',
   authenticate,
-  requireRole('store_terminal', 'employee'),
+  requireRole('store_terminal', 'employee', 'store_manager'),
   enforceCompany,
   requireModulePermission('presenze', 'read'),
   validate(syncSchema),
@@ -94,22 +94,22 @@ router.get(
   getAnomalies,
 );
 
-// GET /api/attendance/my — employee self-service attendance history
+// GET /api/attendance/my — employee/store_manager self-service attendance history
 router.get(
   '/my',
   authenticate,
-  requireRole('employee'),
+  requireRole('employee', 'store_manager'),
   enforceCompany,
   requireModulePermission('presenze', 'read'),
   listMyAttendanceEvents,
 );
 
-// GET /api/attendance/daily-state — employee today's attendance state (for state machine)
+// GET /api/attendance/daily-state — employee/store_manager today's attendance state (for state machine)
 // Does NOT require the presenze module permission — functionality vs visibility
 router.get(
   '/daily-state',
   authenticate,
-  requireRole('employee'),
+  requireRole('employee', 'store_manager'),
   enforceCompany,
   getDailyState,
 );

@@ -148,7 +148,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       isDeviceRegistered: user.registered_device_token != null,
       deviceResetPending: user.device_reset_pending === true,
       requiresDeviceRegistration:
-        (user.role === 'employee' || user.role === 'store_terminal') &&
+        (user.role === 'employee' || user.role === 'store_terminal' || user.role === 'store_manager') &&
         (user.registered_device_token == null || user.device_reset_pending === true),
     },
   });
@@ -195,7 +195,7 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
     isDeviceRegistered: user.registered_device_token != null,
     deviceResetPending: user.device_reset_pending === true,
     requiresDeviceRegistration:
-      (user.role === 'employee' || user.role === 'store_terminal') &&
+      (user.role === 'employee' || user.role === 'store_terminal' || user.role === 'store_manager') &&
       (user.registered_device_token == null || user.device_reset_pending === true),
   });
 });
