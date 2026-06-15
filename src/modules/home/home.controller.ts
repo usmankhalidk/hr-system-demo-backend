@@ -576,7 +576,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         activeEmpRes,
         presentEmpRes,
         weeklyHoursRes,
-        overtimeRes
+        overtimeRes,
+        nextShiftRow
       ] = await Promise.all([
         queryOne(
           `SELECT id, name, code, max_staff FROM stores WHERE id = $1 AND company_id = $2`,
@@ -663,6 +664,20 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
              AND s.date < DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'
              AND ae.event_time > (s.date + s.end_time)`,
           [storeId]
+        ),
+        // Manager's own next shift
+        queryOne(
+          `SELECT s.id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
+                  s.start_time, s.end_time, s.status,
+                  st.name AS store_name
+           FROM shifts s
+           JOIN stores st ON st.id = s.store_id
+           WHERE s.user_id = $1 AND s.company_id = $2
+             AND s.status != 'cancelled'
+             AND s.date >= CURRENT_DATE
+           ORDER BY s.date, s.start_time
+           LIMIT 1`,
+          [userId, companyId]
         )
       ]);
 
@@ -820,6 +835,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         ),
         upcomingWeekShiftsPlanned: parseInt(upcomingWeekCheck?.count || '0', 10) > 0,
         upcomingWeekNumber: parseInt(upcomingWeekCheck?.week_number || '0', 10),
+        nextShift: nextShiftRow ?? null,
         stats: {
           activeEmployees: activeCount,
           presentEmployees: presentCount,
