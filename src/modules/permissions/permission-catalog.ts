@@ -126,11 +126,11 @@ export const MODULE_ROLE_ELIGIBILITY: Record<ModuleName, readonly ManagedRole[]>
   team_documents: ['admin', 'hr', 'area_manager', 'store_manager'],
 };
 
-export function isRoleEligibleForModule(role: ManagedRole, moduleName: ModuleName): boolean {
-  return MODULE_ROLE_ELIGIBILITY[moduleName].includes(role);
+export function isRoleEligibleForModule(role: UserRole, moduleName: ModuleName): boolean {
+  return (MODULE_ROLE_ELIGIBILITY[moduleName] as readonly string[]).includes(role);
 }
 
-export function isDefaultEnabledForModule(role: ManagedRole, moduleName: ModuleName): boolean {
+export function isDefaultEnabledForModule(role: UserRole, moduleName: ModuleName): boolean {
   if (!isRoleEligibleForModule(role, moduleName)) return false;
   if (moduleName === 'messaggi') return true;
   if (moduleName === 'presenze' && role === 'store_terminal') return true;

@@ -96,7 +96,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   };
   // Employees can only check in for themselves — managers/terminals can specify any user
   let user_id: number;
-  if (role === 'employee' || (role === 'store_manager' && !req.body.unique_id && !req.body.user_id)) {
+  if (role === 'employee' || (['store_manager', 'hr', 'area_manager'].includes(role) && !req.body.unique_id && !req.body.user_id)) {
     user_id = callerId;
   } else if (req.body.unique_id) {
     // Resolve unique_id → numeric user_id within this company
@@ -162,7 +162,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   }
 
   // Device binding enforcement (employee self-service only)
-  if (role === 'employee' || (role === 'store_manager' && user_id === callerId)) {
+  if (role === 'employee' || (['store_manager', 'hr', 'area_manager'].includes(role) && user_id === callerId)) {
     if (!device_fingerprint || typeof device_fingerprint !== 'string') {
       forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
       return;
@@ -976,55 +976,41 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 // GET /api/attendance/anomalies
 // Query params: store_id?, date_from?, date_to?
-// Only analyses PAST shifts (date < today, or date = today with end_time passed).
 // Anomaly types: late_arrival, no_show, long_break, early_exit
 // ---------------------------------------------------------------------------
-export const getAnomalies = asyncHandler(async (req: Request, res: Response) => {
-  const { role, userId, storeId: callerStoreId } = req.user!;
-  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
-  const { store_id, user_id, search, date_from, date_to } = req.query as Record<string, string>;
+export interface AnomalyResult {
+  shift_id: number;
+  company_id: number;
+  user_id: number;
+  user_name: string;
+  user_surname: string;
+  user_avatar_filename: string | null;
+  store_name: string;
+  date: string;
+  anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime' | 'missing_checkout';
+  severity: 'low' | 'medium' | 'high';
+  details: string;
+  details_key: string;
+  details_params: Record<string, string | number>;
+  checkin_source: string | null;
+}
 
-  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
-  if (date_from && !DATE_RE.test(date_from)) {
-    badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
-  }
-  if (date_to && !DATE_RE.test(date_to)) {
-    badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
-  }
-  let filterUserId: number | null = null;
-  if (user_id) {
-    const uid = parseInt(user_id, 10);
-    if (isNaN(uid) || uid < 1) {
-      badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
-    }
-    filterUserId = uid;
-  }
+export interface AnomalyScopeOptions {
+  role?: string;
+  callerStoreId?: number | null;
+  managedStoreIds?: number[] | null;
+  store_id?: string | number | null;
+  filterUserId?: number | null;
+  search?: string;
+}
 
-  const today = localToday();
-  const from = date_from || today;
-  const to = date_to || today;
-
-  // Cap date range to 14 days to prevent expensive full-table scans
-  const diffDays = (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24);
-  if (diffDays > 14) {
-    badRequest(res, "L'intervallo di date non può superare 14 giorni", 'VALIDATION_ERROR'); return;
-  }
-
-  // Resolve managed store IDs once (used for both shifts and events scoping)
-  let managedStoreIds: number[] | null = null;
-  if (role === 'area_manager') {
-    const rows = await query<{ store_id: number }>(
-      `SELECT DISTINCT store_id FROM users
-       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = ANY($2)
-         AND status = 'active' AND store_id IS NOT NULL`,
-      [userId, allowedCompanyIds],
-    );
-    managedStoreIds = rows.map((r) => r.store_id);
-    if (managedStoreIds.length === 0) {
-      ok(res, { anomalies: [], total: 0 });
-      return;
-    }
-  }
+export async function calculateAnomaliesForRange(
+  allowedCompanyIds: number[],
+  from: string,
+  to: string,
+  scope: AnomalyScopeOptions = {}
+): Promise<AnomalyResult[]> {
+  const { role, callerStoreId, managedStoreIds, store_id, filterUserId, search } = scope;
 
   // Build store-scope WHERE clause
   function buildStoreWhere(alias: string, startIdx: number): { clause: string; params: any[]; nextIdx: number } {
@@ -1036,7 +1022,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       return { clause: ` AND ${alias}.store_id IN (${ph})`, params: managedStoreIds, nextIdx: startIdx + managedStoreIds.length };
     }
     if (store_id) {
-      return { clause: ` AND ${alias}.store_id = $${startIdx}`, params: [parseInt(store_id, 10)], nextIdx: startIdx + 1 };
+      return { clause: ` AND ${alias}.store_id = $${startIdx}`, params: [typeof store_id === 'string' ? parseInt(store_id, 10) : store_id], nextIdx: startIdx + 1 };
     }
     return { clause: '', params: [], nextIdx: startIdx };
   }
@@ -1057,6 +1043,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     shiftExtraParams.push(`%${escapedSearch}%`);
     shiftIdx++;
   }
+
   const shifts = await query<{
     id: number; company_id: number; user_id: number; store_id: number; date: string;
     start_time: string; end_time: string;
@@ -1082,8 +1069,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   );
 
   if (shifts.length === 0) {
-    ok(res, { anomalies: [], total: 0 });
-    return;
+    return [];
   }
 
   // Fetch attendance events for the same period + scope
@@ -1130,31 +1116,20 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
   const OVERTIME_MS = 60 * 60 * 1000; // 1 hour
   const MISSING_CHECKOUT_MS = 30 * 60 * 1000; // 30 minutes after shift end
 
-  const anomalies: Array<{
-    shift_id: number; company_id: number; user_id: number; user_name: string; user_surname: string;
-    user_avatar_filename: string | null;
-    store_name: string; date: string;
-    anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime' | 'missing_checkout';
-    severity: 'low' | 'medium' | 'high';
-    details: string;
-    details_key: string;
-    details_params: Record<string, string | number>;
-    checkin_source: string | null;
-  }> = [];
-
+  const anomalies: AnomalyResult[] = [];
   const nowTs = new Date().getTime();
+
   for (const shift of shifts) {
     const key = `${shift.user_id}:${shift.date}`;
     const evGroup = eventMap.get(key);
-    // Shift times are stored as server-local-time strings; parse them as local time.
-    // This is correct because shift times are entered in the same timezone as the server.
     const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
     const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+    
     // Only process shifts that have actually started (avoid future shifts loaded from today)
     if (shiftStart.getTime() > nowTs) continue;
 
     if (!evGroup?.checkin) {
-      if (shiftEnd.getTime() < nowTs) {
+      if (shiftEnd.getTime() < nowTs || shiftStart.getTime() + LATE_MS < nowTs) {
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
@@ -1208,7 +1183,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
-    // Long break: actual break end > scheduled break end + 5 min threshold
+    // Long break
     if (bEnd && shift.break_end) {
       const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
       const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
@@ -1228,7 +1203,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       }
     }
 
-    // Missing checkout: employee checked in but never checked out, and shift ended more than 30 min ago
+    // Missing checkout
     if (checkin && !checkout && shiftEnd.getTime() + MISSING_CHECKOUT_MS < nowTs) {
       anomalies.push({
         shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
@@ -1246,7 +1221,7 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       });
     }
 
-    // Overtime: check-out > scheduled end time
+    // Overtime
     if (checkout) {
       const overtimeMs = checkout.getTime() - shiftEnd.getTime();
       if (overtimeMs > OVERTIME_MS) {
@@ -1270,6 +1245,10 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
     }
   }
 
+  return anomalies;
+}
+
+export async function sendAnomalyNotifications(anomalies: AnomalyResult[]): Promise<void> {
   const localeCache = new Map<number, string>();
   for (const anomaly of anomalies) {
     if (!localeCache.has(anomaly.user_id)) {
@@ -1322,6 +1301,65 @@ export const getAnomalies = asyncHandler(async (req: Request, res: Response) => 
       locale,
     });
   }
+}
+
+export const getAnomalies = asyncHandler(async (req: Request, res: Response) => {
+  const { role, userId, storeId: callerStoreId } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  const { store_id, user_id, search, date_from, date_to } = req.query as Record<string, string>;
+
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+  if (date_from && !DATE_RE.test(date_from)) {
+    badRequest(res, 'date_from non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  if (date_to && !DATE_RE.test(date_to)) {
+    badRequest(res, 'date_to non valido (YYYY-MM-DD)', 'VALIDATION_ERROR'); return;
+  }
+  let filterUserId: number | null = null;
+  if (user_id) {
+    const uid = parseInt(user_id, 10);
+    if (isNaN(uid) || uid < 1) {
+      badRequest(res, 'user_id non valido', 'VALIDATION_ERROR'); return;
+    }
+    filterUserId = uid;
+  }
+
+  const today = localToday();
+  const from = date_from || today;
+  const to = date_to || today;
+
+  // Cap date range to 14 days to prevent expensive full-table scans
+  const diffDays = (new Date(to).getTime() - new Date(from).getTime()) / (1000 * 60 * 60 * 24);
+  if (diffDays > 14) {
+    badRequest(res, "L'intervallo di date non può superare 14 giorni", 'VALIDATION_ERROR'); return;
+  }
+
+  // Resolve managed store IDs once (used for both shifts and events scoping)
+  let managedStoreIds: number[] | null = null;
+  if (role === 'area_manager') {
+    const rows = await query<{ store_id: number }>(
+      `SELECT DISTINCT store_id FROM users
+       WHERE role = 'store_manager' AND supervisor_id = $1 AND company_id = ANY($2)
+         AND status = 'active' AND store_id IS NOT NULL`,
+      [userId, allowedCompanyIds],
+    );
+    managedStoreIds = rows.map((r) => r.store_id);
+    if (managedStoreIds.length === 0) {
+      ok(res, { anomalies: [], total: 0 });
+      return;
+    }
+  }
+
+  const anomalies = await calculateAnomaliesForRange(allowedCompanyIds, from, to, {
+    role,
+    callerStoreId,
+    managedStoreIds,
+    store_id: store_id ? parseInt(store_id, 10) : null,
+    filterUserId,
+    search
+  });
+
+  await sendAnomalyNotifications(anomalies);
 
   ok(res, { anomalies, total: anomalies.length });
 });

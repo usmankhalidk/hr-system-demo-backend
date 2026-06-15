@@ -7,6 +7,7 @@ import { runSignatureReminderJob } from './signature-reminder.job';
 import { runAtsBottleneckJob } from './ats-bottleneck.job';
 import { runManagerAlertJob } from './manager-alert.job';
 import { runReportConfigurationsJob } from './reports.job';
+import { runAttendanceAnomalyCheckJob } from './attendance-anomaly-check.job';
 
 type JobKey =
   | 'welcome_email'
@@ -14,7 +15,8 @@ type JobKey =
   | 'document_expiry'
   | 'signature_reminder'
   | 'ats_bottleneck'
-  | 'manager_alert';
+  | 'manager_alert'
+  | 'attendance_anomaly_check';
 
 async function isJobEnabled(companyId: number, jobKey: JobKey): Promise<boolean> {
   const rows = await query<{ enabled: boolean }>(
@@ -86,6 +88,12 @@ export function startScheduler(): void {
   cron.schedule('0 7 * * *', () => {
     console.log('[scheduler] manager-alert');
     runForAllCompanies('manager_alert', runManagerAlertJob).catch(console.error);
+  });
+
+  // Attendance anomaly checker — every 15 minutes
+  cron.schedule('*/15 * * * *', () => {
+    console.log('[scheduler] attendance-anomaly-check');
+    runForAllCompanies('attendance_anomaly_check', runAttendanceAnomalyCheckJob).catch(console.error);
   });
 
   // Weekly report schedules — every minute

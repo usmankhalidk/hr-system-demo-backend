@@ -19,6 +19,7 @@ import storesRoutes from './modules/stores/stores.routes';
 import employeesRoutes from './modules/employees/employees.routes';
 import permissionsRoutes from './modules/permissions/permissions.routes';
 import homeRoutes from './modules/home/home.routes';
+import searchRoutes from './modules/search/search.routes';
 
 // Phase 2 modules
 import messagesRoutes from './modules/messages/messages.routes';
@@ -550,6 +551,7 @@ app.use('/api/stores', storesRoutes);
 app.use('/api/employees', employeesRoutes);
 app.use('/api/permissions', permissionsRoutes);
 app.use('/api/home', homeRoutes);
+app.use('/api/search', searchRoutes);
 
 // Phase 2 API Routes
 app.use('/api/shifts', shiftsRoutes);

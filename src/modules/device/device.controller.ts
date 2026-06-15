@@ -103,7 +103,7 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
   const user = await queryOne<{ registered_device_token: string | null; device_reset_pending: boolean }>(
     `SELECT registered_device_token, device_reset_pending
      FROM users
-     WHERE id = $1 AND company_id = $2 AND role IN ('employee', 'store_terminal')`,
+     WHERE id = $1 AND company_id = $2 AND role <> 'admin'`,
     [userId, companyId],
   );
 

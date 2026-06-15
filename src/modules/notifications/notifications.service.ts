@@ -1,5 +1,6 @@
 import { query, queryOne } from '../../config/database';
 import { sendNotificationEmail } from '../../services/email.service';
+import { emitToCompany } from '../../config/socket';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -258,6 +259,9 @@ export async function sendNotification(
          VALUES ($1, $2, $3, $4, $5, $6, TRUE, $7, $8, $9)`,
         [companyId, userId, type, title, message, priority, effectiveLocale, category, options.metadata ? JSON.stringify(options.metadata) : null],
       );
+
+    // Emit real-time notification event via Socket.io
+    emitToCompany(companyId, 'NOTIFICATION_CREATED', { userId, type });
 
     // ------------------------------------------------------------------
     // 3. Email channel — failures are caught and logged silently
