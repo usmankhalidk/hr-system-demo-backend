@@ -9,6 +9,7 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
+import { emitToCompany } from '../../config/socket';
 
 // ---------------------------------------------------------------------------
 // Date helpers used where API contracts expect date-only values.
@@ -31,6 +32,17 @@ function localDateStr(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function subtractMinutesFromTime(timeStr: string, minutes: number): string {
+  const [h, m] = timeStr.split(':').map(Number);
+  let totalMinutes = h * 60 + m - minutes;
+  if (totalMinutes < 0) {
+    totalMinutes += 24 * 60;
+  }
+  const nh = Math.floor(totalMinutes / 60);
+  const nm = totalMinutes % 60;
+  return `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -148,10 +160,12 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   // Verify user_id belongs to this company
   const targetUser = await queryOne<{
     id: number;
+    name: string;
+    surname: string;
     registered_device_token: string | null;
     device_reset_pending: boolean;
   }>(
-    `SELECT id, registered_device_token, device_reset_pending
+    `SELECT id, name, surname, registered_device_token, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
@@ -285,15 +299,24 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     );
 
     if (todayShift && event_type === 'checkin') {
+      const allowedFrom = subtractMinutesFromTime(todayShift.start_time, 15);
       badRequest(
         res,
-        `Hai un turno programmato oggi alle ${todayShift.start_time.slice(0, 5)}. Puoi timbrare al massimo 15 minuti prima dell'inizio del turno.`,
-        'SHIFT_TOO_EARLY'
+        `Il tuo turno per oggi inizia alle ${todayShift.start_time.slice(0, 5)} e puoi timbrare a partire dalle ${allowedFrom}. Riprova più tardi.`,
+        'SHIFT_TOO_EARLY',
+        {
+          shiftStart: todayShift.start_time.slice(0, 5),
+          allowedFrom
+        }
       );
       return;
     }
 
-    badRequest(res, 'Nessun turno programmato per oggi in questo negozio', 'NO_ACTIVE_SHIFT');
+    badRequest(
+      res,
+      'Il tuo turno per oggi in questo negozio non è confermato. Si prega di contattare il responsabile.',
+      'NO_ACTIVE_SHIFT'
+    );
     return;
   }
 
@@ -404,6 +427,19 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   ).catch((cleanupErr) => {
     console.warn('qr_tokens cleanup failed (non-fatal):', cleanupErr?.message);
   });
+
+  // Emit socket event to notify terminal of successful checkin
+  try {
+    emitToCompany(companyId, 'TERMINAL_ATTENDANCE_ACTION', {
+      userId: user_id,
+      name: targetUser.name,
+      surname: targetUser.surname,
+      eventType: event_type,
+      timestamp: event.event_time
+    });
+  } catch (socketErr) {
+    console.warn('Failed to emit TERMINAL_ATTENDANCE_ACTION (non-fatal):', socketErr);
+  }
 
   created(res, event, 'Evento registrato');
 });

@@ -12,9 +12,10 @@ export function noContent(res: Response): void {
   res.status(204).send();
 }
 
-export function badRequest(res: Response, error: string, code = 'BAD_REQUEST'): void {
-  res.status(400).json({ success: false, error, code });
+export function badRequest(res: Response, error: string, code = 'BAD_REQUEST', extra?: Record<string, any>): void {
+  res.status(400).json({ success: false, error, code, ...extra });
 }
+
 
 export function unauthorized(res: Response, error = 'Non autenticato', code = 'UNAUTHORIZED'): void {
   res.status(401).json({ success: false, error, code });

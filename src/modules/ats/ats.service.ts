@@ -128,6 +128,7 @@ export interface Candidate {
   consentAcceptedAt: string | null;
   appliedAt: string | null;
   lastStageChange: string;
+  indeedApplyId: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -322,6 +323,7 @@ function mapCandidate(row: Record<string, unknown>): Candidate {
     consentAcceptedAt: row.consent_accepted_at as string | null,
     appliedAt: row.applied_at as string | null,
     lastStageChange: row.last_stage_change as string,
+    indeedApplyId: row.indeed_apply_id as string | null,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
   };
@@ -858,9 +860,9 @@ export async function syncIndeedApplications(
     if (existing) { skipped++; continue; }
 
     await query(
-      `INSERT INTO candidates (company_id, job_posting_id, full_name, email, phone, source, source_ref)
-       VALUES ($1, $2, $3, $4, $5, 'indeed', $6)`,
-      [companyId, jobId, app.fullName, app.email, app.phone ?? null, app.sourceRef],
+      `INSERT INTO candidates (company_id, job_posting_id, full_name, email, phone, source, source_ref, indeed_apply_id)
+       VALUES ($1, $2, $3, $4, $5, 'indeed', $6, $7)`,
+      [companyId, jobId, app.fullName, app.email, app.phone ?? null, app.sourceRef, app.sourceRef],
     );
     imported++;
   }
@@ -948,6 +950,7 @@ export async function createCandidate(
     applicantLocale?: string;
     consentAcceptedAt?: string;
     appliedAt?: string;
+    indeedApplyId?: string;
   },
 ): Promise<Candidate> {
   const row = await queryOne<Record<string, unknown>>(
@@ -968,9 +971,10 @@ export async function createCandidate(
        gdpr_consent,
        applicant_locale,
        consent_accepted_at,
-       applied_at
+       applied_at,
+       indeed_apply_id
      )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
      RETURNING *`,
     [
       companyId,
@@ -990,6 +994,7 @@ export async function createCandidate(
       data.applicantLocale ?? null,
       data.consentAcceptedAt ?? null,
       data.appliedAt ?? null,
+      data.indeedApplyId ?? null,
     ],
   );
   return mapCandidate(row!);
@@ -1027,7 +1032,15 @@ export async function updateCandidateStage(
   queryStr += ` WHERE id = $2 AND company_id = $3 RETURNING *`;
 
   const row = await queryOne<Record<string, unknown>>(queryStr, queryParams);
-  return { candidate: row ? mapCandidate(row) : null };
+  const updatedCandidate = row ? mapCandidate(row) : null;
+
+  if (updatedCandidate && updatedCandidate.indeedApplyId) {
+    setImmediate(async () => {
+      await syncCandidateStageToIndeed(updatedCandidate, newStatus);
+    });
+  }
+
+  return { candidate: updatedCandidate };
 }
 
 export async function markCandidateRead(id: number, companyId: number): Promise<boolean> {
@@ -1837,5 +1850,139 @@ export async function getIndeedStats(companyId: number | null): Promise<IndeedSt
     totalDirectCandidates,
     monthlyTrend
   };
+}
+
+async function syncCandidateStageToIndeed(candidate: Candidate, newStatus: CandidateStatus): Promise<void> {
+  const indeedApplyId = candidate.indeedApplyId;
+  if (!indeedApplyId) return;
+
+  try {
+    const company = await queryOne<{ slug: string }>('SELECT slug FROM companies WHERE id = $1', [candidate.companyId]);
+    const companySlug = company?.slug || 'all';
+    const companyUpper = companySlug.replace(/-/g, '_').toUpperCase();
+    const companySlugShort = companySlug.split('-')[0].toUpperCase();
+    const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] ||
+                     process.env[`INDEED_APPLY_API_TOKEN_${companySlugShort}`] ||
+                     process.env.INDEED_APPLY_API_TOKEN;
+
+    if (!apiToken || apiToken === 'mock_veylohr_indeed_token_2026') {
+      console.log(`[Indeed Disposition] Skip sync for candidate ${candidate.id} — missing or mock credentials`);
+      return;
+    }
+
+    // Map stages
+    const stageMapping: Record<CandidateStatus, string> = {
+      received: 'NEW',
+      review: 'REVIEW',
+      phone_interview: 'SCREEN',
+      interview: 'INTERVIEW',
+      hired: 'HIRED',
+      rejected: 'NOT_SELECTED'
+    };
+
+    const mappedStatus = stageMapping[newStatus] || 'NEW';
+    const atsName = process.env.ATS_NAME || 'VeyloHR';
+
+    const maxRetries = 3;
+    let attempt = 0;
+    let success = false;
+    let lastError = '';
+
+    while (attempt < maxRetries && !success) {
+      attempt++;
+      try {
+        const response = await fetch('https://apis.indeed.com/graphql', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${apiToken}`
+          },
+          body: JSON.stringify({
+            query: `
+              mutation Send($input: SendPartnerDispositionInput!) {
+                partnerDisposition {
+                  send(input: $input) {
+                    numberGoodDispositions
+                    failedDispositions {
+                      identifiedBy {
+                        indeedApplyID
+                      }
+                      rationale
+                    }
+                  }
+                }
+              }
+            `,
+            variables: {
+              input: {
+                dispositions: [
+                  {
+                    identifiedBy: {
+                      indeedApplyID: indeedApplyId
+                    },
+                    dispositionStatus: mappedStatus,
+                    rawDispositionStatus: newStatus,
+                    atsName: atsName,
+                    statusChangeDateTime: new Date().toISOString()
+                  }
+                ]
+              }
+            }
+          })
+        });
+
+        if (response.ok) {
+          const resJson = await response.json() as any;
+          const sendResult = resJson?.data?.partnerDisposition?.send;
+          const failed = sendResult?.failedDispositions || [];
+          if (failed.length > 0) {
+            lastError = `Indeed rejected: ${failed.map((f: any) => f.rationale).join(', ')}`;
+            // If Indeed explicitly rejected the payload, retrying won't help (logical error), so break
+            break;
+          } else {
+            success = true;
+          }
+        } else {
+          lastError = `HTTP Status ${response.status}: ${response.statusText}`;
+          // Retry only on network/5xx errors
+          if (response.status < 500) {
+            break;
+          }
+        }
+      } catch (err: any) {
+        lastError = err.message || 'Unknown network error';
+      }
+
+      if (!success && attempt < maxRetries) {
+        const delay = Math.pow(2, attempt) * 1000;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    // Write attempt log to database
+    await query(
+      `INSERT INTO indeed_disposition_sync_logs 
+       (candidate_id, indeed_apply_id, status_sent, raw_status_sent, success, error_message, attempt_count)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [
+        candidate.id,
+        indeedApplyId,
+        mappedStatus,
+        newStatus,
+        success,
+        success ? null : lastError,
+        attempt
+      ]
+    );
+
+    if (success) {
+      console.log(`[Indeed Disposition] Successfully synced candidate ${candidate.id} to stage ${mappedStatus} (Indeed ID: ${indeedApplyId})`);
+    } else {
+      console.error(`[Indeed Disposition] Failed to sync candidate ${candidate.id} to stage ${mappedStatus}: ${lastError}`);
+    }
+
+  } catch (outerErr: any) {
+    console.error(`[Indeed Disposition] Outer handler crash for candidate ${candidate.id}:`, outerErr.message);
+  }
 }
 

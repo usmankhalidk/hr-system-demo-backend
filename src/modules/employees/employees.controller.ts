@@ -1340,7 +1340,7 @@ export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Respon
          updated_at = NOW()
      WHERE id = $1
        AND company_id = ANY($2)
-       AND role IN ('employee', 'store_terminal')
+       AND role IN ('employee', 'store_terminal', 'store_manager', 'area_manager', 'hr')
        AND status = 'active'
      RETURNING id, company_id, device_reset_pending,
                (registered_device_token IS NOT NULL) AS device_registered,

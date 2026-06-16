@@ -216,7 +216,7 @@ export function requireModulePermission(moduleName: string, _action: 'read' | 'w
         return;
       }
 
-      res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
+      res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED', moduleName });
       return;
     }
 
@@ -226,7 +226,7 @@ export function requireModulePermission(moduleName: string, _action: 'read' | 'w
         return;
       }
 
-      res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED' });
+      res.status(403).json({ success: false, error: 'Modulo disabilitato per il ruolo', code: 'MODULE_DISABLED', moduleName });
       return;
     }
 

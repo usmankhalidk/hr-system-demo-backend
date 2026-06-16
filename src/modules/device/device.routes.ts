@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, requireRole, enforceCompany } from '../../middleware/auth';
 import { validate } from '../../middleware/validate';
-import { getDeviceStatus, registerDevice, getDeviceHistory, reRegisterDevice } from './device.controller';
+import { getDeviceStatus, registerDevice, getDeviceHistory, reRegisterDevice, checkDeviceRegistration } from './device.controller';
 
 const router = Router();
 
@@ -19,6 +19,12 @@ const reRegisterDeviceSchema = z.object({
   password: z.string().min(1, 'Password obbligatoria'),
   fingerprint: z.string().min(10, 'Device fingerprint obbligatorio'),
   metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+const checkDeviceRegistrationSchema = z.object({
+  email: z.string().email('Email non valida'),
+  password: z.string().min(1, 'Password obbligatoria'),
+  fingerprint: z.string().min(10, 'Device fingerprint obbligatorio'),
 });
 
 router.get(
@@ -45,6 +51,12 @@ router.post(
   enforceCompany,
   validate(reRegisterDeviceSchema),
   reRegisterDevice,
+);
+
+router.post(
+  '/check-fingerprint',
+  validate(checkDeviceRegistrationSchema),
+  checkDeviceRegistration,
 );
 
 router.get(

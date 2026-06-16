@@ -634,6 +634,17 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
   const gdprConsent = parseBooleanInput(body.gdpr_consent ?? body.gdprConsent);
   const utmSource = normalizeOptionalText(req.query.utm_source, 100) ?? 'direct';
 
+  let screenerAnswers: any[] = [];
+  if (body.screener_answers) {
+    try {
+      screenerAnswers = typeof body.screener_answers === 'string'
+        ? JSON.parse(body.screener_answers)
+        : (Array.isArray(body.screener_answers) ? body.screener_answers : []);
+    } catch (e) {
+      console.error('[PUBLIC_APPLY] Failed to parse screener_answers', e);
+    }
+  }
+
   if (!fullName) {
     cleanupUploadedResume(req);
     badRequest(res, 'Nome e cognome obbligatori', 'VALIDATION_ERROR');
@@ -683,7 +694,7 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
      WHERE job_posting_id = $1
        AND email IS NOT NULL
        AND LOWER(email) = LOWER($2)
-       AND created_at >= NOW() - INTERVAL '30 days'
+       AND created_at >= NOW() - INTERVAL '120 days'
      LIMIT 1`,
     [jobId, email],
   );
@@ -717,6 +728,7 @@ router.post('/jobs/:jobId/apply', resumeUploadMiddleware, asyncHandler(async (re
     start_date: startDate,
     postal_code: postalCode,
     uploaded_filename: req.file.filename,
+    screener_answers: screenerAnswers,
   });
 
   const resumeRelativePath = `public-cv/${req.file.filename}`;
@@ -1062,6 +1074,7 @@ router.post(
         const resumeData = applicant?.resume?.file?.data || null;  // Base64
         const resumeFileName = applicant?.resume?.file?.fileName || 'resume.pdf';
         const jobIdStr = indeedJob?.jobId || '';
+        const indeedApplyId = payload.indeedApplyID || payload.id || payload.appliedJobID || '';
 
         const jobId = parseInt(jobIdStr, 10);
         if (Number.isNaN(jobId)) {
@@ -1091,6 +1104,24 @@ router.post(
         if (!company || company.slug !== companySlug) {
           console.error(`Indeed Apply: company slug mismatch: URL slug "${companySlug}", job company slug "${company?.slug}"`);
           return;
+        }
+
+        // Check for duplicate candidate (same email AND same job ID) within the last 120 days
+        if (email) {
+          const duplicateCandidate = await queryOne<{ id: number }>(
+            `SELECT id FROM candidates
+             WHERE job_posting_id = $1
+               AND email IS NOT NULL
+               AND LOWER(email) = LOWER($2)
+               AND created_at >= NOW() - INTERVAL '120 days'
+             LIMIT 1`,
+            [job.id, email]
+          );
+
+          if (duplicateCandidate) {
+            console.warn(`Indeed Apply: duplicate application skipped for email ${email} on job ID ${job.id}`);
+            return;
+          }
         }
 
         // Decode and save resume
@@ -1134,6 +1165,7 @@ router.post(
           sourceRef,
           gdprConsent: true,
           appliedAt: new Date().toISOString(),
+          indeedApplyId: indeedApplyId || undefined,
         });
 
         // Trigger recruiter notification flow

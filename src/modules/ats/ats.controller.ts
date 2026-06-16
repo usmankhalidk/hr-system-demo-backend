@@ -32,6 +32,7 @@ import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
 import { resolveAllowedCompanyIds, resolveCompanyGroupId } from '../../utils/companyScope';
+import { resolveItalianProvince } from '../../utils/italianProvinces';
 // Store managers only see their own store; other roles see everything
 function resolveStoreIds(user: Express.Request['user']): number[] | undefined {
   if (!user) return undefined;
@@ -409,10 +410,7 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
     }
   }
 
-  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
-    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
-    return;
-  }
+
 
   let job;
   try {
@@ -666,10 +664,7 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     ? null
     : requestedStoreId;
 
-  if (typeof job_state === 'string' && /^\d+$/.test(job_state.trim())) {
-    badRequest(res, 'La provincia/stato non può essere un numero. Utilizzare una sigla (es. MI, SA)', 'VALIDATION_ERROR');
-    return;
-  }
+
 
   let updated;
   try {
@@ -1683,12 +1678,17 @@ export const getIndeedStatsHandler = asyncHandler(async (req: Request, res: Resp
   }
   
   const companyUpper = companySlug.replace(/-/g, '_').toUpperCase();
-  const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] || process.env.INDEED_APPLY_API_TOKEN;
+  const companySlugShort = companySlug.split('-')[0].toUpperCase();
+  const apiToken = process.env[`INDEED_APPLY_API_TOKEN_${companyUpper}`] ||
+                   process.env[`INDEED_APPLY_API_TOKEN_${companySlugShort}`] ||
+                   process.env.INDEED_APPLY_API_TOKEN;
   const isIndeedApplyConfigured = !!apiToken;
+  const isDispositionSyncReal = !!(apiToken && apiToken !== 'mock_veylohr_indeed_token_2026');
 
   ok(res, {
     ...stats,
     isIndeedApplyConfigured,
+    isDispositionSyncReal,
     companySlug,
   });
 });
@@ -2209,30 +2209,7 @@ export const translatePreviewHandler = asyncHandler(async (req: Request, res: Re
 });
 
 function normalizeState(state: string | null | undefined, city: string | null | undefined): string {
-  if (!state) {
-    if (city) {
-      const lowerCity = city.trim().toLowerCase();
-      if (lowerCity === 'milano' || lowerCity === 'milan') return 'MI';
-      if (lowerCity === 'napoli' || lowerCity === 'naples') return 'NA';
-      if (lowerCity === 'salerno') return 'SA';
-    }
-    return '';
-  }
-  
-  const cleaned = state.trim();
-  
-  const conversionMap: Record<string, string> = {
-    '25': 'MI',
-    '63': 'NA',
-    '72': 'SA',
-    'milano': 'MI',
-    'milan': 'MI',
-    'napoli': 'NA',
-    'naples': 'NA',
-    'salerno': 'SA',
-  };
-  
-  return conversionMap[cleaned] || conversionMap[cleaned.toLowerCase()] || cleaned;
+  return resolveItalianProvince(city || '', state || '');
 }
 
 export const jobFeedHandler = async (req: Request, res: Response): Promise<void> => {
@@ -2255,6 +2232,12 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
       .map((job) => {
         const isFullRemote = job.remoteType === 'remote';
         let city = (job.city ?? '').trim() || (isFullRemote ? 'Remote' : '');
+        if (city) {
+          city = city
+            .replace(/Città metropolitana di\s+/i, '')
+            .replace(/\s+Capitale/i, '')
+            .trim();
+        }
         let country = normalizeCountryCode((job.country ?? 'IT').trim() || 'IT');
 
         if (!city || !country) {
@@ -2309,6 +2292,8 @@ export const jobFeedHandler = async (req: Request, res: Response): Promise<void>
           'indeed-apply-name': 'true',
           'indeed-apply-email': 'true',
           'indeed-apply-resume': 'true',
+          'indeed-apply-coverletter': 'optional',
+          'indeed-apply-phone': 'optional',
           'indeed-apply-questions': `${baseUrl}/api/public/indeed-apply-questions/${job.companySlug}/${job.id}`
         });
         const indeedApplyData = indeedApplyParams.toString();
