@@ -9,6 +9,7 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezone } from '../../utils/shiftTimezone';
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
+import { emitToCompany } from '../../config/socket';
 
 // ---------------------------------------------------------------------------
 // Date helpers used where API contracts expect date-only values.
@@ -159,10 +160,12 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   // Verify user_id belongs to this company
   const targetUser = await queryOne<{
     id: number;
+    name: string;
+    surname: string;
     registered_device_token: string | null;
     device_reset_pending: boolean;
   }>(
-    `SELECT id, registered_device_token, device_reset_pending
+    `SELECT id, name, surname, registered_device_token, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
@@ -424,6 +427,19 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   ).catch((cleanupErr) => {
     console.warn('qr_tokens cleanup failed (non-fatal):', cleanupErr?.message);
   });
+
+  // Emit socket event to notify terminal of successful checkin
+  try {
+    emitToCompany(companyId, 'TERMINAL_ATTENDANCE_ACTION', {
+      userId: user_id,
+      name: targetUser.name,
+      surname: targetUser.surname,
+      eventType: event_type,
+      timestamp: event.event_time
+    });
+  } catch (socketErr) {
+    console.warn('Failed to emit TERMINAL_ATTENDANCE_ACTION (non-fatal):', socketErr);
+  }
 
   created(res, event, 'Evento registrato');
 });
