@@ -33,6 +33,17 @@ function localDateStr(date: Date): string {
   return `${y}-${m}-${d}`;
 }
 
+function subtractMinutesFromTime(timeStr: string, minutes: number): string {
+  const [h, m] = timeStr.split(':').map(Number);
+  let totalMinutes = h * 60 + m - minutes;
+  if (totalMinutes < 0) {
+    totalMinutes += 24 * 60;
+  }
+  const nh = Math.floor(totalMinutes / 60);
+  const nm = totalMinutes % 60;
+  return `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`;
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/qr/generate?store_id=N
 // Returns a signed JWT (the "QR token") + the nonce stored for replay prevention
@@ -285,15 +296,24 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     );
 
     if (todayShift && event_type === 'checkin') {
+      const allowedFrom = subtractMinutesFromTime(todayShift.start_time, 15);
       badRequest(
         res,
-        `Hai un turno programmato oggi alle ${todayShift.start_time.slice(0, 5)}. Puoi timbrare al massimo 15 minuti prima dell'inizio del turno.`,
-        'SHIFT_TOO_EARLY'
+        `Il tuo turno per oggi inizia alle ${todayShift.start_time.slice(0, 5)} e puoi timbrare a partire dalle ${allowedFrom}. Riprova più tardi.`,
+        'SHIFT_TOO_EARLY',
+        {
+          shiftStart: todayShift.start_time.slice(0, 5),
+          allowedFrom
+        }
       );
       return;
     }
 
-    badRequest(res, 'Nessun turno programmato per oggi in questo negozio', 'NO_ACTIVE_SHIFT');
+    badRequest(
+      res,
+      'Il tuo turno per oggi in questo negozio non è confermato. Si prega di contattare il responsabile.',
+      'NO_ACTIVE_SHIFT'
+    );
     return;
   }
 

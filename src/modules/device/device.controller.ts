@@ -124,7 +124,10 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
 
   // Prevent multiple employees/terminals from registering the same device.
   const existingUser = await queryOne<{ id: number; name: string; surname: string }>(
-    `SELECT id, name, surname FROM users WHERE registered_device_token = $1 AND id <> $2`,
+    `SELECT id, name, surname FROM users 
+     WHERE registered_device_token = $1 
+       AND id <> $2 
+       AND device_reset_pending = false`,
     [token, userId],
   );
 
@@ -136,6 +139,18 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
     );
     return;
   }
+
+  // Free up the token from other users whose reset is pending to avoid unique constraint violations
+  await query(
+    `UPDATE users 
+     SET registered_device_token = NULL, 
+         registered_device_metadata = NULL, 
+         registered_device_registered_at = NULL 
+     WHERE registered_device_token = $1 
+       AND id <> $2 
+       AND device_reset_pending = true`,
+    [token, userId]
+  );
 
   let ipAddress = (req.headers['x-forwarded-for'] as string || req.socket.remoteAddress || '').split(',')[0].trim();
   if (ipAddress.startsWith('::ffff:')) {
@@ -180,7 +195,7 @@ export const registerDevice = asyncHandler(async (req: Request, res: Response) =
   // Log to device_events table
   await query(
     `INSERT INTO device_events (user_id, event_type, ip_address, user_agent, metadata)
-     VALUES ($1, 'registered', $2, $3, $4)`,
+     VALUES ($1, $2, $3, $4, $5)`,
     [userId, 'registered', ipAddress, ua, mergedMetadata]
   ).catch(err => {
     console.error('Failed to log device registration event:', err);
@@ -292,6 +307,17 @@ export const reRegisterDevice = asyncHandler(async (req: Request, res: Response)
     },
   };
 
+  // Free up this device token from any other users to prevent unique constraint violation
+  await query(
+    `UPDATE users 
+     SET registered_device_token = NULL, 
+         registered_device_metadata = NULL, 
+         registered_device_registered_at = NULL 
+     WHERE registered_device_token = $1 
+       AND id <> $2`,
+    [token, userId]
+  );
+
   // Run updates: clear and bind
   await query(
     `UPDATE users
@@ -325,3 +351,76 @@ export const reRegisterDevice = asyncHandler(async (req: Request, res: Response)
 
   ok(res, { success: true }, 'Terminal re-registered successfully');
 });
+
+export const checkDeviceRegistration = asyncHandler(async (req: Request, res: Response) => {
+  const { email, password, fingerprint } = req.body as { email?: string; password?: string; fingerprint?: string };
+
+  if (!email || !password || !fingerprint) {
+    badRequest(res, 'Email del manager, password e fingerprint del dispositivo sono obbligatori', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Find the manager user in the database
+  const manager = await queryOne<{ id: number; role: string; password_hash: string; company_id: number }>(
+    `SELECT id, role, password_hash, company_id 
+     FROM users 
+     WHERE LOWER(email) = LOWER($1) AND status = 'active'`,
+    [email.trim()]
+  );
+
+  if (!manager) {
+    forbidden(res, 'Credenziali non valide o utente non autorizzato', 'INVALID_CREDENTIALS');
+    return;
+  }
+
+  // Verify manager has the correct role
+  const allowedRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'store_terminal'];
+  if (!allowedRoles.includes(manager.role)) {
+    forbidden(res, 'Questo utente non ha i permessi per verificare le registrazioni', 'UNAUTHORIZED');
+    return;
+  }
+
+  // Verify password
+  const isPasswordValid = await bcrypt.compare(password, manager.password_hash);
+  if (!isPasswordValid) {
+    forbidden(res, 'Credenziali non valide o utente non autorizzato', 'INVALID_CREDENTIALS');
+    return;
+  }
+
+  // Compute device token
+  const token = hashDeviceFingerprint(fingerprint);
+  const companyId = manager.company_id;
+
+  // Query to find user registered with this token
+  const registeredUser = await queryOne<{
+    name: string;
+    surname: string;
+    role: string;
+    registered_at: string;
+    registered_device_metadata: any;
+  }>(
+    `SELECT name, surname, role, TO_CHAR(registered_device_registered_at, 'YYYY-MM-DD HH24:MI:SS') AS registered_at, registered_device_metadata
+     FROM users
+     WHERE registered_device_token = $1 AND company_id = $2 AND device_reset_pending = false`,
+    [token, companyId]
+  );
+
+  if (!registeredUser) {
+    ok(res, { found: false, message: 'Nessun dipendente registrato con questo dispositivo in questa azienda.' });
+    return;
+  }
+
+  ok(res, {
+    found: true,
+    details: {
+      name: registeredUser.name,
+      surname: registeredUser.surname,
+      role: registeredUser.role,
+      registeredAt: registeredUser.registered_at,
+      ipAddress: registeredUser.registered_device_metadata?.ipAddress || 'N/A',
+      browser: registeredUser.registered_device_metadata?.browser?.name || 'N/A',
+      os: registeredUser.registered_device_metadata?.os?.name || 'N/A',
+    }
+  });
+});
+
