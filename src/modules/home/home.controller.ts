@@ -437,12 +437,13 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
       const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
 
       let visibleStoreIds: number[] = [];
-      let assignedStores: { id: number; name: string; code: string; employee_count: number }[] = [];
+      let assignedStores: { id: number; name: string; code: string; employee_count: number; logo_filename: string | null; store_manager: string | null }[] = [];
 
       if (hasCrossCompanyAccess) {
         // Toggle is ON: Include all stores in the group companies
-        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number }>(
-          `SELECT s.id, s.name, s.code,
+        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number; logo_filename: string | null; store_manager: string | null }>(
+          `SELECT s.id, s.name, s.code, s.logo_filename,
+            (SELECT STRING_AGG(u2.name || ' ' || u2.surname, ', ') FROM users u2 WHERE u2.store_id = s.id AND u2.role = 'store_manager' AND u2.status = 'active') AS store_manager,
             (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
            FROM stores s
            WHERE s.is_active = true AND s.company_id = ANY($1)
@@ -452,8 +453,9 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         visibleStoreIds = assignedStores.map(s => s.id);
       } else {
         // Toggle is OFF: Only include stores assigned directly in own company
-        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number }>(
-          `SELECT DISTINCT s.id, s.name, s.code,
+        assignedStores = await query<{ id: number; name: string; code: string; employee_count: number; logo_filename: string | null; store_manager: string | null }>(
+          `SELECT DISTINCT s.id, s.name, s.code, s.logo_filename,
+            (SELECT STRING_AGG(u2.name || ' ' || u2.surname, ', ') FROM users u2 WHERE u2.store_id = s.id AND u2.role = 'store_manager' AND u2.status = 'active') AS store_manager,
             (SELECT COUNT(*) FROM users u WHERE u.store_id = s.id AND u.status = 'active')::int AS employee_count
            FROM stores s
            INNER JOIN users emp ON emp.store_id = s.id AND emp.supervisor_id = $1 AND emp.company_id = $2
@@ -522,7 +524,7 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         const ph = storesForPending.map((_, i) => `$${2 + i}`).join(', ');
         pendingShiftPreview = await query(
           `SELECT s.id, s.user_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
-                  s.start_time, s.end_time, u.name AS user_name, u.surname AS user_surname, st.name AS store_name
+                  s.start_time, s.end_time, u.name AS user_name, u.surname AS user_surname, u.role AS user_role, u.avatar_filename AS user_avatar_filename, st.name AS store_name
            FROM shifts s
            JOIN users u ON u.id = s.user_id
            LEFT JOIN stores st ON st.id = s.store_id
@@ -543,9 +545,10 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         pendingShiftCount = parseInt(psc?.c ?? '0', 10);
         pendingLeavePreview = await query(
           `SELECT lr.id, lr.user_id, lr.leave_type, lr.start_date, lr.end_date,
-                  u.name AS user_name, u.surname AS user_surname
+                  u.name AS user_name, u.surname AS user_surname, u.role AS user_role, u.avatar_filename AS user_avatar_filename, st.name AS store_name
            FROM leave_requests lr
            JOIN users u ON u.id = lr.user_id
+           LEFT JOIN stores st ON st.id = lr.store_id
            WHERE lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager'
              AND lr.store_id IN (${ph})
            ORDER BY lr.created_at ASC
