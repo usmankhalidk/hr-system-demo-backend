@@ -21,12 +21,14 @@ const allRoles = ['admin', 'hr', 'area_manager', 'store_manager', 'employee', 's
 const managementRoles = ['admin', 'hr', 'area_manager', 'store_manager'] as const;
 
 // POST /api/attendance/checkin — validate QR token and record event
+// NOTE: No requireModulePermission here — attendance actions (clock-in/out)
+// must always work regardless of whether the 'presenze' module is enabled.
+// Disabling the module only hides UI screens; it does NOT block actions.
 router.post(
   '/checkin',
   authenticate,
   requireRole(...allRoles),
   enforceCompany,
-  requireModulePermission('presenze', 'read'),
   validate(checkinSchema),
   checkin,
 );
@@ -74,12 +76,12 @@ const syncSchema = z.object({
 });
 
 // POST /api/attendance/sync — terminal and employee check-ins
+// NOTE: No requireModulePermission — same rationale as /checkin above.
 router.post(
   '/sync',
   authenticate,
   requireRole('store_terminal', 'employee', 'store_manager', 'hr', 'area_manager'),
   enforceCompany,
-  requireModulePermission('presenze', 'read'),
   validate(syncSchema),
   syncEvents,
 );
