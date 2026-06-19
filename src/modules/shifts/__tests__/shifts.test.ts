@@ -468,7 +468,7 @@ describe('GET /api/shifts/export', () => {
       .get('/api/shifts/export')
       .query({ week: '2026-W11', store_id: seeds.romaStoreId })
       .set('Authorization', `Bearer ${token}`);
-    expect(res.text).toContain('"Data"');
+    expect(res.text).toContain('"data"');
   });
 
   it('employee gets 403 accessing export', async () => {
