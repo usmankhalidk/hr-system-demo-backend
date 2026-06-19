@@ -1521,9 +1521,9 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
     `SELECT TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
             s.start_time, s.end_time, s.break_start, s.break_end,
             s.is_split, s.split_start2, s.split_end2,
-            s.status, s.notes,
+            s.status, s.notes, s.is_off_day, s.user_id,
             u.name AS user_name, u.surname AS user_surname, u.unique_id,
-            st.name AS store_name,
+            st.name AS store_name, st.code AS store_code,
             ${shiftHoursExpr()}
      FROM shifts s
      LEFT JOIN users u  ON u.id  = s.user_id
@@ -1539,25 +1539,417 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
   const format = (req.query.format as string) === 'pdf' ? 'pdf' : (req.query.format as string) === 'xlsx' ? 'xlsx' : 'csv';
   const filename = `turni-${week ?? 'export'}`;
 
-  const HEADERS = ['Data','Inizio','Fine','Pausa Inizio','Pausa Fine','Spezzato','Inizio2','Fine2','Ore','Nome','Cognome','ID','Negozio','Stato','Note'];
-  const rowData = shifts.map((s) => [
-    s.date, s.start_time, s.end_time,
-    s.break_start ?? '', s.break_end ?? '',
-    s.is_split ? 'SI' : 'NO',
-    s.split_start2 ?? '', s.split_end2 ?? '',
-    s.shift_hours,
-    s.user_name, s.user_surname, s.unique_id ?? '',
-    s.store_name, s.status, s.notes ?? '',
-  ]);
+  if (format === 'pdf' && week) {
+    // -------------------------------------------------------------------------
+    // PDF format: Weekly Calendar Grid layout (reflecting the UI exactly)
+    // -------------------------------------------------------------------------
+    const pdfDoc = await PDFDocument.create();
+    const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+    const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+    const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
 
-  if (format === 'pdf') {
+    // Get the 7 dates of the week
+    const getMondayOfIsoWeek = (weekStr: string): Date => {
+      const match = weekStr.match(/^(\d{4})-W(\d{2})$/);
+      if (!match) return new Date();
+      const year = parseInt(match[1], 10);
+      const wk = parseInt(match[2], 10);
+      const d = new Date(Date.UTC(year, 0, 4));
+      const day = d.getUTCDay();
+      d.setUTCDate(d.getUTCDate() - (day === 0 ? 6 : day - 1));
+      d.setUTCDate(d.getUTCDate() + (wk - 1) * 7);
+      return d;
+    };
+
+    const formatDateUTC = (d: Date): string => {
+      const y = d.getUTCFullYear();
+      const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+      const dateVal = String(d.getUTCDate()).padStart(2, '0');
+      return `${y}-${m}-${dateVal}`;
+    };
+
+    const dates: string[] = [];
+    const startMonday = getMondayOfIsoWeek(week);
+    for (let i = 0; i < 7; i++) {
+      const cur = new Date(startMonday);
+      cur.setUTCDate(startMonday.getUTCDate() + i);
+      dates.push(formatDateUTC(cur));
+    }
+
+    // Query leave requests overlapping with this week
+    const leaves = await query<Record<string, any>>(
+      `SELECT lr.id, lr.user_id, lr.leave_type, lr.status,
+              TO_CHAR(lr.start_date, 'YYYY-MM-DD') AS start_date,
+              TO_CHAR(lr.end_date, 'YYYY-MM-DD') AS end_date,
+              u.name AS user_name, u.surname AS user_surname, u.unique_id
+       FROM leave_requests lr
+       JOIN users u ON u.id = lr.user_id
+       WHERE lr.company_id = ANY($1)
+         AND lr.status != 'rejected'
+         AND lr.start_date <= (DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW'))::DATE + INTERVAL '6 days')::DATE
+         AND lr.end_date >= DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW'))::DATE`,
+      [allowedCompanyIds, parseIsoWeek(week)],
+    );
+
+    // Query temporary store transfers overlapping with this week
+    let transferStoreWhere = '';
+    const transferParams: any[] = [allowedCompanyIds, parseIsoWeek(week)];
+    if (store_id) {
+      transferStoreWhere = ` AND (tsa.origin_store_id = $3 OR tsa.target_store_id = $3)`;
+      transferParams.push(parseInt(store_id, 10));
+    }
+    const transfers = await query<Record<string, any>>(
+      `SELECT tsa.id, tsa.user_id, tsa.status,
+              TO_CHAR(tsa.start_date, 'YYYY-MM-DD') AS start_date,
+              TO_CHAR(tsa.end_date, 'YYYY-MM-DD') AS end_date,
+              s_from.name AS origin_store_name,
+              s_to.name AS target_store_name,
+              u.name AS user_name, u.surname AS user_surname, u.unique_id
+       FROM temporary_store_assignments tsa
+       JOIN users u ON u.id = tsa.user_id
+       JOIN stores s_from ON s_from.id = tsa.origin_store_id
+       JOIN stores s_to ON s_to.id = tsa.target_store_id
+       WHERE tsa.company_id = ANY($1)
+         AND tsa.status != 'cancelled'
+         AND tsa.start_date <= (DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW'))::DATE + INTERVAL '6 days')::DATE
+         AND tsa.end_date >= DATE_TRUNC('week', TO_DATE($2, 'IYYY-IW'))::DATE${transferStoreWhere}`,
+      transferParams,
+    );
+
+    // Grouping
+    const userMap = new Map<number, {
+      id: number;
+      name: string;
+      surname: string;
+      unique_id: string;
+      shifts: Map<string, any[]>;
+      totalHours: number;
+    }>();
+
+    for (const s of shifts) {
+      if (!s.user_id) continue;
+      if (!userMap.has(s.user_id)) {
+        userMap.set(s.user_id, {
+          id: s.user_id,
+          name: s.user_name,
+          surname: s.user_surname,
+          unique_id: s.unique_id || '',
+          shifts: new Map(),
+          totalHours: 0,
+        });
+      }
+      const u = userMap.get(s.user_id)!;
+      const list = u.shifts.get(s.date) || [];
+      u.shifts.set(s.date, [...list, s]);
+      if (s.status !== 'cancelled' && !s.is_off_day) {
+        u.totalHours += parseFloat(s.shift_hours || 0);
+      }
+    }
+
+    const userLeavesMap = new Map<number, any[]>();
+    for (const lr of leaves) {
+      if (!userMap.has(lr.user_id)) {
+        userMap.set(lr.user_id, {
+          id: lr.user_id,
+          name: lr.user_name,
+          surname: lr.user_surname,
+          unique_id: lr.unique_id || '',
+          shifts: new Map(),
+          totalHours: 0,
+        });
+      }
+      const list = userLeavesMap.get(lr.user_id) || [];
+      userLeavesMap.set(lr.user_id, [...list, lr]);
+    }
+
+    const userTransfersMap = new Map<number, any[]>();
+    for (const tr of transfers) {
+      if (!userMap.has(tr.user_id)) {
+        userMap.set(tr.user_id, {
+          id: tr.user_id,
+          name: tr.user_name,
+          surname: tr.user_surname,
+          unique_id: tr.unique_id || '',
+          shifts: new Map(),
+          totalHours: 0,
+        });
+      }
+      const list = userTransfersMap.get(tr.user_id) || [];
+      userTransfersMap.set(tr.user_id, [...list, tr]);
+    }
+
+    const sortedUsers = Array.from(userMap.values()).sort((a, b) => {
+      const comp = a.surname.localeCompare(b.surname);
+      if (comp !== 0) return comp;
+      return a.name.localeCompare(b.name);
+    });
+
+    const isDateWithinRange = (dateStr: string, startStr: string, endStr: string): boolean => {
+      return dateStr >= startStr && dateStr <= endStr;
+    };
+
+    const getCellLinesForUserDate = (u: any, dateStr: string): string[] => {
+      const dayShifts = u.shifts.get(dateStr) || [];
+      const activeShifts = dayShifts.filter((s: any) => s.status !== 'cancelled');
+
+      if (activeShifts.length > 0) {
+        const hasOff = activeShifts.some((s: any) => s.is_off_day);
+        if (hasOff) {
+          return ['Riposo'];
+        }
+
+        // Format shift times
+        const s = activeShifts[0];
+        const tStart = s.start_time ? s.start_time.slice(0, 5) : '';
+        const tEnd = s.end_time ? s.end_time.slice(0, 5) : '';
+
+        if (s.is_split) {
+          const tStart2 = s.split_start2 ? s.split_start2.slice(0, 5) : '';
+          const tEnd2 = s.split_end2 ? s.split_end2.slice(0, 5) : '';
+          return [`${tStart}-${tEnd}`, `${tStart2}-${tEnd2}`];
+        }
+
+        if (s.break_start && s.break_end) {
+          const bStart = s.break_start.slice(0, 5);
+          const bEnd = s.break_end.slice(0, 5);
+          return [`${tStart}-${tEnd}`, `P: ${bStart}-${bEnd}`];
+        }
+
+        return [`${tStart}-${tEnd}`];
+      }
+
+      // Check leaves
+      const uLeaves = userLeavesMap.get(u.id) || [];
+      const activeLeave = uLeaves.find((lr: any) => isDateWithinRange(dateStr, lr.start_date, lr.end_date));
+      if (activeLeave) {
+        const label = activeLeave.leave_type === 'vacation' ? 'Ferie' : 'Permesso';
+        const statusText = activeLeave.status === 'pending' ? '(In attesa)' : '';
+        return [label, statusText].filter(Boolean);
+      }
+
+      // Check transfers
+      const uTransfers = userTransfersMap.get(u.id) || [];
+      const activeTransfer = uTransfers.find((tr: any) => isDateWithinRange(dateStr, tr.start_date, tr.end_date));
+      if (activeTransfer) {
+        const label = 'Trasferito';
+        const storeName = activeTransfer.target_store_name || '';
+        const displayStore = storeName.length > 12 ? storeName.slice(0, 10) + '..' : storeName;
+        return [label, displayStore];
+      }
+
+      return [];
+    };
+
+    const COL_WIDTHS = [110, 85, 85, 85, 85, 85, 85, 85, 55];
+    const DAY_NAMES = ['Lun', 'Mar', 'Mer', 'Gio', 'Ven', 'Sab', 'Dom'];
+    const HEADER_HEIGHT = 28;
+    const ROW_HEIGHT = 30;
+
+    let page = pdfDoc.addPage([841.89, 595.28]); // A4 Landscape
+    const { width, height } = page.getSize();
+    const startX = (width - 760) / 2;
+    const colX = (colIdx: number) => startX + COL_WIDTHS.slice(0, colIdx).reduce((a, b) => a + b, 0);
+
+    const formatDayDate = (dateStr: string): string => {
+      const parts = dateStr.split('-');
+      return `${parts[2]}/${parts[1]}`;
+    };
+
+    const drawHeaderCellOnPage = (p: any, line1: string, line2: string, x: number, w: number, curY: number) => {
+      p.drawRectangle({
+        x,
+        y: curY - HEADER_HEIGHT,
+        width: w,
+        height: HEADER_HEIGHT,
+        color: rgb(0.08, 0.18, 0.3),
+        borderWidth: 0.5,
+        borderColor: rgb(0.2, 0.2, 0.2),
+      });
+
+      p.drawText(line1, {
+        x: x + 6,
+        y: curY - 12,
+        size: 8,
+        font: fontBold,
+        color: rgb(1, 1, 1),
+      });
+
+      if (line2) {
+        p.drawText(line2, {
+          x: x + 6,
+          y: curY - 22,
+          size: 7,
+          font,
+          color: rgb(0.9, 0.9, 0.9),
+        });
+      }
+    };
+
+    const drawPageHeaderAndTableHeaders = (p: any): number => {
+      let curY = height - 40;
+
+      // Header Band
+      p.drawRectangle({ x: startX, y: curY - 60, width: 760, height: 60, color: rgb(0.05, 0.13, 0.22) });
+      p.drawText('CALENDARIO SETTIMANALE TURNI', { x: startX + 20, y: curY - 25, size: 14, font: fontBold, color: rgb(1, 1, 1) });
+
+      let storeSubtitle = '';
+      if (shifts.length > 0 && store_id) {
+        storeSubtitle = ` | Negozio: ${shifts[0].store_name}`;
+      }
+      p.drawText(`Settimana: ${week}${storeSubtitle} | Generato il: ${new Date().toLocaleString('it-IT')}`, { x: startX + 20, y: curY - 45, size: 9, font, color: rgb(0.9, 0.9, 0.9) });
+
+      curY -= 80;
+
+      // Table Headers
+      drawHeaderCellOnPage(p, 'Dipendente', '', colX(0), COL_WIDTHS[0], curY);
+      for (let i = 0; i < 7; i++) {
+        drawHeaderCellOnPage(p, DAY_NAMES[i], formatDayDate(dates[i]), colX(i + 1), COL_WIDTHS[i + 1], curY);
+      }
+      drawHeaderCellOnPage(p, 'Tot. Ore', '', colX(8), COL_WIDTHS[8], curY);
+
+      return curY - HEADER_HEIGHT;
+    };
+
+    let y = drawPageHeaderAndTableHeaders(page);
+
+    const checkPageOverflow = (needed: number) => {
+      if (y - needed < 40) {
+        page = pdfDoc.addPage([841.89, 595.28]);
+        y = drawPageHeaderAndTableHeaders(page);
+      }
+    };
+
+    for (const user of sortedUsers) {
+      checkPageOverflow(ROW_HEIGHT);
+
+      // 1. Draw Cell Backgrounds and Borders
+      page.drawRectangle({
+        x: colX(0),
+        y: y - ROW_HEIGHT,
+        width: COL_WIDTHS[0],
+        height: ROW_HEIGHT,
+        color: rgb(0.96, 0.97, 0.98),
+        borderWidth: 0.5,
+        borderColor: rgb(0.85, 0.85, 0.85),
+      });
+
+      for (let i = 0; i < 7; i++) {
+        page.drawRectangle({
+          x: colX(i + 1),
+          y: y - ROW_HEIGHT,
+          width: COL_WIDTHS[i + 1],
+          height: ROW_HEIGHT,
+          color: rgb(1, 1, 1),
+          borderWidth: 0.5,
+          borderColor: rgb(0.85, 0.85, 0.85),
+        });
+      }
+
+      page.drawRectangle({
+        x: colX(8),
+        y: y - ROW_HEIGHT,
+        width: COL_WIDTHS[8],
+        height: ROW_HEIGHT,
+        color: rgb(0.94, 0.94, 0.94),
+        borderWidth: 0.5,
+        borderColor: rgb(0.85, 0.85, 0.85),
+      });
+
+      // 2. Draw Cell Texts
+      const fullName = `${user.surname} ${user.name}`;
+      const dispName = fullName.length > 20 ? fullName.slice(0, 18) + '..' : fullName;
+      page.drawText(dispName, {
+        x: colX(0) + 5,
+        y: y - 12,
+        size: 7.5,
+        font: fontBold,
+        color: rgb(0.1, 0.1, 0.1),
+      });
+      page.drawText(`ID: ${user.unique_id}`, {
+        x: colX(0) + 5,
+        y: y - 22,
+        size: 6.5,
+        font,
+        color: rgb(0.4, 0.4, 0.4),
+      });
+
+      for (let i = 0; i < 7; i++) {
+        const dateStr = dates[i];
+        const cellX = colX(i + 1);
+        const lines = getCellLinesForUserDate(user, dateStr);
+
+        if (lines.length > 0) {
+          const line1 = lines[0];
+          let color1 = rgb(0.1, 0.1, 0.1);
+          let fontStyle1 = font;
+          if (line1.includes('Riposo')) {
+            color1 = rgb(0.5, 0.5, 0.5);
+            fontStyle1 = fontItalic;
+          } else if (line1.includes('Ferie') || line1.includes('Permesso')) {
+            color1 = rgb(0.1, 0.4, 0.7);
+            fontStyle1 = fontBold;
+          } else if (line1.includes('Trasferito')) {
+            color1 = rgb(0.1, 0.6, 0.3);
+            fontStyle1 = fontBold;
+          }
+
+          page.drawText(line1, {
+            x: cellX + 5,
+            y: y - 12,
+            size: 7.2,
+            font: fontStyle1,
+            color: color1,
+          });
+
+          if (lines[1]) {
+            const line2 = lines[1];
+            let color2 = rgb(0.4, 0.4, 0.4);
+            if (line1.includes('Ferie') || line1.includes('Permesso')) {
+              color2 = rgb(0.1, 0.4, 0.7);
+            } else if (line1.includes('Trasferito')) {
+              color2 = rgb(0.1, 0.6, 0.3);
+            }
+
+            page.drawText(line2, {
+              x: cellX + 5,
+              y: y - 22,
+              size: 6.2,
+              font,
+              color: color2,
+            });
+          }
+        }
+      }
+
+      page.drawText(String(user.totalHours.toFixed(1).replace('.0', '')), {
+        x: colX(8) + 15,
+        y: y - 18,
+        size: 9,
+        font: fontBold,
+        color: rgb(0.1, 0.1, 0.1),
+      });
+
+      y -= ROW_HEIGHT;
+    }
+
+    if (truncated) {
+      checkPageOverflow(20);
+      page.drawText(`... Troncato a ${EXPORT_ROW_CAP} righe ...`, { x: startX, y: y - 15, size: 9, font: fontItalic, color: rgb(0.8, 0, 0) });
+    }
+
+    const pdfBytes = await pdfDoc.save();
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
+    res.send(Buffer.from(pdfBytes));
+  } else if (format === 'pdf') {
+    // Fallback PDF layout when week is not defined (simple list table format)
     const pdfDoc = await PDFDocument.create();
     const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
     const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
     const fontItalic = await pdfDoc.embedFont(StandardFonts.HelveticaOblique);
 
     let page = pdfDoc.addPage([841.89, 595.28]); // A4 Landscape
-    let { width, height } = page.getSize();
+    const { width, height } = page.getSize();
     let y = height - 40;
 
     const checkPageOverflow = (needed: number) => {
@@ -1567,28 +1959,35 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
       }
     };
 
-    // Header Band
     page.drawRectangle({ x: 40, y: y - 60, width: width - 80, height: 60, color: rgb(0.05, 0.13, 0.22) });
     page.drawText('EXPORT TURNI (SHIFTS EXPORT)', { x: 60, y: y - 25, size: 14, font: fontBold, color: rgb(1, 1, 1) });
-    page.drawText(`Periodo: ${week ?? 'N/A'} | Generato il: ${new Date().toLocaleString('it-IT')}`, { x: 60, y: y - 45, size: 9, font, color: rgb(0.9, 0.9, 0.9) });
+    page.drawText(`Generato il: ${new Date().toLocaleString('it-IT')}`, { x: 60, y: y - 45, size: 9, font, color: rgb(0.9, 0.9, 0.9) });
     y -= 80;
 
-    // Table Headers
+    const LIST_HEADERS = ['Data','Inizio','Fine','Pausa Inizio','Pausa Fine','Spezzato','Inizio2','Fine2','Ore','Nome','Cognome','ID','Negozio','Stato','Note'];
     const COL_WIDTHS = [70, 45, 45, 65, 65, 55, 45, 45, 35, 70, 70, 60, 80, 55, 100];
-    const colX = (idx: number) => 40 + COL_WIDTHS.slice(0, idx).reduce((a, b) => a + b, 0);
+    const colX = (colIdx: number) => 40 + COL_WIDTHS.slice(0, colIdx).reduce((a, b) => a + b, 0);
 
-    HEADERS.forEach((h, i) => {
+    LIST_HEADERS.forEach((h, i) => {
       page.drawText(h, { x: colX(i), y, size: 8, font: fontBold });
     });
     page.drawLine({ start: { x: 40, y: y - 4 }, end: { x: width - 40, y: y - 4 }, thickness: 1, color: rgb(0.2, 0.2, 0.2) });
     y -= 18;
 
-    // Rows
-    for (const row of rowData) {
+    for (const s of shifts) {
       checkPageOverflow(15);
+      const row = [
+        s.date, s.start_time, s.end_time,
+        s.break_start ?? '', s.break_end ?? '',
+        s.is_split ? 'SI' : 'NO',
+        s.split_start2 ?? '', s.split_end2 ?? '',
+        s.shift_hours,
+        s.user_name, s.user_surname, s.unique_id ?? '',
+        s.store_name, s.status, s.notes ?? '',
+      ];
       row.forEach((val, i) => {
         const str = String(val);
-        const limit = i === 14 ? 20 : i === 12 ? 15 : 12; // notes/store truncation
+        const limit = i === 14 ? 20 : i === 12 ? 15 : 12;
         const display = str.length > limit ? str.substring(0, limit - 2) + '..' : str;
         page.drawText(display, { x: colX(i), y, size: 7.5, font });
       });
@@ -1604,24 +2003,44 @@ export const exportShifts = asyncHandler(async (req: Request, res: Response) => 
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
     res.send(Buffer.from(pdfBytes));
-  } else if (format === 'xlsx') {
-    const ws = XLSX.utils.aoa_to_sheet([HEADERS, ...rowData]);
-    // Style header row bold (basic column widths)
-    ws['!cols'] = HEADERS.map((h) => ({ wch: Math.max(h.length + 2, 12) }));
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Turni');
-    const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
-    if (truncated) res.setHeader('X-Export-Truncated', 'true');
-    res.send(buf);
   } else {
-    const csvQ = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const csvRows = rowData.map((r) => r.map(csvQ).join(','));
-    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
-    if (truncated) res.setHeader('X-Export-Truncated', 'true');
-    res.send(HEADERS.map(csvQ).join(',') + '\n' + csvRows.join('\n'));
+    // -------------------------------------------------------------------------
+    // Excel/CSV formats: Align exactly with the import template format
+    // -------------------------------------------------------------------------
+    const EXPORT_HEADERS = ['data', 'unique_id', 'store_code', 'inizio', 'fine', 'pausa_inizio', 'pausa_fine', 'spezzato', 'inizio2', 'fine2', 'stato', 'note'];
+    const rowData = shifts.map((s) => [
+      s.date,
+      s.unique_id ?? '',
+      s.store_code ?? '',
+      s.start_time ? s.start_time.slice(0, 5) : '',
+      s.end_time ? s.end_time.slice(0, 5) : '',
+      s.break_start ? s.break_start.slice(0, 5) : '',
+      s.break_end ? s.break_end.slice(0, 5) : '',
+      s.is_split ? 'SI' : 'NO',
+      s.split_start2 ? s.split_start2.slice(0, 5) : '',
+      s.split_end2 ? s.split_end2.slice(0, 5) : '',
+      s.status,
+      s.notes ?? '',
+    ]);
+
+    if (format === 'xlsx') {
+      const ws = XLSX.utils.aoa_to_sheet([EXPORT_HEADERS, ...rowData]);
+      ws['!cols'] = EXPORT_HEADERS.map((h) => ({ wch: Math.max(h.length + 2, 14) }));
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Turni');
+      const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' }) as Buffer;
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      if (truncated) res.setHeader('X-Export-Truncated', 'true');
+      res.send(buf);
+    } else {
+      const csvQ = (v: unknown) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+      const csvRows = rowData.map((r) => r.map(csvQ).join(','));
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
+      if (truncated) res.setHeader('X-Export-Truncated', 'true');
+      res.send(EXPORT_HEADERS.map(csvQ).join(',') + '\n' + csvRows.join('\n'));
+    }
   }
 });
 
