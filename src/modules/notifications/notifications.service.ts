@@ -1,6 +1,12 @@
 import { query, queryOne } from '../../config/database';
 import { sendNotificationEmail } from '../../services/email.service';
 import { emitToCompany } from '../../config/socket';
+import {
+  isRoleEligibleForModule,
+  isDefaultEnabledForModule,
+  ModuleName,
+} from '../permissions/permission-catalog';
+import { UserRole } from '../../config/jwt';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,6 +59,80 @@ function deriveCategory(eventType: NotificationEventType): NotificationCategory 
   
   // Fallback for unknown types
   return 'manager';
+}
+
+// ---------------------------------------------------------------------------
+// Module-permission gating
+// ---------------------------------------------------------------------------
+// Notifications must respect the company's per-role module configuration
+// (the same rules the route middleware enforces). A role that cannot access a
+// module must not receive notifications belonging to that module — neither new
+// ones (dispatch path) nor previously-stored ones (read path).
+
+/**
+ * SQL LIKE patterns mapping notification types to the module that governs them.
+ * Events with no entry here (e.g. `manager.alert`) are never module-gated.
+ */
+const NOTIFICATION_MODULE_PATTERNS: ReadonlyArray<readonly [string, ModuleName]> = [
+  ['attendance.anomaly', 'anomalie'],
+  ['employee.%', 'dipendenti'],
+  ['shift.%', 'turni'],
+  ['leave.%', 'permessi'],
+  ['document.%', 'documenti'],
+  ['ats.%', 'ats'],
+  ['onboarding.%', 'onboarding'],
+];
+
+/** Maps a single event type to its governing module (or null if not gated). */
+function moduleForEventType(type: string): ModuleName | null {
+  if (type === 'attendance.anomaly') return 'anomalie';
+  if (type.startsWith('employee.')) return 'dipendenti';
+  if (type.startsWith('shift.')) return 'turni';
+  if (type.startsWith('leave.')) return 'permessi';
+  if (type.startsWith('document.')) return 'documenti';
+  if (type.startsWith('ats.')) return 'ats';
+  if (type.startsWith('onboarding.')) return 'onboarding';
+  return null;
+}
+
+/**
+ * Resolves whether a role may access a module in a company, mirroring the route
+ * middleware: hard eligibility guard, then `role_module_permissions` with the
+ * same default-on fallback when no explicit row exists.
+ */
+async function isModuleAllowedForRole(
+  companyId: number,
+  role: string,
+  moduleName: ModuleName,
+): Promise<boolean> {
+  if (!isRoleEligibleForModule(role as UserRole, moduleName)) return false;
+  const row = await queryOne<{ is_enabled: boolean }>(
+    `SELECT is_enabled
+     FROM role_module_permissions
+     WHERE company_id = $1 AND role = $2 AND module_name = $3
+     LIMIT 1`,
+    [companyId, role, moduleName],
+  );
+  if (!row) return isDefaultEnabledForModule(role as UserRole, moduleName);
+  return row.is_enabled === true;
+}
+
+/**
+ * Returns the SQL LIKE patterns for notification types the given role may NOT
+ * receive in this company. Used by the read path so already-stored notifications
+ * for now-disabled modules are filtered out of a user's own inbox.
+ */
+async function getBlockedTypePatterns(
+  companyId: number,
+  role: string,
+): Promise<string[]> {
+  const blocked: string[] = [];
+  for (const [pattern, moduleName] of NOTIFICATION_MODULE_PATTERNS) {
+    if (!(await isModuleAllowedForRole(companyId, role, moduleName))) {
+      blocked.push(pattern);
+    }
+  }
+  return blocked;
 }
 
 export interface SendNotificationOptions {
@@ -127,11 +207,6 @@ interface NotificationSettingRow {
   roles: string[];
 }
 
-interface UserRow {
-  id: number;
-  email: string;
-  role: string;
-}
 
 function toNotification(row: NotificationRow): Notification {
   let parsedMetadata: any = undefined;
@@ -207,8 +282,20 @@ export async function sendNotification(
   } = options;
 
   try {
+    // Fetch the recipient once — reused for the settings/module checks,
+    // locale resolution, and the email channel below.
+    const recipient = await queryOne<{
+      id: number;
+      email: string;
+      role: string;
+      locale: string | null;
+    }>(
+      `SELECT id, email, role, locale FROM users WHERE id = $1 LIMIT 1`,
+      [userId],
+    );
+
     // ------------------------------------------------------------------
-    // 1. Settings check — skip if explicitly requested
+    // 1. Settings + module checks — skip if explicitly requested
     // ------------------------------------------------------------------
     if (!skipSettingsCheck) {
       const setting = await queryOne<NotificationSettingRow>(
@@ -224,28 +311,27 @@ export async function sendNotification(
         return;
       }
 
-      if (setting && setting.enabled) {
-        // Check if the user's role is in the allowed roles
-        const userRow = await queryOne<UserRow>(
-          `SELECT id, email, role FROM users WHERE id = $1 LIMIT 1`,
-          [userId],
-        );
-        if (userRow && !setting.roles.includes(userRow.role)) {
-          // User's role is not permitted to receive this notification type
-          return;
-        }
+      if (setting && setting.enabled && recipient && !setting.roles.includes(recipient.role)) {
+        // User's role is not permitted to receive this notification type
+        return;
+      }
+
+      // Module-permission guard: respect the company's per-role module
+      // configuration. If the recipient's role cannot access the module this
+      // event belongs to, do not dispatch (e.g. employees are not eligible for
+      // the `anomalie` module, so they never receive anomaly notifications).
+      const moduleName = moduleForEventType(type);
+      if (
+        moduleName &&
+        recipient &&
+        !(await isModuleAllowedForRole(companyId, recipient.role, moduleName))
+      ) {
+        return;
       }
     }
 
     // Resolve effective locale for this notification (explicit > user.locale > fallback)
-    let effectiveLocale = locale;
-    if (!effectiveLocale) {
-      const localeRow = await queryOne<{ locale?: string }>(
-        `SELECT locale FROM users WHERE id = $1 LIMIT 1`,
-        [userId],
-      );
-      effectiveLocale = localeRow?.locale || 'it';
-    }
+    const effectiveLocale = locale || recipient?.locale || 'it';
 
     // Derive category from event type
     const category = deriveCategory(type);
@@ -268,16 +354,10 @@ export async function sendNotification(
     // ------------------------------------------------------------------
     if (channels.includes('email')) {
       try {
-        // Resolve user email for sending
-        const userRow = await queryOne<UserRow>(
-          `SELECT id, email, role FROM users WHERE id = $1 LIMIT 1`,
-          [userId],
-        );
-
-        if (userRow?.email) {
+        if (recipient?.email) {
           await sendNotificationEmail({
             companyId,
-            toEmail: userRow.email,
+            toEmail: recipient.email,
             eventKey: type,
             variables: {},
             fallbackSubject: emailSubject ?? title,
@@ -341,6 +421,8 @@ export async function getNotifications(options: {
   offset?: number;
   scope?: 'mine' | 'company';
   isSuperAdmin?: boolean;
+  /** Recipient role — used to filter the user's own inbox by module permissions. */
+  recipientRole?: string;
 }): Promise<{ notifications: Notification[]; total: number; unreadCount: number }> {
   const {
     userId,
@@ -350,6 +432,7 @@ export async function getNotifications(options: {
     offset = 0,
     scope = 'mine',
     isSuperAdmin = false,
+    recipientRole,
   } = options;
 
   const safeLimit  = Math.min(limit, 100);
@@ -406,16 +489,39 @@ export async function getNotifications(options: {
 
   const unreadFilter = unreadOnly ? 'AND n.is_read = FALSE' : '';
 
+  // Filter the user's own inbox by module permissions: notifications whose
+  // module is disabled for the recipient's role are hidden (and excluded from
+  // counts), so previously-stored notifications are handled consistently.
+  let blockedPatterns: string[] = [];
+  if (recipientRole && !isSuperAdmin) {
+    blockedPatterns = await getBlockedTypePatterns(companyId, recipientRole);
+  }
+
+  const countParams: unknown[] = [userId, companyId];
+  let countBlockedFilter = '';
+  if (blockedPatterns.length > 0) {
+    countParams.push(blockedPatterns);
+    countBlockedFilter = `AND NOT (n.type LIKE ANY($${countParams.length}))`;
+  }
+
   const countRow = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
      FROM notifications n
      WHERE n.user_id = $1
        AND n.company_id = $2
        AND n.is_enabled = TRUE
-       ${unreadFilter}`,
-    [userId, companyId],
+       ${unreadFilter}
+       ${countBlockedFilter}`,
+    countParams,
   );
   const total = parseInt(countRow?.count ?? '0', 10);
+
+  const unreadParams: unknown[] = [userId, companyId];
+  let unreadBlockedFilter = '';
+  if (blockedPatterns.length > 0) {
+    unreadParams.push(blockedPatterns);
+    unreadBlockedFilter = `AND NOT (n.type LIKE ANY($${unreadParams.length}))`;
+  }
 
   const unreadRow = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
@@ -423,10 +529,18 @@ export async function getNotifications(options: {
      WHERE n.user_id = $1
        AND n.company_id = $2
        AND n.is_enabled = TRUE
-       AND n.is_read = FALSE`,
-    [userId, companyId],
+       AND n.is_read = FALSE
+       ${unreadBlockedFilter}`,
+    unreadParams,
   );
   const unreadCount = parseInt(unreadRow?.count ?? '0', 10);
+
+  const rowParams: unknown[] = [userId, companyId, safeLimit, safeOffset];
+  let rowsBlockedFilter = '';
+  if (blockedPatterns.length > 0) {
+    rowParams.push(blockedPatterns);
+    rowsBlockedFilter = `AND NOT (n.type LIKE ANY($${rowParams.length}))`;
+  }
 
   const rows = await query<NotificationRow>(
     `SELECT n.id, n.company_id, n.user_id, n.type, n.title, n.message,
@@ -436,9 +550,10 @@ export async function getNotifications(options: {
         AND n.company_id = $2
         AND n.is_enabled = TRUE
         ${unreadFilter}
+        ${rowsBlockedFilter}
       ORDER BY n.created_at DESC
       LIMIT $3 OFFSET $4`,
-    [userId, companyId, safeLimit, safeOffset],
+    rowParams,
   );
 
   return {
@@ -532,12 +647,30 @@ export async function markAllAsRead(
  * Returns the total number of unread notifications for a user.
  * Used by the frontend bell-badge polling endpoint.
  */
-export async function getUnreadCount(userId: number): Promise<number> {
+export async function getUnreadCount(
+  userId: number,
+  companyId?: number,
+  role?: string,
+): Promise<number> {
+  const params: unknown[] = [userId];
+  let blockedFilter = '';
+
+  // Keep the badge count consistent with the filtered inbox: exclude
+  // notifications whose module is disabled for the recipient's role.
+  if (companyId && role) {
+    const blockedPatterns = await getBlockedTypePatterns(companyId, role);
+    if (blockedPatterns.length > 0) {
+      params.push(blockedPatterns);
+      blockedFilter = `AND NOT (type LIKE ANY($${params.length}))`;
+    }
+  }
+
   const row = await queryOne<{ count: string }>(
     `SELECT COUNT(*) AS count
      FROM notifications
-     WHERE user_id = $1 AND is_enabled = TRUE AND is_read = FALSE`,
-    [userId],
+     WHERE user_id = $1 AND is_enabled = TRUE AND is_read = FALSE
+       ${blockedFilter}`,
+    params,
   );
   return parseInt(row?.count ?? '0', 10);
 }
