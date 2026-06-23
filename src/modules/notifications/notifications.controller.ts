@@ -66,6 +66,7 @@ export const listNotifications = asyncHandler(
       offset,
       scope: scopeParam === 'company' ? 'company' : 'mine',
       isSuperAdmin: is_super_admin === true,
+      recipientRole: role,
     });
 
     ok(res, {
@@ -163,8 +164,12 @@ export const markAllNotificationsRead = asyncHandler(
  */
 export const getUnreadCount = asyncHandler(
   async (req: Request, res: Response) => {
-    const { userId } = req.user!;
-    const count = await getUnreadCountService(userId);
+    const { userId, companyId, role, is_super_admin } = req.user!;
+    const count = await getUnreadCountService(
+      userId,
+      is_super_admin === true ? undefined : companyId ?? undefined,
+      is_super_admin === true ? undefined : role,
+    );
     ok(res, { count });
   },
 );

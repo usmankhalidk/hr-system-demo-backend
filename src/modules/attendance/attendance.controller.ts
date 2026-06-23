@@ -232,6 +232,11 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       [companyId, user_id, payload.storeId],
     );
   } else {
+    // For checkout / break events, first resolve the shift from the employee's
+    // currently OPEN check-in (a check-in with no checkout yet). This correctly
+    // handles shifts that cross midnight, where the checkout happens on a
+    // different calendar day than the shift's date — the date-based lookup below
+    // would otherwise find nothing and reject a valid checkout.
     currentShift = await queryOne<{
       id: number;
       shift_date: string;
@@ -245,16 +250,54 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
          ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
          ${SHIFT_START_UTC_SQL} AS start_at_utc,
          ${SHIFT_END_UTC_SQL} AS end_at_utc
-       FROM shifts s
-       WHERE s.company_id = $1
-         AND s.user_id = $2
-         AND s.store_id = $3
+       FROM attendance_events ae
+       JOIN shifts s ON s.id = ae.shift_id
+       WHERE ae.company_id = $1
+         AND ae.user_id = $2
+         AND ae.store_id = $3
+         AND ae.event_type = 'checkin'
+         AND ae.event_time >= NOW() - INTERVAL '24 hours'
          AND s.status != 'cancelled'
-         AND s.date = (NOW() AT TIME ZONE ${SHIFT_TIMEZONE_SQL})::DATE
-       ORDER BY ${SHIFT_START_UTC_SQL}
+         AND NOT EXISTS (
+           SELECT 1 FROM attendance_events co
+           WHERE co.company_id = ae.company_id
+             AND co.user_id = ae.user_id
+             AND co.store_id = ae.store_id
+             AND co.event_type = 'checkout'
+             AND co.event_time >= ae.event_time
+         )
+       ORDER BY ae.event_time DESC
        LIMIT 1`,
       [companyId, user_id, payload.storeId],
     );
+
+    // Fall back to today's scheduled shift when there is no open check-in
+    // (e.g. a same-day shift with no events yet, or legacy events with no link).
+    if (!currentShift) {
+      currentShift = await queryOne<{
+        id: number;
+        shift_date: string;
+        shift_timezone: string;
+        start_at_utc: string;
+        end_at_utc: string;
+      }>(
+        `SELECT
+           s.id,
+           TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+           ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
+           ${SHIFT_START_UTC_SQL} AS start_at_utc,
+           ${SHIFT_END_UTC_SQL} AS end_at_utc
+         FROM shifts s
+         WHERE s.company_id = $1
+           AND s.user_id = $2
+           AND s.store_id = $3
+           AND s.status != 'cancelled'
+           AND s.date = (NOW() AT TIME ZONE ${SHIFT_TIMEZONE_SQL})::DATE
+         ORDER BY ${SHIFT_START_UTC_SQL}
+         LIMIT 1`,
+        [companyId, user_id, payload.storeId],
+      );
+    }
   }
 
   // Shift and holiday rules:
@@ -866,32 +909,78 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
     const eventIso = ts.toISOString();
     const eventDate = eventIso.slice(0, 10); // YYYY-MM-DD
 
+    // For checkout / break events, first resolve the shift from the open
+    // check-in (a check-in with no checkout yet) up to this event's time. This
+    // correctly handles shifts crossing midnight, where the event's calendar
+    // day differs from the shift's date.
+    let dayShift: { id: number; shift_date: string; shift_timezone: string } | null = null;
+
+    if (ev.event_type !== 'checkin') {
+      dayShift = await queryOne<{
+        id: number;
+        shift_date: string;
+        shift_timezone: string;
+      }>(
+        `SELECT
+           s.id,
+           TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+           ${SHIFT_TIMEZONE_SQL} AS shift_timezone
+         FROM attendance_events ae
+         JOIN shifts s ON s.id = ae.shift_id
+         WHERE ae.company_id = $1::int
+           AND ae.user_id = $2::int
+           AND ae.store_id = $3::int
+           AND ae.event_type = 'checkin'
+           AND ae.event_time <= $4::timestamptz
+           AND ae.event_time >= $4::timestamptz - INTERVAL '24 hours'
+           AND s.status != 'cancelled'
+           AND NOT EXISTS (
+             SELECT 1 FROM attendance_events co
+             WHERE co.company_id = ae.company_id
+               AND co.user_id = ae.user_id
+               AND co.store_id = ae.store_id
+               AND co.event_type = 'checkout'
+               AND co.event_time >= ae.event_time
+               AND co.event_time <= $4::timestamptz
+           )
+         ORDER BY ae.event_time DESC
+         LIMIT 1`,
+        [companyId, resolvedUserId, storeId, eventIso],
+      );
+    }
+
     // Look for any non-cancelled shift for this user/store on the event's date
-    const dayShift = await queryOne<{
-      id: number;
-      shift_date: string;
-      shift_timezone: string;
-    }>(
-      `SELECT
-         s.id,
-         TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
-         ${SHIFT_TIMEZONE_SQL} AS shift_timezone
-       FROM shifts s
-       WHERE s.company_id = $1::int
-         AND s.user_id = $2::int
-         AND s.store_id = $3::int
-         AND s.status != 'cancelled'
-         AND s.date = $4::DATE
-       ORDER BY ${SHIFT_START_UTC_SQL}
-       LIMIT 1`,
-      [companyId, resolvedUserId, storeId, eventDate],
-    );
+    if (!dayShift) {
+      dayShift = await queryOne<{
+        id: number;
+        shift_date: string;
+        shift_timezone: string;
+      }>(
+        `SELECT
+           s.id,
+           TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+           ${SHIFT_TIMEZONE_SQL} AS shift_timezone
+         FROM shifts s
+         WHERE s.company_id = $1::int
+           AND s.user_id = $2::int
+           AND s.store_id = $3::int
+           AND s.status != 'cancelled'
+           AND s.date = $4::DATE
+         ORDER BY ${SHIFT_START_UTC_SQL}
+         LIMIT 1`,
+        [companyId, resolvedUserId, storeId, eventDate],
+      );
+    }
 
     if (!dayShift) {
       errors.push(`Evento ${rowNum}: nessun turno programmato per questo giorno`);
       failed++;
       continue;
     }
+
+    // Sequence/leave validation is keyed off the shift's own date so that a
+    // checkout recorded after midnight still matches its check-in.
+    const seqDate = dayShift.shift_date;
 
     // Check for approved leave on that day
     const onLeave = await queryOne<{ id: number }>(
@@ -902,7 +991,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
          AND start_date <= $3::date
          AND end_date   >= $3::date
        LIMIT 1`,
-      [companyId, resolvedUserId, eventDate],
+      [companyId, resolvedUserId, seqDate],
     );
     if (onLeave) {
       errors.push(`Evento ${rowNum}: presenza non consentita durante ferie/permesso approvato`);
@@ -919,7 +1008,7 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
          AND event_time >= (($3::DATE)::timestamp AT TIME ZONE $4)
          AND event_time <  ((($3::DATE + INTERVAL '1 day')::timestamp) AT TIME ZONE $4)
        ORDER BY event_time ASC`,
-      [companyId, resolvedUserId, eventDate, dayShift.shift_timezone],
+      [companyId, resolvedUserId, seqDate, dayShift.shift_timezone],
     );
 
     const hasEvt = (type: string) => dayEventsForSeq.some((e) => e.event_type === type);
