@@ -52,6 +52,7 @@ const updateCompanySchema = z.object({
 const createCompanySchema = z.object({
   name: z.string().min(1, 'Nome azienda obbligatorio').max(255),
   group_id: z.number().int().nullable().optional(),
+  owner_user_id: z.number().int().positive().nullable().optional(),
   registration_number: z.string().max(100).nullable().optional(),
   company_email: z.string().max(255).nullable().optional(),
   company_phone_numbers: z.string().max(1000).nullable().optional(),

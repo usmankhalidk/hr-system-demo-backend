@@ -338,8 +338,9 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
   const body = req.body as Record<string, unknown>;
   const name = String(body.name ?? '').trim();
   const group_id = body.group_id as number | null | undefined;
+  const requestedOwnerUserId = body.owner_user_id == null ? null : Number(body.owner_user_id);
   const profile = extractCompanyProfileInput(body);
-  const ownerUserId = req.user!.userId;
+  let ownerUserId = req.user!.userId;
 
   const baseSlug = name.toLowerCase().trim()
     .replace(/\s+/g, '-')
@@ -367,6 +368,29 @@ export const createCompany = asyncHandler(async (req: Request, res: Response) =>
       badRequest(res, 'Gruppo azienda non valido', 'INVALID_GROUP');
       return;
     }
+  }
+
+  if (requestedOwnerUserId !== null) {
+    if (!Number.isInteger(requestedOwnerUserId) || requestedOwnerUserId <= 0) {
+      badRequest(res, 'Proprietario non valido', 'VALIDATION_ERROR');
+      return;
+    }
+
+    const owner = await queryOne<{ id: number }>(
+      `SELECT id
+       FROM users
+       WHERE id = $1
+         AND role = 'admin'
+         AND status = 'active'`,
+      [requestedOwnerUserId],
+    );
+
+    if (!owner) {
+      badRequest(res, 'Il proprietario deve essere un admin attivo', 'INVALID_OWNER');
+      return;
+    }
+
+    ownerUserId = requestedOwnerUserId;
   }
 
   // Ensure slug uniqueness (companies.slug is UNIQUE)

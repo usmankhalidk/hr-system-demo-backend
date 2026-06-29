@@ -776,7 +776,12 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
         if (hasCrossCompany) {
           // If cross-company is ON, Area Manager sees:
           // 1. All leaves across the group companies (but buildHierarchyFilter still restricts to lower ranks)
-          scopeWhere = `lr.company_id = ANY($1) AND ${buildHierarchyFilter(2)}`;
+          scopeWhere = `lr.company_id = ANY($1) AND (${buildHierarchyFilter(2)} OR EXISTS (
+            SELECT 1 FROM leave_approvals la_scope
+            WHERE la_scope.leave_request_id = lr.id
+              AND la_scope.approver_id = $2
+              AND la_scope.approver_role = 'area_manager'
+          ))`;
           scopeParams = [allowedCompanyIds, userId];
         } else {
           // Standard local-only visibility: find managed stores in their own company
@@ -789,10 +794,20 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
           const storeIds = amStores.map((s) => s.store_id);
           
           if (storeIds.length === 0) {
-            scopeWhere = `lr.company_id = ANY($1) AND lr.user_id = $2 AND ${buildHierarchyFilter(2)}`;
+            scopeWhere = `lr.company_id = ANY($1) AND (lr.user_id = $2 OR lr.current_approver_role = 'area_manager' OR EXISTS (
+              SELECT 1 FROM leave_approvals la_scope
+              WHERE la_scope.leave_request_id = lr.id
+                AND la_scope.approver_id = $2
+                AND la_scope.approver_role = 'area_manager'
+            )) AND ${buildHierarchyFilter(2)}`;
             scopeParams = [allowedCompanyIds, userId];
           } else {
-            scopeWhere = `((lr.company_id = ANY($1) AND lr.store_id = ANY($2::int[])) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
+            scopeWhere = `((lr.company_id = ANY($1) AND (lr.store_id = ANY($2::int[]) OR lr.current_approver_role = 'area_manager' OR EXISTS (
+              SELECT 1 FROM leave_approvals la_scope
+              WHERE la_scope.leave_request_id = lr.id
+                AND la_scope.approver_id = $3
+                AND la_scope.approver_role = 'area_manager'
+            ))) OR lr.user_id = $3) AND ${buildHierarchyFilter(3)}`;
             scopeParams = [allowedCompanyIds, storeIds, userId];
           }
         }
@@ -908,7 +923,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
 
 export const getPendingApprovals = asyncHandler(async (req: Request, res: Response) => {
   // FIX 7: removed unused `companyId` from destructure
-  const { role, userId, storeId } = req.user!;
+  const { role, storeId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const isSuperAdmin = req.user!.is_super_admin === true;
 
@@ -938,19 +953,8 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
           scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager'`;
           scopeParams = [allowedCompanyIds];
         } else {
-          const amStores = await query<{ store_id: number }>(
-            `SELECT DISTINCT store_id FROM users
-             WHERE role = 'store_manager' AND supervisor_id = $1
-               AND company_id = $2 AND status = 'active' AND store_id IS NOT NULL`,
-            [userId, req.user!.companyId],
-          );
-          const storeIds = amStores.map((s) => s.store_id);
-          if (storeIds.length === 0) {
-            ok(res, { requests: [], total: 0 });
-            return;
-          }
-          scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager' AND lr.store_id = ANY($2::int[])`;
-          scopeParams = [allowedCompanyIds, storeIds];
+          scopeWhere = `lr.company_id = ANY($1) AND lr.current_approver_role = 'area_manager'`;
+          scopeParams = [allowedCompanyIds];
         }
         break;
       }
