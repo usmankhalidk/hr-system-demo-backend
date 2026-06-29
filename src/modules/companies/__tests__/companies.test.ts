@@ -157,6 +157,19 @@ describe('POST /api/companies', () => {
     );
   });
 
+  it('super admin can assign an active admin owner while creating a company', async () => {
+    const token = await loginAs('superadmin@acme-test.com');
+    const res = await request
+      .post('/api/companies')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ name: 'Owner Company X', owner_user_id: seeds.adminId });
+
+    expect(res.status).toBe(201);
+    expect(res.body.success).toBe(true);
+    expect(res.body.data.name).toBe('Owner Company X');
+    expect(res.body.data.owner_user_id).toBe(seeds.adminId);
+  });
+
   it('hr cannot create a company', async () => {
     const token = await loginAs('hr@acme-test.com');
     const res = await request

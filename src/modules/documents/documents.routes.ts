@@ -1886,7 +1886,6 @@ router.post(
           const labels = isIt ? {
             title: 'Dettagli Firma Elettronica (Verify V3)',
             signedBy: 'Firmato da',
-            role: 'Ruolo',
             email: 'Email',
             date: 'Data e Ora',
             ip: 'Indirizzo IP',
@@ -1895,31 +1894,12 @@ router.post(
           } : {
             title: 'E-Signature Audit Trail (Verify V3)',
             signedBy: 'Signed by',
-            role: 'Role',
             email: 'Email',
             date: 'Date and Time',
             ip: 'IP Address',
             browser: 'Browser',
             disclaimer: 'This document has been electronically signed with legal consent.'
           };
-
-          const roleMap: Record<string, string> = isIt ? {
-            admin: 'Amministratore',
-            hr: 'Risorse Umane',
-            area_manager: 'Area Manager',
-            store_manager: 'Store Manager',
-            employee: 'Dipendente',
-            store_terminal: 'Terminale Negozio'
-          } : {
-            admin: 'Administrator',
-            hr: 'Human Resources',
-            area_manager: 'Area Manager',
-            store_manager: 'Store Manager',
-            employee: 'Employee',
-            store_terminal: 'Store Terminal'
-          };
-
-          const displayRole = roleMap[signerRole] || signerRole;
 
           // Priority: 
           // 1. Explicit display string from client
@@ -1944,7 +1924,6 @@ router.post(
           };
 
           drawField(labels.signedBy, `${signerName} ${signerSurname}`);
-          drawField(labels.role, displayRole);
           drawField(labels.email, signerEmail);
           drawField(labels.date, dateStr);
           drawField(labels.ip, signedIp);
