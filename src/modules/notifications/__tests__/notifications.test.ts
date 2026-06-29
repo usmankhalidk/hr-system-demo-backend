@@ -3,6 +3,7 @@ import supertest from 'supertest';
 import authRoutes from '../../auth/auth.routes';
 import notificationsRoutes from '../notifications.routes';
 import { seedTestData, clearTestData, closeTestDb, testPool } from '../../../__tests__/helpers/db';
+import { sendNotification } from '../notifications.service';
 
 // ---------------------------------------------------------------------------
 // App setup
@@ -650,5 +651,94 @@ describe('PATCH /api/notifications/settings/:eventKey', () => {
       .send({ enabled: true });
 
     expect(res.status).toBe(401);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Module-permission gating (Issue #1)
+// ---------------------------------------------------------------------------
+
+describe('Notification module-permission gating', () => {
+  async function countFor(userId: number, type: string): Promise<number> {
+    const r = await testPool.query<{ count: string }>(
+      'SELECT COUNT(*) AS count FROM notifications WHERE user_id = $1 AND type = $2',
+      [userId, type],
+    );
+    return parseInt(r.rows[0].count, 10);
+  }
+
+  it('does NOT dispatch attendance.anomaly to an employee (module not eligible)', async () => {
+    await sendNotification({
+      companyId: seeds.acmeId,
+      userId: seeds.employee1Id,
+      type: 'attendance.anomaly',
+      title: 'Anomalia',
+      message: 'Test anomaly',
+    });
+
+    expect(await countFor(seeds.employee1Id, 'attendance.anomaly')).toBe(0);
+  });
+
+  it('does dispatch shift.assigned to an employee when the turni module is enabled', async () => {
+    await sendNotification({
+      companyId: seeds.acmeId,
+      userId: seeds.employee1Id,
+      type: 'shift.assigned',
+      title: 'Turno',
+      message: 'Test shift',
+    });
+
+    expect(await countFor(seeds.employee1Id, 'shift.assigned')).toBe(1);
+  });
+
+  it('does NOT dispatch shift.assigned to an employee when the turni module is disabled', async () => {
+    await testPool.query(
+      `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled)
+       VALUES ($1, 'employee', 'turni', false)
+       ON CONFLICT (company_id, role, module_name) DO UPDATE SET is_enabled = false`,
+      [seeds.acmeId],
+    );
+
+    await sendNotification({
+      companyId: seeds.acmeId,
+      userId: seeds.employee1Id,
+      type: 'shift.assigned',
+      title: 'Turno',
+      message: 'Test shift',
+    });
+
+    expect(await countFor(seeds.employee1Id, 'shift.assigned')).toBe(0);
+
+    // restore default
+    await testPool.query(
+      `UPDATE role_module_permissions SET is_enabled = true
+       WHERE company_id = $1 AND role = 'employee' AND module_name = 'turni'`,
+      [seeds.acmeId],
+    );
+  });
+
+  it('hides already-stored anomaly notifications from the employee inbox', async () => {
+    await seedNotification({
+      companyId: seeds.acmeId,
+      userId: seeds.employee1Id,
+      type: 'attendance.anomaly',
+      title: 'Old Anomaly',
+    });
+    await seedNotification({
+      companyId: seeds.acmeId,
+      userId: seeds.employee1Id,
+      type: 'manager.alert',
+      title: 'Stays Visible',
+    });
+
+    const token = await login('employee1@acme-test.com');
+    const res = await request
+      .get('/api/notifications')
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.total).toBe(1);
+    expect(res.body.data.notifications).toHaveLength(1);
+    expect(res.body.data.notifications[0].title).toBe('Stays Visible');
   });
 });
