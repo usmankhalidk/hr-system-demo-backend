@@ -14,6 +14,7 @@ const checkinSchema = z.object({
   // Device binding: sent by the employee's own device.
   // For non-employee roles we ignore it.
   device_fingerprint: z.string().min(10).optional(),
+  device_metadata: z.record(z.string(), z.any()).optional(),
   notes:      z.string().max(500).optional(),
 });
 
@@ -126,11 +127,11 @@ router.put(
   updateAttendanceEvent,
 );
 
-// DELETE /api/attendance/:id — admin only
+// DELETE /api/attendance/:id — admin or hr only
 router.delete(
   '/:id',
   authenticate,
-  requireRole('admin'),
+  requireRole('admin', 'hr'),
   enforceCompany,
   requireModulePermission('presenze', 'write'),
   deleteAttendanceEvent,
