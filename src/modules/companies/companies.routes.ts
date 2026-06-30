@@ -82,9 +82,9 @@ const updateCompanySettingsSchema = z.object({
   show_leave_balance_to_employee: z.boolean(),
 });
 
-router.get('/', authenticate, requireRole('admin', 'hr'), enforceCompany, listCompanies);
+router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, listCompanies);
 router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, requireModulePermission('impostazioni', 'read'), getCompanySettings);
-router.get('/:id', authenticate, requireRole('admin', 'hr'), enforceCompany, getCompanyById);
+router.get('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, getCompanyById);
 router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, requireModulePermission('impostazioni', 'write'), validate(updateCompanySettingsSchema), updateCompanySettings);
 router.put('/:id', authenticate, requireRole('admin', 'hr'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);
 router.patch('/:id/owner', authenticate, requireRole('admin', 'hr'), enforceCompany, validate(transferOwnershipSchema), auditLog('company'), transferCompanyOwnership);
