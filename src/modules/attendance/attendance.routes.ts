@@ -126,11 +126,11 @@ router.put(
   updateAttendanceEvent,
 );
 
-// DELETE /api/attendance/:id — admin only
+// DELETE /api/attendance/:id — admin or hr only
 router.delete(
   '/:id',
   authenticate,
-  requireRole('admin'),
+  requireRole('admin', 'hr'),
   enforceCompany,
   requireModulePermission('presenze', 'write'),
   deleteAttendanceEvent,
