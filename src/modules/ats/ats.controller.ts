@@ -217,8 +217,19 @@ export const getJobHandler = asyncHandler(async (req: Request, res: Response) =>
 });
 
 export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Response) => {
-  const companyId = await resolveAtsCompanyId(req);
-  if (!companyId) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+  if (allowedCompanyIds.length === 0) { forbidden(res, 'Nessuna azienda valida selezionata'); return; }
+
+  // Check if there is an explicit, valid company ID requested.
+  const explicit = req.body?.company_id ?? req.body?.target_company_id ?? req.query?.company_id ?? req.query?.target_company_id;
+  let companyIdsToSearch = allowedCompanyIds;
+
+  if (explicit !== undefined && explicit !== null && String(explicit).trim() !== '') {
+    const parsed = Number.parseInt(String(explicit), 10);
+    if (!Number.isNaN(parsed) && allowedCompanyIds.includes(parsed)) {
+      companyIdsToSearch = [parsed];
+    }
+  }
 
   const { identifier } = req.params;
   const isNumeric = /^\d+$/.test(identifier);
@@ -237,8 +248,8 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
      FROM job_postings j
      JOIN companies c ON c.id = j.company_id
      LEFT JOIN stores s ON s.id = j.store_id
-     WHERE (${jobId ? 'j.id = $1' : 'j.reference_id = $1'}) AND j.company_id = $2`,
-    [jobId ?? referenceId, companyId],
+     WHERE (${jobId ? 'j.id = $1' : 'j.reference_id = $1'}) AND j.company_id = ANY($2::int[])`,
+    [jobId ?? referenceId, companyIdsToSearch],
   );
 
   if (!job) { notFound(res, 'Annuncio non trovato'); return; }
