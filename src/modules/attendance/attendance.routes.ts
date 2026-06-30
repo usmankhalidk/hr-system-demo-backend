@@ -14,6 +14,7 @@ const checkinSchema = z.object({
   // Device binding: sent by the employee's own device.
   // For non-employee roles we ignore it.
   device_fingerprint: z.string().min(10).optional(),
+  device_metadata: z.record(z.string(), z.any()).optional(),
   notes:      z.string().max(500).optional(),
 });
 

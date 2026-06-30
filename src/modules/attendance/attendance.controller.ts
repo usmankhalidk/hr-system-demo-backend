@@ -26,12 +26,67 @@ const DEFAULT_SHIFT_TIMEZONE_SQL = DEFAULT_SHIFT_TIMEZONE.replace(/'/g, "''");
 const SHIFT_TIMEZONE_SQL = `COALESCE(NULLIF(BTRIM(s.timezone), ''), '${DEFAULT_SHIFT_TIMEZONE_SQL}')`;
 const SHIFT_START_UTC_SQL = coalescedShiftPointUtcSql('s.start_at_utc', 's.date', 's.start_time', 's.timezone');
 const SHIFT_END_UTC_SQL = coalescedShiftPointUtcSql('s.end_at_utc', 's.date', 's.end_time', 's.timezone');
+const APPROVED_LEAVE_STATUSES = ['approved', 'admin_approved', 'admin approved', 'hr_approved'];
 
 function localDateStr(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
+}
+
+function pickMetaString(source: any, ...keys: string[]): string | null {
+  for (const key of keys) {
+    const value = source?.[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function sameMetaText(a: string | null, b: string | null): boolean {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
+}
+
+function languageBase(value: string | null): string | null {
+  return value ? value.split('-')[0]?.toLowerCase() ?? null : null;
+}
+
+function sameScreen(a: any, b: any): boolean {
+  const aw = Number(a?.width);
+  const ah = Number(a?.height);
+  const bw = Number(b?.width);
+  const bh = Number(b?.height);
+  if (!aw || !ah || !bw || !bh) return false;
+  return (aw === bw && ah === bh) || (aw === bh && ah === bw);
+}
+
+function isSameRegisteredDeviceProfile(registeredMetadata: any, currentMetadata: any): boolean {
+  if (!registeredMetadata || !currentMetadata) return false;
+
+  const registeredOsName = pickMetaString(registeredMetadata.os, 'name');
+  const currentOsName = pickMetaString(currentMetadata.os, 'name');
+  const registeredDevice = registeredMetadata.device ?? {};
+  const currentDevice = currentMetadata.device ?? {};
+
+  const osMatches = sameMetaText(registeredOsName, currentOsName);
+  const screenMatches = sameScreen(registeredMetadata.screen, currentMetadata.screen);
+  const timezoneMatches = sameMetaText(
+    pickMetaString(registeredMetadata, 'timezone'),
+    pickMetaString(currentMetadata, 'timezone'),
+  );
+  const languageMatches = languageBase(pickMetaString(registeredMetadata, 'language')) === languageBase(pickMetaString(currentMetadata, 'language'));
+
+  const deviceMatchCount = ['model', 'vendor', 'type'].filter((key) =>
+    sameMetaText(pickMetaString(registeredDevice, key), pickMetaString(currentDevice, key)),
+  ).length;
+  const browserMatches = sameMetaText(
+    pickMetaString(registeredMetadata.browser, 'name'),
+    pickMetaString(currentMetadata.browser, 'name'),
+  );
+
+  const score = Number(osMatches) + Number(screenMatches) + Number(timezoneMatches) + Number(languageMatches) + Number(browserMatches) + deviceMatchCount;
+  return (screenMatches && (osMatches || deviceMatchCount > 0) && score >= 3)
+    || (osMatches && deviceMatchCount >= 2 && score >= 4);
 }
 
 function subtractMinutesFromTime(timeStr: string, minutes: number): string {
@@ -100,11 +155,12 @@ export const generateQr = asyncHandler(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 export const checkin = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, role, userId: callerId } = req.user!;
-  const { qr_token, event_type, notes, device_fingerprint } = req.body as {
+  const { qr_token, event_type, notes, device_fingerprint, device_metadata } = req.body as {
     qr_token: string;
     event_type: 'checkin' | 'checkout' | 'break_start' | 'break_end';
     notes?: string;
     device_fingerprint?: string;
+    device_metadata?: any;
   };
   // Employees can only check in for themselves — managers/terminals can specify any user
   let user_id: number;
@@ -163,9 +219,10 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     name: string;
     surname: string;
     registered_device_token: string | null;
+    registered_device_metadata: any;
     device_reset_pending: boolean;
   }>(
-    `SELECT id, name, surname, registered_device_token, device_reset_pending
+    `SELECT id, name, surname, registered_device_token, registered_device_metadata, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
@@ -195,12 +252,32 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       .digest('hex');
 
     if (currentToken !== targetUser.registered_device_token) {
-      forbidden(
-        res,
-        'Your device is different, you will not able to check in, check out, break start, break end',
-        'DEVICE_MISMATCH',
-      );
-      return;
+      if (isSameRegisteredDeviceProfile(targetUser.registered_device_metadata, device_metadata)) {
+        try {
+          await query(
+            `UPDATE users
+             SET registered_device_token = $1,
+                 registered_device_metadata = COALESCE(registered_device_metadata, '{}'::jsonb) || $2::jsonb,
+                 updated_at = NOW()
+             WHERE id = $3 AND company_id = $4`,
+            [currentToken, JSON.stringify(device_metadata ?? {}), user_id, companyId],
+          );
+        } catch {
+          forbidden(
+            res,
+            'Your device is different, you will not able to check in, check out, break start, break end',
+            'DEVICE_MISMATCH',
+          );
+          return;
+        }
+      } else {
+        forbidden(
+          res,
+          'Your device is different, you will not able to check in, check out, break start, break end',
+          'DEVICE_MISMATCH',
+        );
+        return;
+      }
     }
   }
 
@@ -368,14 +445,14 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
      FROM leave_requests
      WHERE company_id = $1
        AND user_id = $2
-       AND status = 'hr_approved'
+       AND status = ANY($4::text[])
        AND start_date <= $3::date
        AND end_date >= $3::date
      LIMIT 1`,
-    [companyId, user_id, currentShift.shift_date],
+    [companyId, user_id, currentShift.shift_date, APPROVED_LEAVE_STATUSES],
   );
   if (approvedLeave) {
-    forbidden(res, 'Non puoi registrare presenze durante ferie/permesso approvato', 'ON_HOLIDAY');
+    forbidden(res, 'L\'utente è in permesso oggi, quindi non può registrare la presenza.', 'ON_HOLIDAY');
     return;
   }
 
@@ -542,8 +619,8 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
 
   // Try to link to an existing shift window for that user/store.
   const eventIso = ts.toISOString();
-  const linkedShift = await queryOne<{ id: number }>(
-    `SELECT s.id
+  const linkedShift = await queryOne<{ id: number; shift_date: string }>(
+    `SELECT s.id, TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date
      FROM shifts s
      WHERE s.company_id = $1
        AND s.user_id = $2
@@ -555,6 +632,23 @@ export const createManualEvent = asyncHandler(async (req: Request, res: Response
      LIMIT 1`,
     [effectiveCompanyId, user_id, store_id, eventIso],
   );
+
+  const leaveDate = linkedShift?.shift_date ?? eventIso.slice(0, 10);
+  const approvedLeave = await queryOne<{ id: number }>(
+    `SELECT id
+     FROM leave_requests
+     WHERE company_id = $1
+       AND user_id = $2
+       AND status = ANY($4::text[])
+       AND start_date <= $3::date
+       AND end_date >= $3::date
+     LIMIT 1`,
+    [effectiveCompanyId, user_id, leaveDate, APPROVED_LEAVE_STATUSES],
+  );
+  if (approvedLeave) {
+    forbidden(res, 'L\'utente è in permesso oggi, quindi non può registrare la presenza.', 'ON_HOLIDAY');
+    return;
+  }
 
   const event = await queryOne(
     `INSERT INTO attendance_events
@@ -987,11 +1081,11 @@ export const syncEvents = asyncHandler(async (req: Request, res: Response) => {
       `SELECT id FROM leave_requests
        WHERE company_id = $1::int
          AND user_id = $2::int
-         AND status = 'hr_approved'
+         AND status = ANY($4::text[])
          AND start_date <= $3::date
          AND end_date   >= $3::date
        LIMIT 1`,
-      [companyId, resolvedUserId, seqDate],
+      [companyId, resolvedUserId, seqDate, APPROVED_LEAVE_STATUSES],
     );
     if (onLeave) {
       errors.push(`Evento ${rowNum}: presenza non consentita durante ferie/permesso approvato`);
@@ -1717,11 +1811,11 @@ export const getDailyState = asyncHandler(async (req: Request, res: Response) =>
          FROM leave_requests
          WHERE company_id = $1
            AND user_id = $2
-           AND status = 'hr_approved'
+           AND status = ANY($4::text[])
            AND start_date <= $3::date
            AND end_date >= $3::date
          LIMIT 1`,
-      [companyId, userId, today],
+      [companyId, userId, today, APPROVED_LEAVE_STATUSES],
     )
     : null;
 
