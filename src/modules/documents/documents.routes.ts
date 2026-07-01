@@ -1371,15 +1371,11 @@ router.get(
 
     const hasCrossCompanyAccess = allowedCompanyIds.length > 1;
 
-    // Scoped check for managers: skip if caller has cross-company access (Area Managers for a group)
+    // Scoped check for managers: skip if caller has cross-company access.
+    // Area managers follow the same employee-detail scope and may open
+    // document tabs for employees visible in their allowed company scope.
     if (!isAdminOrHr && !hasCrossCompanyAccess) {
-      if (isAreaManager) {
-        const supervised = await queryOne(`SELECT id FROM users WHERE id = $1 AND supervisor_id = $2`, [employeeId, user.userId]);
-        if (!supervised) {
-          res.status(403).json({ success: false, error: 'Non autorizzato: dipendente fuori ambito', code: 'FORBIDDEN' });
-          return;
-        }
-      } else if (isStoreManager && user.storeId) {
+      if (isStoreManager && user.storeId) {
         const inStore = await queryOne(`SELECT id FROM users WHERE id = $1 AND store_id = $2`, [employeeId, user.storeId]);
         if (!inStore) {
           res.status(403).json({ success: false, error: 'Non autorizzato: dipendente fuori ambito', code: 'FORBIDDEN' });

@@ -119,6 +119,16 @@ describe('GET /api/employees/:id', () => {
     expect(Object.prototype.hasOwnProperty.call(res.body.data, 'personal_email')).toBe(true);
   });
 
+  it('area_manager can open admin detail from the employees list scope', async () => {
+    const token = await login('area@acme-test.com');
+    const res = await request
+      .get(`/api/employees/${seeds.adminId}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.email).toBe('admin@acme-test.com');
+    expect(Object.prototype.hasOwnProperty.call(res.body.data, 'personal_email')).toBe(true);
+  });
+
   it('employee gets their own detail including personal_email', async () => {
     const token = await login('employee1@acme-test.com');
     const res = await request
@@ -153,6 +163,18 @@ describe('GET /api/employees/:id', () => {
       .get('/api/employees/999999')
       .set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(404);
+  });
+});
+
+describe('GET /api/employees/:id/associations', () => {
+  it('area_manager can load admin associations from the employees list scope', async () => {
+    const token = await login('area@acme-test.com');
+    const res = await request
+      .get(`/api/employees/${seeds.adminId}/associations`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.data.subject.id).toBe(seeds.adminId);
+    expect(Array.isArray(res.body.data.companies)).toBe(true);
   });
 });
 
