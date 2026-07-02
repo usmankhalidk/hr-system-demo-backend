@@ -11,6 +11,7 @@ import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
 import { getStoredDeviceProfileHash, withDeviceProfileHash } from '../../utils/deviceProfile';
+import { sendLateArrivalAlertAutomation } from '../automations/lateArrivalAlert';
 
 // ---------------------------------------------------------------------------
 // Date helpers used where API contracts expect date-only values.
@@ -219,11 +220,13 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     id: number;
     name: string;
     surname: string;
+    email: string | null;
+    role: string;
     registered_device_token: string | null;
     registered_device_metadata: any;
     device_reset_pending: boolean;
   }>(
-    `SELECT id, name, surname, registered_device_token, registered_device_metadata, device_reset_pending
+    `SELECT id, name, surname, email, role, registered_device_token, registered_device_metadata, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
@@ -312,6 +315,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     currentShift = await queryOne<{
       id: number;
       shift_date: string;
+      start_time: string;
       shift_timezone: string;
       start_at_utc: string;
       end_at_utc: string;
@@ -319,6 +323,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       `SELECT
          s.id,
          TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+         s.start_time,
          ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
          ${SHIFT_START_UTC_SQL} AS start_at_utc,
          ${SHIFT_END_UTC_SQL} AS end_at_utc
@@ -342,6 +347,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     currentShift = await queryOne<{
       id: number;
       shift_date: string;
+      start_time: string;
       shift_timezone: string;
       start_at_utc: string;
       end_at_utc: string;
@@ -349,6 +355,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       `SELECT
          s.id,
          TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+         s.start_time,
          ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
          ${SHIFT_START_UTC_SQL} AS start_at_utc,
          ${SHIFT_END_UTC_SQL} AS end_at_utc
@@ -379,6 +386,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       currentShift = await queryOne<{
         id: number;
         shift_date: string;
+        start_time: string;
         shift_timezone: string;
         start_at_utc: string;
         end_at_utc: string;
@@ -386,6 +394,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
         `SELECT
            s.id,
            TO_CHAR(s.date, 'YYYY-MM-DD') AS shift_date,
+           s.start_time,
            ${SHIFT_TIMEZONE_SQL} AS shift_timezone,
            ${SHIFT_START_UTC_SQL} AS start_at_utc,
            ${SHIFT_END_UTC_SQL} AS end_at_utc
@@ -568,7 +577,13 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
   // Best-effort TTL cleanup: delete expired qr_tokens older than 5 minutes.
   // Fire-and-forget — do not await, do not fail the request if this errors.
   pool.query(
-    `DELETE FROM qr_tokens WHERE issued_at < NOW() - INTERVAL '5 minutes'`,
+    `DELETE FROM qr_tokens qt
+     WHERE qt.issued_at < NOW() - INTERVAL '5 minutes'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM attendance_events ae
+         WHERE ae.qr_token_id = qt.id
+       )`,
   ).catch((cleanupErr) => {
     console.warn('qr_tokens cleanup failed (non-fatal):', cleanupErr?.message);
   });
@@ -584,6 +599,32 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     });
   } catch (socketErr) {
     console.warn('Failed to emit TERMINAL_ATTENDANCE_ACTION (non-fatal):', socketErr);
+  }
+
+  if (event_type === 'checkin' && targetUser.role === 'employee') {
+    const shiftStart = new Date(currentShift.start_at_utc);
+    const checkinTime = new Date(event.event_time);
+    const lateMinutes = Math.floor((checkinTime.getTime() - shiftStart.getTime()) / 60000);
+
+    if (lateMinutes >= 10) {
+      const storeRow = await queryOne<{ name: string }>(
+        `SELECT name FROM stores WHERE id = $1 AND company_id = $2`,
+        [payload.storeId, companyId],
+      );
+
+      await sendLateArrivalAlertAutomation({
+        companyId,
+        employeeId: targetUser.id,
+        employeeName: targetUser.name,
+        employeeSurname: targetUser.surname,
+        employeeEmail: targetUser.email,
+        storeId: payload.storeId,
+        storeName: storeRow?.name || null,
+        shiftStartTime: currentShift.start_time,
+        checkinTime,
+        lateMinutes,
+      });
+    }
   }
 
   created(res, event, 'Evento registrato');

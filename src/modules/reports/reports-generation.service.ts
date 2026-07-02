@@ -1065,8 +1065,18 @@ export async function generateAndSendMonthlyAdminReport(
     // 1. Calculate Target Date Range (Last Month)
     const end = new Date(generationDate);
     end.setDate(generationDate.getDate() - 1);
-    const start = new Date(generationDate);
-    start.setMonth(generationDate.getMonth() - 1);
+    const start = new Date(
+      generationDate.getFullYear(),
+      generationDate.getMonth() - 1,
+      Math.min(
+        generationDate.getDate(),
+        new Date(generationDate.getFullYear(), generationDate.getMonth(), 0).getDate()
+      ),
+      generationDate.getHours(),
+      generationDate.getMinutes(),
+      generationDate.getSeconds(),
+      generationDate.getMilliseconds(),
+    );
 
     const startDateStr = formatDateString(start);
     const endDateStr = formatDateString(end);
@@ -1686,7 +1696,7 @@ export async function generateAndSendMonthlyAdminReport(
           page.drawText(name, { x: 50, y, size: 9, font });
           page.drawText(hireDate, { x: 210, y, size: 9, font });
           page.drawText(`${comp} di ${tot}`, { x: 330, y, size: 9, font });
-          page.drawText(`${pct}%${isLagging ? ' ⚠️ RITARDO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: pctClr });
+          page.drawText(`${pct}%${isLagging ? ' CRITICO RITARDO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: pctClr });
           y -= 12;
         }
         y -= 15;
@@ -1741,7 +1751,7 @@ export async function generateAndSendMonthlyAdminReport(
           page.drawText(sc.store_name, { x: 50, y, size: 9, font });
           page.drawText(String(tot), { x: 210, y, size: 9, font });
           page.drawText(String(conf), { x: 360, y, size: 9, font });
-          page.drawText(`${pct}%${isCritical ? ' ⚠️ CRITICO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: covClr });
+          page.drawText(`${pct}%${isCritical ? ' CRITICO' : ''}`, { x: 460, y, size: 9, font: fontBold, color: covClr });
           y -= 12;
         }
         y -= 15;
@@ -2000,7 +2010,7 @@ export async function generateAndSendMonthlyAdminReport(
           height: 24,
           color: highA > 0 ? rgb(0.99, 0.95, 0.95) : rgb(0.96, 0.97, 0.98),
         });
-        page.drawText(`Riepilogo Anomalie: Totale Rilevate: ${anomaliesList.length}  |  🚨 Gravità Alta: ${highA}  ·  ⚠️ Gravità Media: ${medA}`, {
+        page.drawText(`Riepilogo Anomalie: Totale Rilevate: ${anomaliesList.length}  |  Gravità Alta: ${highA}  ·  Gravità Media: ${medA}`, {
           x: 62,
           y: y - 16,
           size: 8.5,
