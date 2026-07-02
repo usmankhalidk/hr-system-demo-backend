@@ -31,6 +31,20 @@ afterAll(async () => {
 
 describe('Device Registration & Verification', () => {
   const testFingerprint = 'test-fingerprint-unique-id-999';
+  const sharedDeviceMetadata = {
+    userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 26_2 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.2 Mobile/15E148 Safari/604.1',
+    browser: { name: 'Mobile Safari', version: '26.2' },
+    os: { name: 'iOS', version: '26.2' },
+    device: { model: 'iPhone', vendor: 'Apple', type: 'mobile' },
+    language: 'en-US',
+    timezone: 'Asia/Karachi',
+    platform: 'iOS',
+    vendor: 'Apple Computer, Inc.',
+    hardwareConcurrency: 6,
+    deviceMemory: 4,
+    maxTouchPoints: 5,
+    screen: { width: 430, height: 932, colorDepth: 24, pixelRatio: 3 }
+  };
 
   beforeEach(async () => {
     // Reset device fields for users
@@ -131,6 +145,95 @@ describe('Device Registration & Verification', () => {
       expect(res.status).toBe(200);
       expect(res.body.success).toBe(true);
       expect(res.body.data.isDeviceRegistered).toBe(true);
+    });
+
+    it('fails to register a second account from the same device profile even with a different fingerprint token', async () => {
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+      const token1 = await login('employee1@acme-test.com');
+      const firstRes = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token1}`)
+        .send({ fingerprint: testFingerprint, metadata: sharedDeviceMetadata });
+
+      expect(firstRes.status).toBe(200);
+
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.romaManagerId]
+      );
+      const token2 = await login('manager.roma@acme-test.com');
+      const res = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token2}`)
+        .send({
+          fingerprint: 'same-device-different-browser-storage-token',
+          metadata: sharedDeviceMetadata
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.code).toBe('DEVICE_ALREADY_REGISTERED');
+    });
+  });
+
+  describe('POST /api/device/re-register', () => {
+    it('fails to re-register a device that is already assigned to another active user', async () => {
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+      const employeeToken = await login('employee1@acme-test.com');
+      await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${employeeToken}`)
+        .send({ fingerprint: testFingerprint });
+
+      const managerToken = await login('manager.roma@acme-test.com');
+      const res = await request
+        .post('/api/device/re-register')
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send({
+          email: 'manager.roma@acme-test.com',
+          password: 'password123',
+          fingerprint: testFingerprint
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.code).toBe('DEVICE_ALREADY_REGISTERED');
+    });
+
+    it('allows re-register when the current device owner has reset pending', async () => {
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+      const employeeToken = await login('employee1@acme-test.com');
+      await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${employeeToken}`)
+        .send({ fingerprint: testFingerprint });
+
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+
+      const managerToken = await login('manager.roma@acme-test.com');
+      const res = await request
+        .post('/api/device/re-register')
+        .set('Authorization', `Bearer ${managerToken}`)
+        .send({
+          email: 'manager.roma@acme-test.com',
+          password: 'password123',
+          fingerprint: testFingerprint
+        });
+
+      expect(res.status).toBe(200);
+      expect(res.body.success).toBe(true);
     });
   });
 

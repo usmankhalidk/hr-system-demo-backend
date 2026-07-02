@@ -87,6 +87,19 @@ describe('GET /api/shifts', () => {
     shifts.forEach((s) => expect(s.store_id).toBe(seeds.romaStoreId));
   });
 
+  it('area_manager sees company shifts like admin and hr', async () => {
+    const token = await login('area@acme-test.com');
+    const res = await request
+      .get('/api/shifts')
+      .query({ week: '2026-W11' })
+      .set('Authorization', `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    const shifts: any[] = res.body.data.shifts;
+    expect(shifts.length).toBeGreaterThanOrEqual(1);
+    expect(shifts.some((s) => s.id === seeds.shiftId)).toBe(true);
+  });
+
   it('each shift response includes shift_hours calculated field', async () => {
     const token = await login('admin@acme-test.com');
     const res = await request
