@@ -10,6 +10,7 @@ import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezo
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
+import { getStoredDeviceProfileHash, withDeviceProfileHash } from '../../utils/deviceProfile';
 
 // ---------------------------------------------------------------------------
 // Date helpers used where API contracts expect date-only values.
@@ -253,6 +254,30 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
 
     if (currentToken !== targetUser.registered_device_token) {
       if (isSameRegisteredDeviceProfile(targetUser.registered_device_metadata, device_metadata)) {
+        const mergedDeviceMetadata = withDeviceProfileHash(device_metadata ?? {});
+        const deviceProfileHash = getStoredDeviceProfileHash(mergedDeviceMetadata);
+        const conflictingBinding = await queryOne<{ id: number }>(
+          `SELECT id
+           FROM users
+           WHERE id <> $1
+             AND device_reset_pending = false
+             AND (
+               registered_device_token = $2
+               OR ($3::text IS NOT NULL AND registered_device_metadata->'deviceProfile'->>'hash' = $3)
+             )
+           LIMIT 1`,
+          [user_id, currentToken, deviceProfileHash],
+        );
+
+        if (conflictingBinding) {
+          forbidden(
+            res,
+            'Your device is already registered to another account, you will not able to check in, check out, break start, break end',
+            'DEVICE_MISMATCH',
+          );
+          return;
+        }
+
         try {
           await query(
             `UPDATE users
@@ -260,7 +285,7 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
                  registered_device_metadata = COALESCE(registered_device_metadata, '{}'::jsonb) || $2::jsonb,
                  updated_at = NOW()
              WHERE id = $3 AND company_id = $4`,
-            [currentToken, JSON.stringify(device_metadata ?? {}), user_id, companyId],
+            [currentToken, JSON.stringify(mergedDeviceMetadata), user_id, companyId],
           );
         } catch {
           forbidden(

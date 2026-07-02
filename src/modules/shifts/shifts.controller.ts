@@ -309,43 +309,8 @@ async function buildShiftScope(
   switch (role) {
     case 'admin':
     case 'hr':
+    case 'area_manager':
       return { where: base, params: [allowedCompanyIds] };
-
-    case 'area_manager': {
-      // Restricted to stores where they supervise a store_manager (across
-      // all companies in their allowed group scope).
-      const managedStores = await query<{ store_id: number }>(
-        `SELECT DISTINCT store_id FROM users
-         WHERE role = 'store_manager'
-           AND supervisor_id = $1
-           AND company_id = ANY($2)
-           AND status = 'active' AND store_id IS NOT NULL`,
-        [userId, allowedCompanyIds],
-      );
-      const storeIds = managedStores.map((r) => r.store_id);
-      if (storeIds.length === 0) {
-        return { where: `${base} AND 1=0`, params: [allowedCompanyIds] };
-      }
-      const placeholders = storeIds.map((_, i) => `$${i + 2}`).join(',');
-      return {
-        where: `${base} AND (
-          s.store_id IN (${placeholders})
-          OR (
-            s.assignment_id IS NOT NULL
-            AND EXISTS (
-              SELECT 1
-              FROM temporary_store_assignments tsa
-              WHERE tsa.id = s.assignment_id
-                AND (
-                  tsa.origin_store_id IN (${placeholders})
-                  OR tsa.target_store_id IN (${placeholders})
-                )
-            )
-          )
-        )`,
-        params: [allowedCompanyIds, ...storeIds],
-      };
-    }
 
     case 'store_manager':
       return {
@@ -1243,10 +1208,7 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
   const targetMondayDate = new Date(`${target_monday}T12:00:00`);
   let skippedOffDay = 0;
 
-  // M5: single multi-row INSERT instead of one query per shift
-  // 16 parameters per row: company/store/user/date/timezone/time fields + notes + creator.
-  const copyParams: any[] = [];
-  const copyPH: string[] = [];
+  const insertedShifts: Record<string, any>[] = [];
   for (const s of sourceShifts) {
     const sourceDate = parseDateOnly(s.date);
     if (!sourceDate) {
@@ -1276,55 +1238,97 @@ export const copyWeek = asyncHandler(async (req: Request, res: Response) => {
     }
 
     const copiedTimezone = normalizeShiftTimezone(s.timezone, DEFAULT_SHIFT_TIMEZONE);
-    const b = copyParams.length + 1;
-    copyPH.push(
-      `(
-        $${b}, $${b+1}, $${b+2}, $${b+3}, $${b+4}, $${b+5}, $${b+6},
-        (($${b+3}::DATE + $${b+5}::TIME) AT TIME ZONE $${b+4}),
-        (($${b+3}::DATE + $${b+6}::TIME) AT TIME ZONE $${b+4}),
-        $${b+7}, $${b+8},
-        CASE WHEN $${b+7}::TIME IS NULL THEN NULL ELSE (($${b+3}::DATE + $${b+7}::TIME) AT TIME ZONE $${b+4}) END,
-        CASE WHEN $${b+8}::TIME IS NULL THEN NULL ELSE (($${b+3}::DATE + $${b+8}::TIME) AT TIME ZONE $${b+4}) END,
-        $${b+9}, $${b+10},
-        $${b+11}, $${b+12}, $${b+13},
-        CASE WHEN $${b+12}::TIME IS NULL THEN NULL ELSE (($${b+3}::DATE + $${b+12}::TIME) AT TIME ZONE $${b+4}) END,
-        CASE WHEN $${b+13}::TIME IS NULL THEN NULL ELSE (($${b+3}::DATE + $${b+13}::TIME) AT TIME ZONE $${b+4}) END,
-        $${b+14}, 'scheduled', $${b+15}
-      )`,
+    const overlapMain = await queryOne<{ id: number }>(
+      `SELECT id FROM shifts
+       WHERE company_id = $1
+         AND user_id = $2
+         AND date = $3
+         AND status != 'cancelled'
+         AND (
+           (start_time <= $4::TIME AND end_time >= $5::TIME)
+           OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
+               AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
+         )`,
+      [s.company_id, s.user_id, targetDate, s.end_time, s.start_time],
     );
-    copyParams.push(
-      s.company_id,
-      store_id,
-      s.user_id,
-      targetDate,
-      copiedTimezone,
-      s.start_time,
-      s.end_time,
-      s.break_start ?? null,
-      s.break_end ?? null,
-      s.break_type ?? 'fixed',
-      s.break_minutes ?? null,
-      s.is_split ?? false,
-      s.split_start2 ?? null,
-      s.split_end2 ?? null,
-      s.notes ?? null,
-      callerId,
-    );
-  }
 
-  const insertedShifts = copyPH.length > 0
-    ? await query<Record<string, any>>(
-      `INSERT INTO shifts (
-         company_id, store_id, user_id, date, timezone, start_time, end_time,
-         start_at_utc, end_at_utc,
-         break_start, break_end, break_start_at_utc, break_end_at_utc,
-         break_type, break_minutes,
-         is_split, split_start2, split_end2, split_start2_at_utc, split_end2_at_utc,
-         notes, status, created_by
-       ) VALUES ${copyPH.join(',')} RETURNING *`,
-      copyParams,
-    )
-    : [];
+    let overlapSplit = null;
+    if (s.is_split && s.split_start2 && s.split_end2) {
+      overlapSplit = await queryOne<{ id: number }>(
+        `SELECT id FROM shifts
+         WHERE company_id = $1
+           AND user_id = $2
+           AND date = $3
+           AND status != 'cancelled'
+           AND (
+             (start_time <= $4::TIME AND end_time >= $5::TIME)
+             OR (is_split AND split_start2 IS NOT NULL AND split_end2 IS NOT NULL
+                 AND split_start2 <= $4::TIME AND split_end2 >= $5::TIME)
+           )`,
+        [s.company_id, s.user_id, targetDate, s.split_end2, s.split_start2],
+      );
+    }
+
+    if (overlapMain || overlapSplit) {
+      continue;
+    }
+
+    try {
+      const createdShift = await queryOne<Record<string, any>>(
+        `INSERT INTO shifts (
+           company_id, store_id, user_id, date, timezone, start_time, end_time,
+           start_at_utc, end_at_utc,
+           break_start, break_end, break_start_at_utc, break_end_at_utc,
+           break_type, break_minutes,
+           is_split, split_start2, split_end2, split_start2_at_utc, split_end2_at_utc,
+           notes, status, created_by
+         ) VALUES (
+           $1, $2, $3, $4, $5::TEXT, $6, $7,
+           (($4::DATE + $6::TIME) AT TIME ZONE $5::TEXT),
+           (($4::DATE + (CASE WHEN $7::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $7::TIME) AT TIME ZONE $5::TEXT),
+           $8, $9,
+           CASE WHEN $8::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $8::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $8::TIME) AT TIME ZONE $5::TEXT) END,
+           CASE WHEN $9::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $9::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $9::TIME) AT TIME ZONE $5::TEXT) END,
+           $10, $11,
+           $12, $13, $14,
+           CASE WHEN $13::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $13::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $13::TIME) AT TIME ZONE $5::TEXT) END,
+           CASE WHEN $14::TIME IS NULL THEN NULL ELSE (($4::DATE + (CASE WHEN $14::TIME < $6::TIME THEN INTERVAL '1 day' ELSE INTERVAL '0' END) + $14::TIME) AT TIME ZONE $5::TEXT) END,
+           $15, 'scheduled', $16
+         )
+         RETURNING *`,
+        [
+          s.company_id,
+          store_id,
+          s.user_id,
+          targetDate,
+          copiedTimezone,
+          s.start_time,
+          s.end_time,
+          s.break_start ?? null,
+          s.break_end ?? null,
+          s.break_type ?? 'fixed',
+          s.break_minutes ?? null,
+          s.is_split ?? false,
+          s.split_start2 ?? null,
+          s.split_end2 ?? null,
+          s.notes ?? null,
+          callerId,
+        ],
+      );
+
+      if (createdShift) {
+        insertedShifts.push(createdShift);
+      }
+    } catch (error) {
+      console.error('[copyWeek] skipped shift during copy', {
+        sourceShiftId: s.id,
+        userId: s.user_id,
+        sourceDate,
+        targetDate,
+        error,
+      });
+    }
+  }
 
   ok(
     res,

@@ -380,15 +380,6 @@ export const getEmployee = asyncHandler(async (req: Request, res: Response) => {
     if (role === 'store_manager' && employee.store_id !== req.user!.storeId) {
       forbidden(res, 'Accesso negato'); return;
     }
-    if (role === 'area_manager' && empId !== userId) {
-      const supervised = await queryOne<{ id: number }>(
-        `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND supervisor_id = $3`,
-        [empId, companyId, userId],
-      );
-      if (!supervised) {
-        forbidden(res, 'Accesso negato'); return;
-      }
-    }
   }
 
   ok(res, employee);
@@ -524,15 +515,6 @@ export const getEmployeeAssociations = asyncHandler(async (req: Request, res: Re
     }
     if (role === 'store_manager' && subject.store_id !== storeId) {
       forbidden(res, 'Accesso negato'); return;
-    }
-    if (role === 'area_manager' && empId !== userId) {
-      const supervised = await queryOne<{ id: number }>(
-        `SELECT id FROM users WHERE id = $1 AND company_id = $2 AND supervisor_id = $3`,
-        [empId, companyId, userId],
-      );
-      if (!supervised) {
-        forbidden(res, 'Accesso negato'); return;
-      }
     }
   }
 
