@@ -249,7 +249,7 @@ describe('POST /api/employees', () => {
     await testPool.query(`DELETE FROM users WHERE email = 'cross.company@acme-test.com'`);
   });
 
-  it('area_manager gets 403 attempting to create employee', async () => {
+  it('area_manager can create a new employee', async () => {
     const token = await login('area@acme-test.com');
     const res = await request
       .post('/api/employees')
@@ -260,7 +260,8 @@ describe('POST /api/employees', () => {
         email: 'test.area@acme-test.com',
         role: 'employee',
       });
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(201);
+    await testPool.query(`DELETE FROM users WHERE email = 'test.area@acme-test.com'`);
   });
 
   it('returns 409 with CODE EMAIL_CONFLICT for duplicate email', async () => {

@@ -96,7 +96,7 @@ router.post(
   '/',
   authenticate,
   enforceCompany,
-  requireRole('admin', 'hr'),
+  requireRole('admin', 'hr', 'area_manager'),
   requireModulePermission('dipendenti', 'write'),
   validate(createEmployeeSchema),
   auditLog('employee'),
