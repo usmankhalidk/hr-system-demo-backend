@@ -842,6 +842,12 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
+  // Area managers may create employees, but cannot create management roles.
+  if (callerRole === 'area_manager' && body.role !== 'employee') {
+    forbidden(res, 'Un area manager può creare solo utenti con ruolo employee');
+    return;
+  }
+
   // Check unique_id uniqueness within company (if provided)
   if (body.unique_id) {
     const existingUniqueId = await queryOne<{ id: number }>(
