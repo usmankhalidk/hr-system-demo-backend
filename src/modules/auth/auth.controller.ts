@@ -19,6 +19,7 @@ interface UserRow {
   is_super_admin: boolean;
   avatar_filename: string | null;
   registered_device_token: string | null;
+  registered_device_identifier: string | null;
   device_reset_pending: boolean;
 }
 
@@ -65,7 +66,7 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
 
   const user = await queryOne<UserRow>(
     `SELECT id, company_id, name, surname, email, password_hash, role, store_id, supervisor_id, status, is_super_admin, avatar_filename,
-            registered_device_token, device_reset_pending
+            registered_device_token, registered_device_identifier, device_reset_pending
      FROM users WHERE LOWER(email) = LOWER($1)`,
     [email]
   );
@@ -145,11 +146,11 @@ export const login = asyncHandler(async (req: Request, res: Response) => {
       supervisorId: user.supervisor_id,
       isSuperAdmin: user.is_super_admin,
       avatarFilename: user.avatar_filename,
-      isDeviceRegistered: user.registered_device_token != null,
+      isDeviceRegistered: user.registered_device_token != null || user.registered_device_identifier != null,
       deviceResetPending: user.device_reset_pending === true,
       requiresDeviceRegistration:
         user.role !== 'admin' &&
-        (user.registered_device_token == null || user.device_reset_pending === true),
+        ((user.registered_device_token == null && user.registered_device_identifier == null) || user.device_reset_pending === true),
     },
   });
 });
@@ -172,7 +173,7 @@ export const logout = asyncHandler(async (req: Request, res: Response) => {
 export const me = asyncHandler(async (req: Request, res: Response) => {
   const user = await queryOne<Omit<UserRow, 'password_hash'>>(
     `SELECT id, company_id, name, surname, email, role, store_id, supervisor_id, status, is_super_admin, avatar_filename,
-            registered_device_token, device_reset_pending
+            registered_device_token, registered_device_identifier, device_reset_pending
      FROM users WHERE id = $1`,
     [req.user!.userId]
   );
@@ -192,11 +193,11 @@ export const me = asyncHandler(async (req: Request, res: Response) => {
     status: user.status,
     isSuperAdmin: user.is_super_admin,
     avatarFilename: user.avatar_filename,
-    isDeviceRegistered: user.registered_device_token != null,
+    isDeviceRegistered: user.registered_device_token != null || user.registered_device_identifier != null,
     deviceResetPending: user.device_reset_pending === true,
     requiresDeviceRegistration:
       user.role !== 'admin' &&
-      (user.registered_device_token == null || user.device_reset_pending === true),
+      ((user.registered_device_token == null && user.registered_device_identifier == null) || user.device_reset_pending === true),
   });
 });
 

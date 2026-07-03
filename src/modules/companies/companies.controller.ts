@@ -129,7 +129,7 @@ const COMPANY_LIST_SELECT = `
     c.discount_valid_to,
     (SELECT COUNT(*) FROM stores s WHERE s.company_id = c.id AND s.is_active = true)::int AS store_count,
     (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.role != 'store_terminal')::int AS employee_count,
-    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND u.registered_device_token IS NOT NULL)::int AS active_devices_count
+    (SELECT COUNT(*) FROM users u WHERE u.company_id = c.id AND u.status = 'active' AND (u.registered_device_token IS NOT NULL OR u.registered_device_identifier IS NOT NULL))::int AS active_devices_count
   FROM companies c
   LEFT JOIN company_groups cg ON cg.id = c.group_id
   LEFT JOIN users owner ON owner.id = c.owner_user_id

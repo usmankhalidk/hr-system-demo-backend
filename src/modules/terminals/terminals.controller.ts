@@ -74,7 +74,7 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
       u.store_id,
       u.plain_password,
       u.device_reset_pending,
-      (u.registered_device_token IS NOT NULL) AS device_registered,
+      ((u.registered_device_token IS NOT NULL) OR (u.registered_device_identifier IS NOT NULL)) AS device_registered,
       u.registered_device_registered_at AS device_registered_at,
       u.registered_device_metadata AS device_metadata,
       u.last_seen_ip,

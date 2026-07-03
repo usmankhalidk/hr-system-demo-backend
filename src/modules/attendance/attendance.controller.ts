@@ -10,7 +10,12 @@ import { coalescedShiftPointUtcSql, DEFAULT_SHIFT_TIMEZONE, normalizeShiftTimezo
 import { sendNotification } from '../notifications/notifications.service';
 import { t } from '../../utils/i18n';
 import { emitToCompany } from '../../config/socket';
-import { getStoredDeviceProfileHash, withDeviceProfileHash } from '../../utils/deviceProfile';
+import {
+  getStoredDeviceProfileHash,
+  resolveStableDeviceIdentifier,
+  resolveStableDeviceIdentifierFromFingerprint,
+  withDeviceProfileHash,
+} from '../../utils/deviceProfile';
 import { sendLateArrivalAlertAutomation } from '../automations/lateArrivalAlert';
 
 // ---------------------------------------------------------------------------
@@ -223,10 +228,11 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
     email: string | null;
     role: string;
     registered_device_token: string | null;
+    registered_device_identifier: string | null;
     registered_device_metadata: any;
     device_reset_pending: boolean;
   }>(
-    `SELECT id, name, surname, email, role, registered_device_token, registered_device_metadata, device_reset_pending
+    `SELECT id, name, surname, email, role, registered_device_token, registered_device_identifier, registered_device_metadata, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND status = 'active'`,
     [user_id, companyId],
@@ -242,7 +248,8 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
       return;
     }
-    const isDeviceRegistered = targetUser.registered_device_token != null && targetUser.device_reset_pending === false;
+    const isDeviceRegistered = (targetUser.registered_device_token != null || targetUser.registered_device_identifier != null)
+      && targetUser.device_reset_pending === false;
     if (!isDeviceRegistered) {
       forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
       return;
@@ -254,11 +261,17 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
       .update(secret)
       .update(device_fingerprint)
       .digest('hex');
+    const currentIdentifier = resolveStableDeviceIdentifier(device_metadata, currentToken)
+      ?? resolveStableDeviceIdentifierFromFingerprint(device_fingerprint, currentToken);
+    const tokenMatches = currentToken === targetUser.registered_device_token;
+    const identifierMatches = !!currentIdentifier && currentIdentifier === targetUser.registered_device_identifier;
 
-    if (currentToken !== targetUser.registered_device_token) {
+    if (!tokenMatches && !identifierMatches) {
       if (isSameRegisteredDeviceProfile(targetUser.registered_device_metadata, device_metadata)) {
         const mergedDeviceMetadata = withDeviceProfileHash(device_metadata ?? {});
         const deviceProfileHash = getStoredDeviceProfileHash(mergedDeviceMetadata);
+        const rebindingIdentifier = resolveStableDeviceIdentifier(mergedDeviceMetadata, currentToken)
+          ?? resolveStableDeviceIdentifierFromFingerprint(device_fingerprint, currentToken);
         const conflictingBinding = await queryOne<{ id: number }>(
           `SELECT id
            FROM users
@@ -267,9 +280,10 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
              AND (
                registered_device_token = $2
                OR ($3::text IS NOT NULL AND registered_device_metadata->'deviceProfile'->>'hash' = $3)
+               OR ($4::text IS NOT NULL AND registered_device_identifier = $4)
              )
            LIMIT 1`,
-          [user_id, currentToken, deviceProfileHash],
+          [user_id, currentToken, deviceProfileHash, rebindingIdentifier],
         );
 
         if (conflictingBinding) {
@@ -285,10 +299,11 @@ export const checkin = asyncHandler(async (req: Request, res: Response) => {
           await query(
             `UPDATE users
              SET registered_device_token = $1,
-                 registered_device_metadata = COALESCE(registered_device_metadata, '{}'::jsonb) || $2::jsonb,
+                 registered_device_identifier = $2,
+                 registered_device_metadata = COALESCE(registered_device_metadata, '{}'::jsonb) || $3::jsonb,
                  updated_at = NOW()
-             WHERE id = $3 AND company_id = $4`,
-            [currentToken, JSON.stringify(mergedDeviceMetadata), user_id, companyId],
+             WHERE id = $4 AND company_id = $5`,
+            [currentToken, rebindingIdentifier, JSON.stringify(mergedDeviceMetadata), user_id, companyId],
           );
         } catch {
           forbidden(
@@ -1738,14 +1753,18 @@ export const updateAttendanceEvent = asyncHandler(async (req: Request, res: Resp
 export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Response) => {
   const { companyId, userId } = req.user!;
 
-  const deviceRow = await queryOne<{ registered_device_token: string | null; device_reset_pending: boolean }>(
-    `SELECT registered_device_token, device_reset_pending
+  const deviceRow = await queryOne<{ registered_device_token: string | null; registered_device_identifier: string | null; device_reset_pending: boolean }>(
+    `SELECT registered_device_token, registered_device_identifier, device_reset_pending
      FROM users
      WHERE id = $1 AND company_id = $2 AND role = 'employee'`,
     [userId, companyId],
   );
 
-  if (!deviceRow || deviceRow.registered_device_token == null || deviceRow.device_reset_pending === true) {
+  if (
+    !deviceRow
+    || (deviceRow.registered_device_token == null && deviceRow.registered_device_identifier == null)
+    || deviceRow.device_reset_pending === true
+  ) {
     forbidden(res, 'Device non registrato. Effettua prima la registrazione del dispositivo.', 'DEVICE_NOT_REGISTERED');
     return;
   }
@@ -1769,8 +1788,12 @@ export const listMyAttendanceEvents = asyncHandler(async (req: Request, res: Res
     .update(secret)
     .update(device_fingerprint)
     .digest('hex');
+  const currentIdentifier = resolveStableDeviceIdentifierFromFingerprint(device_fingerprint, currentToken);
 
-  if (currentToken !== deviceRow.registered_device_token) {
+  if (
+    currentToken !== deviceRow.registered_device_token
+    && (!currentIdentifier || currentIdentifier !== deviceRow.registered_device_identifier)
+  ) {
     forbidden(
       res,
       'Your device is different, you will not able to check in, check out, break start, break end',

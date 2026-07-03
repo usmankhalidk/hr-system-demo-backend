@@ -51,6 +51,7 @@ describe('Device Registration & Verification', () => {
     await testPool.query(
       `UPDATE users 
        SET registered_device_token = NULL, 
+           registered_device_identifier = NULL,
            device_reset_pending = false, 
            registered_device_metadata = NULL, 
            registered_device_registered_at = NULL`
@@ -176,6 +177,71 @@ describe('Device Registration & Verification', () => {
       expect(res.status).toBe(400);
       expect(res.body.success).toBe(false);
       expect(res.body.code).toBe('DEVICE_ALREADY_REGISTERED');
+    });
+
+    it('fails to register a second account with the same native stable device id even if the profile changes', async () => {
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+      const token1 = await login('employee1@acme-test.com');
+      const firstRes = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token1}`)
+        .send({
+          fingerprint: 'first-browser-token-for-native-device',
+          metadata: {
+            ...sharedDeviceMetadata,
+            nativeDeviceId: 'ios-vendor-device-abc-123'
+          }
+        });
+
+      expect(firstRes.status).toBe(200);
+
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.romaManagerId]
+      );
+      const token2 = await login('manager.roma@acme-test.com');
+      const res = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token2}`)
+        .send({
+          fingerprint: 'second-browser-token-after-reinstall',
+          metadata: {
+            ...sharedDeviceMetadata,
+            browser: { name: 'Chrome Mobile', version: '126.0' },
+            screen: { width: 390, height: 844, colorDepth: 24, pixelRatio: 3 },
+            nativeDeviceId: 'ios-vendor-device-abc-123'
+          }
+        });
+
+      expect(res.status).toBe(400);
+      expect(res.body.success).toBe(false);
+      expect(res.body.code).toBe('DEVICE_ALREADY_REGISTERED');
+    });
+
+    it('treats a duplicate registration from the same account and same device as already successful', async () => {
+      await testPool.query(
+        `UPDATE users SET device_reset_pending = true WHERE id = $1`,
+        [seeds.employee1Id]
+      );
+      const token = await login('employee1@acme-test.com');
+      const firstRes = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ fingerprint: testFingerprint, metadata: sharedDeviceMetadata });
+
+      expect(firstRes.status).toBe(200);
+
+      const secondRes = await request
+        .post('/api/device/register')
+        .set('Authorization', `Bearer ${token}`)
+        .send({ fingerprint: testFingerprint, metadata: sharedDeviceMetadata });
+
+      expect(secondRes.status).toBe(200);
+      expect(secondRes.body.success).toBe(true);
+      expect(secondRes.body.data.isDeviceRegistered).toBe(true);
     });
   });
 
