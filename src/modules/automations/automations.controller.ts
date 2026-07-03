@@ -5,7 +5,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 
 // GET /api/automations
 export const getAutomations = asyncHandler(async (req: Request, res: Response) => {
-  const explicit = req.query.company_id || req.body.company_id;
+  const explicit = req.query.company_id || req.query.companyId || req.body.company_id || req.body.companyId;
   const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
 
   if (!targetCompanyId) {
@@ -29,7 +29,7 @@ export const getAutomations = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/automations/:id
 export const updateAutomation = asyncHandler(async (req: Request, res: Response) => {
-  const explicit = req.body.company_id || req.query.company_id;
+  const explicit = req.body.company_id || req.body.companyId || req.query.company_id || req.query.companyId;
   const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
 
   if (!targetCompanyId) {
@@ -38,9 +38,11 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
   }
 
   const { id } = req.params;
-  const { is_enabled } = req.body;
+  const isEnabledValue = typeof req.body.is_enabled === 'boolean'
+    ? req.body.is_enabled
+    : req.body.isEnabled;
 
-  if (typeof is_enabled !== 'boolean') {
+  if (typeof isEnabledValue !== 'boolean') {
     badRequest(res, 'is_enabled must be a boolean');
     return;
   }
@@ -51,7 +53,7 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
      ON CONFLICT (company_id, automation_id)
      DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = CURRENT_TIMESTAMP
      RETURNING automation_id, is_enabled`,
-    [targetCompanyId, id, is_enabled],
+    [targetCompanyId, id, isEnabledValue],
   );
 
   ok(res, result);

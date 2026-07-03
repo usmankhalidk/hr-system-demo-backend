@@ -1,5 +1,6 @@
 import { query } from '../config/database';
 import { generateAndSendWeeklyReport, generateAndSendMonthlyAdminReport } from '../modules/reports/reports-generation.service';
+import { saveGeneratedReportPdf } from '../modules/reports/reports-storage.service';
 
 interface ActiveReportConfig {
   company_id: number;
@@ -70,6 +71,13 @@ export async function runReportConfigurationsJob(): Promise<void> {
       reportPromise
         .then(async (pdfBuffer) => {
           if (pdfBuffer) {
+            const storagePath = await saveGeneratedReportPdf(
+              conf.company_id,
+              conf.report_id,
+              now,
+              pdfBuffer,
+            );
+
             await query(
               `UPDATE report_configurations 
                SET run_count = run_count + 1, 
@@ -80,9 +88,9 @@ export async function runReportConfigurationsJob(): Promise<void> {
 
             // Save history record to generated_reports
             await query(
-              `INSERT INTO generated_reports (company_id, report_id, size_bytes, sections, target_date)
-               VALUES ($1, $2, $3, $4::jsonb, $5)`,
-              [conf.company_id, conf.report_id, pdfBuffer.length, JSON.stringify(parsedSections), now]
+              `INSERT INTO generated_reports (company_id, report_id, size_bytes, sections, target_date, storage_path)
+               VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
+              [conf.company_id, conf.report_id, pdfBuffer.length, JSON.stringify(parsedSections), now, storagePath]
             );
 
             console.log(`[REPORTS-JOB] Successfully processed, saved statistics and emailed report for company: ${conf.company_id}`);

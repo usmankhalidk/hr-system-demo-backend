@@ -3,6 +3,7 @@ import { query, queryOne } from '../../config/database';
 import { ok, notFound, badRequest } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { generateAndSendWeeklyReport, generateAndSendMonthlyAdminReport } from './reports-generation.service';
+import { readGeneratedReportPdf } from './reports-storage.service';
 
 interface ReportConfigRow {
   id: number;
@@ -14,6 +15,23 @@ interface ReportConfigRow {
   status: string;
   run_count: number;
   last_generated: string | null;
+}
+
+function getClampedMonthDay(year: number, monthIndex: number, targetDay: number): number {
+  const lastDayOfMonth = new Date(year, monthIndex + 1, 0).getDate();
+  return Math.min(Math.max(targetDay, 1), lastDayOfMonth);
+}
+
+function getPreviousMonthDateClamped(date: Date): Date {
+  return new Date(
+    date.getFullYear(),
+    date.getMonth() - 1,
+    getClampedMonthDay(date.getFullYear(), date.getMonth() - 1, date.getDate()),
+    date.getHours(),
+    date.getMinutes(),
+    date.getSeconds(),
+    date.getMilliseconds(),
+  );
 }
 
 // GET /api/reports/configurations
@@ -249,7 +267,7 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
 
   let filename = '';
   if (reportId === 'admin_monthly') {
-    start.setMonth(lastScheduledDate.getMonth() - 1);
+    start.setTime(getPreviousMonthDateClamped(lastScheduledDate).getTime());
     filename = `monthly-admin-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
   } else if (reportId === 'hr_monthly') {
     start.setDate(lastScheduledDate.getDate() - 30);
@@ -309,8 +327,8 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
 
   const { id } = req.params;
 
-  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string }>(
-    `SELECT company_id, report_id, sections, target_date
+  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string; storage_path: string | null }>(
+    `SELECT company_id, report_id, sections, target_date, storage_path
      FROM generated_reports
      WHERE id = $1 AND company_id = $2`,
     [id, targetCompanyId]
@@ -319,6 +337,40 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
   if (!record) {
     notFound(res, 'Report non trovato nel registro dell\'archivio.');
     return;
+  }
+
+  const targetDate = new Date(record.target_date);
+  const end = new Date(targetDate);
+  end.setDate(targetDate.getDate() - 1);
+  const start = new Date(targetDate);
+
+  const formatDate = (d: Date) => {
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  };
+
+  let filename = '';
+  if (record.report_id === 'admin_monthly') {
+    start.setTime(getPreviousMonthDateClamped(targetDate).getTime());
+    filename = `monthly-admin-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
+  } else if (record.report_id === 'hr_monthly') {
+    start.setDate(targetDate.getDate() - 30);
+    filename = `monthly-hr-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
+  } else {
+    start.setDate(targetDate.getDate() - 7);
+    filename = `weekly-hr-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
+  }
+
+  if (record.storage_path) {
+    const archivedPdf = await readGeneratedReportPdf(record.storage_path);
+    if (archivedPdf) {
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename=${filename}`);
+      res.send(archivedPdf);
+      return;
+    }
   }
 
   let parsedSections: string[] = [];
@@ -350,30 +402,6 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
   if (!pdfBuffer) {
     badRequest(res, 'Impossibile rigenerare il PDF dall\'archivio.');
     return;
-  }
-
-  const targetDate = new Date(record.target_date);
-  const end = new Date(targetDate);
-  end.setDate(targetDate.getDate() - 1);
-  const start = new Date(targetDate);
-
-  const formatDate = (d: Date) => {
-    const yyyy = d.getFullYear();
-    const mm = String(d.getMonth() + 1).padStart(2, '0');
-    const dd = String(d.getDate()).padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  };
-
-  let filename = '';
-  if (record.report_id === 'admin_monthly') {
-    start.setMonth(targetDate.getMonth() - 1);
-    filename = `monthly-admin-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
-  } else if (record.report_id === 'hr_monthly') {
-    start.setDate(targetDate.getDate() - 30);
-    filename = `monthly-hr-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
-  } else {
-    start.setDate(targetDate.getDate() - 7);
-    filename = `weekly-hr-report-${formatDate(start)}-to-${formatDate(end)}.pdf`;
   }
 
   res.setHeader('Content-Type', 'application/pdf');
