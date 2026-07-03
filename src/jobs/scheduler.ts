@@ -7,7 +7,8 @@ import { runSignatureReminderJob } from './signature-reminder.job';
 import { runAtsBottleneckJob } from './ats-bottleneck.job';
 import { runManagerAlertJob } from './manager-alert.job';
 import { runReportConfigurationsJob } from './reports.job';
-import { runAttendanceAnomalyCheckJob } from './attendance-anomaly-check.job';
+import { runAttendanceAnomalyCheckJob, runNoShowAlertEmailJob } from './attendance-anomaly-check.job';
+import { runShiftApprovalReminderJob } from './shift-approval-reminder.job';
 
 type JobKey =
   | 'welcome_email'
@@ -16,6 +17,7 @@ type JobKey =
   | 'signature_reminder'
   | 'ats_bottleneck'
   | 'manager_alert'
+  | 'shift_approval_reminder'
   | 'attendance_anomaly_check';
 
 async function isJobEnabled(companyId: number, jobKey: JobKey): Promise<boolean> {
@@ -90,8 +92,22 @@ export function startScheduler(): void {
     runForAllCompanies('manager_alert', runManagerAlertJob).catch(console.error);
   });
 
-  // Attendance anomaly checker — every 15 minutes
-  cron.schedule('*/15 * * * *', () => {
+  // Shift approval reminder — daily at 09:00 Europe/Rome
+  cron.schedule('0 9 * * *', () => {
+    console.log('[scheduler] shift-approval-reminder');
+    runForAllCompanies('shift_approval_reminder', runShiftApprovalReminderJob).catch(console.error);
+  }, {
+    timezone: 'Europe/Rome',
+  });
+
+  // No-show alert email checker — every minute
+  cron.schedule('* * * * *', () => {
+    console.log('[scheduler] no-show-alert-email');
+    runForAllCompanies('attendance_anomaly_check', runNoShowAlertEmailJob).catch(console.error);
+  });
+
+  // Attendance anomaly checker — every 5 minutes
+  cron.schedule('*/5 * * * *', () => {
     console.log('[scheduler] attendance-anomaly-check');
     runForAllCompanies('attendance_anomaly_check', runAttendanceAnomalyCheckJob).catch(console.error);
   });

@@ -5,7 +5,7 @@ import { asyncHandler } from '../../utils/asyncHandler';
 
 // GET /api/automations
 export const getAutomations = asyncHandler(async (req: Request, res: Response) => {
-  const explicit = req.query.company_id || req.body.company_id;
+  const explicit = req.query.company_id || req.query.companyId || req.body.company_id || req.body.companyId;
   const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
 
   if (!targetCompanyId) {
@@ -29,7 +29,7 @@ export const getAutomations = asyncHandler(async (req: Request, res: Response) =
 
 // PUT /api/automations/:id
 export const updateAutomation = asyncHandler(async (req: Request, res: Response) => {
-  const explicit = req.body.company_id || req.query.company_id;
+  const explicit = req.body.company_id || req.body.companyId || req.query.company_id || req.query.companyId;
   const targetCompanyId = explicit ? parseInt(String(explicit), 10) : req.user!.companyId;
 
   if (!targetCompanyId) {

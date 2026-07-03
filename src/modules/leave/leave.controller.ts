@@ -8,6 +8,7 @@ import { resolveAllowedCompanyIds } from '../../utils/companyScope';
 import { DEFAULT_SHIFT_TIMEZONE } from '../../utils/shiftTimezone';
 import { sendNotification } from '../notifications/notifications.service';
 import { sendLeaveResultAutomation } from '../automations/leaveNotification';
+import { sendLeaveSubmittedAutomation } from '../automations/leaveSubmittedNotification';
 import { t } from '../../utils/i18n';
 
 // ---------------------------------------------------------------------------
@@ -715,6 +716,31 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     message: `La tua richiesta di ${leave_type === 'vacation' ? 'ferie' : 'malattia'} dal ${start_date} al ${end_date} è stata inviata con successo.`,
     priority: 'medium',
   }).catch(() => undefined);
+
+  void queryOne<{ name: string; surname: string; email: string | null }>(
+    `SELECT name, surname, email
+     FROM users
+     WHERE id = $1 AND company_id = $2`,
+    [userId, companyId],
+  ).then((employee) => {
+    if (!employee) return;
+
+    return sendLeaveSubmittedAutomation({
+      companyId,
+      employeeId: userId,
+      employeeName: employee.name,
+      employeeSurname: employee.surname,
+      employeeEmail: employee.email,
+      storeId: storeId ?? null,
+      leaveType: leave_type,
+      startDate: start_date,
+      endDate: end_date,
+      leaveDurationType,
+      shortStartTime,
+      shortEndTime,
+      requestedDays,
+    });
+  }).catch((err) => console.error('[AUTOMATION] Leave submitted email error:', err));
 
   created(res, leaveRequest, 'Richiesta di permesso inviata');
 });
