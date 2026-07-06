@@ -879,7 +879,7 @@ export async function listCandidates(
   filters: { status?: string; jobPostingId?: number; storeIds?: number[] } = {},
 ): Promise<Candidate[]> {
   const companyIds = Array.isArray(companyId) ? companyId : [companyId];
-  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const conditions: string[] = ['c.company_id = ANY($1::int[])', "jp.status = 'published'"];
   const params: unknown[] = [companyIds];
   let idx = 2;
 
@@ -1075,11 +1075,13 @@ export async function listInterviews(candidateId: number, companyId: number, sto
          LEFT JOIN job_postings jp ON jp.id = c.job_posting_id
          WHERE i.candidate_id = $1
            AND c.company_id = $2
+           AND jp.status = 'published'
            AND COALESCE(c.store_id, jp.store_id) = ANY($3::int[])
          ORDER BY i.scheduled_at ASC`
       : `SELECT i.* FROM interviews i
          JOIN candidates c ON c.id = i.candidate_id
-         WHERE i.candidate_id = $1 AND c.company_id = $2
+         JOIN job_postings jp ON jp.id = c.job_posting_id
+         WHERE i.candidate_id = $1 AND c.company_id = $2 AND jp.status = 'published'
          ORDER BY i.scheduled_at ASC`,
     useStoreScope ? [candidateId, companyId, storeIds] : [candidateId, companyId],
   );
@@ -1100,7 +1102,7 @@ export async function listAllInterviews(
   const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
   
   // Build WHERE conditions
-  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const conditions: string[] = ['c.company_id = ANY($1::int[])', "jp.status = 'published'"];
   const params: any[] = [companyIds];
   let paramIndex = 2;
 
@@ -1683,7 +1685,7 @@ export async function listAllInterviewFeedbackComments(
 ): Promise<AllInterviewFeedbackComment[]> {
   const useStoreScope = Array.isArray(storeIds) && storeIds.length > 0;
   
-  const conditions: string[] = ['c.company_id = ANY($1::int[])'];
+  const conditions: string[] = ['c.company_id = ANY($1::int[])', "jp.status = 'published'"];
   const params: any[] = [companyIds];
   let paramIndex = 2;
 
@@ -1760,24 +1762,24 @@ export async function getIndeedStats(companyId: number | null): Promise<IndeedSt
 
   // Query 3: indeedCandidatesThisMonth
   const indeedCandidatesThisMonthQuery = companyId
-    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP) AND company_id = $1`
-    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP)`;
+    ? `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source = 'indeed' AND c.created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP) AND jp.status = 'published' AND c.company_id = $1`
+    : `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source = 'indeed' AND c.created_at >= DATE_TRUNC('month', CURRENT_TIMESTAMP) AND jp.status = 'published'`;
   const indeedCandidatesThisMonthParams = companyId ? [companyId] : [];
   const indeedCandidatesThisMonthRow = await queryOne<{ count: number }>(indeedCandidatesThisMonthQuery, indeedCandidatesThisMonthParams);
   const indeedCandidatesThisMonth = indeedCandidatesThisMonthRow?.count ?? 0;
 
   // Query 4: totalIndeedCandidates
   const totalIndeedCandidatesQuery = companyId
-    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed' AND company_id = $1`
-    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source = 'indeed'`;
+    ? `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source = 'indeed' AND jp.status = 'published' AND c.company_id = $1`
+    : `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source = 'indeed' AND jp.status = 'published'`;
   const totalIndeedCandidatesParams = companyId ? [companyId] : [];
   const totalIndeedCandidatesRow = await queryOne<{ count: number }>(totalIndeedCandidatesQuery, totalIndeedCandidatesParams);
   const totalIndeedCandidates = totalIndeedCandidatesRow?.count ?? 0;
 
   // Query 5: totalDirectCandidates
   const totalDirectCandidatesQuery = companyId
-    ? `SELECT COUNT(*)::int AS count FROM candidates WHERE source != 'indeed' AND company_id = $1`
-    : `SELECT COUNT(*)::int AS count FROM candidates WHERE source != 'indeed'`;
+    ? `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source != 'indeed' AND jp.status = 'published' AND c.company_id = $1`
+    : `SELECT COUNT(c.*)::int AS count FROM candidates c JOIN job_postings jp ON jp.id = c.job_posting_id WHERE c.source != 'indeed' AND jp.status = 'published'`;
   const totalDirectCandidatesParams = companyId ? [companyId] : [];
   const totalDirectCandidatesRow = await queryOne<{ count: number }>(totalDirectCandidatesQuery, totalDirectCandidatesParams);
   const totalDirectCandidates = totalDirectCandidatesRow?.count ?? 0;
@@ -1800,20 +1802,24 @@ export async function getIndeedStats(companyId: number | null): Promise<IndeedSt
       COALESCE(j_pub.count, 0)::int as new_positions_published
     FROM months
     LEFT JOIN LATERAL (
-      SELECT COUNT(*)::int as count
-      FROM candidates
-      WHERE source = 'indeed'
-        AND created_at >= months.m_start
-        AND created_at < months.m_end
-        AND ($1::int IS NULL OR company_id = $1)
+      SELECT COUNT(c.*)::int as count
+      FROM candidates c
+      JOIN job_postings jp ON jp.id = c.job_posting_id
+      WHERE c.source = 'indeed'
+        AND c.created_at >= months.m_start
+        AND c.created_at < months.m_end
+        AND jp.status = 'published'
+        AND ($1::int IS NULL OR c.company_id = $1)
     ) c_indeed ON TRUE
     LEFT JOIN LATERAL (
-      SELECT COUNT(*)::int as count
-      FROM candidates
-      WHERE source != 'indeed'
-        AND created_at >= months.m_start
-        AND created_at < months.m_end
-        AND ($1::int IS NULL OR company_id = $1)
+      SELECT COUNT(c.*)::int as count
+      FROM candidates c
+      JOIN job_postings jp ON jp.id = c.job_posting_id
+      WHERE c.source != 'indeed'
+        AND c.created_at >= months.m_start
+        AND c.created_at < months.m_end
+        AND jp.status = 'published'
+        AND ($1::int IS NULL OR c.company_id = $1)
     ) c_direct ON TRUE
     LEFT JOIN LATERAL (
       SELECT COUNT(*)::int as count

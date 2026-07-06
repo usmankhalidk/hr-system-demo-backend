@@ -19,9 +19,11 @@ export async function getHRAlerts(companyId: number, storeIds?: number[]): Promi
 
   // 1. New unread candidates received in the last 24 hours
   const newCandRows = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM candidates
-     WHERE company_id = $1 AND unread = TRUE AND created_at >= NOW() - INTERVAL '24 hours'
-     ${storeClause}`,
+    `SELECT COUNT(c.*) AS count FROM candidates c
+     JOIN job_postings jp ON jp.id = c.job_posting_id
+     WHERE c.company_id = $1 AND c.unread = TRUE AND c.created_at >= NOW() - INTERVAL '24 hours'
+       AND jp.status = 'published'
+     ${storeClause.replace(/store_id/g, 'c.store_id')}`,
     [companyId, ...storeParams],
   );
   const newCount = parseInt(newCandRows[0]?.count ?? '0', 10);
@@ -36,9 +38,11 @@ export async function getHRAlerts(companyId: number, storeIds?: number[]): Promi
 
   // 2. Interviews scheduled today
   const todayRows = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM interviews i
+    `SELECT COUNT(i.*) AS count FROM interviews i
      JOIN candidates c ON c.id = i.candidate_id
-     WHERE c.company_id = $1 AND DATE(i.scheduled_at AT TIME ZONE 'UTC') = CURRENT_DATE`,
+     JOIN job_postings jp ON jp.id = c.job_posting_id
+     WHERE c.company_id = $1 AND DATE(i.scheduled_at AT TIME ZONE 'UTC') = CURRENT_DATE
+       AND jp.status = 'published'`,
     [companyId],
   );
   const todayCount = parseInt(todayRows[0]?.count ?? '0', 10);
@@ -53,9 +57,11 @@ export async function getHRAlerts(companyId: number, storeIds?: number[]): Promi
 
   // 3. Candidates stuck in "received" status for more than 3 days
   const pendingRows = await query<{ count: string }>(
-    `SELECT COUNT(*) AS count FROM candidates
-     WHERE company_id = $1 AND status = 'received' AND created_at < NOW() - INTERVAL '3 days'
-     ${storeClause}`,
+    `SELECT COUNT(c.*) AS count FROM candidates c
+     JOIN job_postings jp ON jp.id = c.job_posting_id
+     WHERE c.company_id = $1 AND c.status = 'received' AND c.created_at < NOW() - INTERVAL '3 days'
+       AND jp.status = 'published'
+     ${storeClause.replace(/store_id/g, 'c.store_id')}`,
     [companyId, ...storeParams],
   );
   const pendingCount = parseInt(pendingRows[0]?.count ?? '0', 10);
