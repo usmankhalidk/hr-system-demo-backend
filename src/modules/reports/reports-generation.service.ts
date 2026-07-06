@@ -611,6 +611,242 @@ export async function generateAndSendWeeklyReport(
       }
     }
 
+    if (isMonthly && hasSection(config.sections, 'Variazioni organico', 'Staff variations')) {
+      const [summary, movements] = await Promise.all([
+        queryOne<{
+          active_count: string;
+          hires_count: string;
+          exits_count: string;
+        }>(
+          `SELECT
+             COUNT(*) FILTER (WHERE role = 'employee' AND status = 'active')::text AS active_count,
+             COUNT(*) FILTER (WHERE role = 'employee' AND created_at::DATE BETWEEN $2 AND $3)::text AS hires_count,
+             COUNT(*) FILTER (WHERE role = 'employee' AND termination_date BETWEEN $2 AND $3)::text AS exits_count
+           FROM users
+           WHERE company_id = $1`,
+          [companyId, startDateStr, endDateStr]
+        ),
+        query<{
+          name: string;
+          surname: string;
+          email: string | null;
+          created_at: string;
+          termination_date: string | null;
+        }>(
+          `SELECT name, surname, email, created_at, termination_date
+           FROM users
+           WHERE company_id = $1
+             AND role = 'employee'
+             AND (
+               created_at::DATE BETWEEN $2 AND $3
+               OR termination_date BETWEEN $2 AND $3
+             )
+           ORDER BY created_at DESC, termination_date DESC NULLS LAST`,
+          [companyId, startDateStr, endDateStr]
+        )
+      ]);
+
+      const activeCount = parseInt(summary?.active_count || '0', 10);
+      const hiresCount = parseInt(summary?.hires_count || '0', 10);
+      const exitsCount = parseInt(summary?.exits_count || '0', 10);
+
+      checkPageOverflow(90);
+      page.drawText('8. Variazioni Organico', { x: 50, y, size: 13, font: fontBold, color: rgb(0.05, 0.13, 0.22) });
+      page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.05, 0.13, 0.22) });
+      y -= 22;
+
+      checkPageOverflow(40);
+      page.drawRectangle({
+        x: 50,
+        y: y - 24,
+        width: width - 100,
+        height: 24,
+        color: rgb(0.95, 0.97, 0.99),
+      });
+      page.drawText(`Dipendenti attivi: ${activeCount}  |  Nuovi inserimenti: ${hiresCount}  |  Uscite: ${exitsCount}`, {
+        x: 60,
+        y: y - 16,
+        size: 9,
+        font: fontBold,
+        color: rgb(0.12, 0.18, 0.26),
+      });
+      y -= 36;
+
+      if (movements.length === 0) {
+        checkPageOverflow(20);
+        page.drawText('Nessuna variazione organico registrata nel periodo.', { x: 50, y, size: 10, font: fontItalic });
+        y -= 25;
+      } else {
+        checkPageOverflow(20);
+        page.drawText('Collaboratore', { x: 50, y, size: 9, font: fontBold });
+        page.drawText('Email', { x: 220, y, size: 9, font: fontBold });
+        page.drawText('Evento', { x: 390, y, size: 9, font: fontBold });
+        page.drawText('Data', { x: 480, y, size: 9, font: fontBold });
+        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+        y -= 16;
+
+        for (const movement of movements) {
+          checkPageOverflow(18);
+          const name = `${movement.surname} ${movement.name}`;
+          const email = movement.email || '-';
+          const eventDate = movement.termination_date
+            ? new Date(movement.termination_date).toLocaleDateString('it-IT')
+            : new Date(movement.created_at).toLocaleDateString('it-IT');
+          const eventLabel = movement.termination_date ? 'Uscita' : 'Nuovo inserimento';
+
+          page.drawText(name.length > 28 ? name.substring(0, 25) + '...' : name, { x: 50, y, size: 9, font });
+          page.drawText(email.length > 28 ? email.substring(0, 25) + '...' : email, { x: 220, y, size: 9, font });
+          page.drawText(eventLabel, { x: 390, y, size: 9, font });
+          page.drawText(eventDate, { x: 480, y, size: 9, font });
+          y -= 14;
+        }
+        y -= 15;
+      }
+    }
+
+    if (isMonthly && hasSection(config.sections, 'Ferie & permessi', 'Leave & permissions')) {
+      const leaveItems = await query<{
+        start_date: string;
+        end_date: string;
+        leave_type: string;
+        status: string;
+        name: string;
+        surname: string;
+      }>(
+        `SELECT lr.start_date, lr.end_date, lr.leave_type, lr.status, u.name, u.surname
+         FROM leave_requests lr
+         JOIN users u ON u.id = lr.user_id
+         WHERE lr.company_id = $1
+           AND lr.start_date <= $3
+           AND lr.end_date >= $2
+         ORDER BY lr.start_date ASC`,
+        [companyId, startDateStr, endDateStr]
+      );
+
+      checkPageOverflow(50);
+      page.drawText('9. Ferie & Permessi', { x: 50, y, size: 13, font: fontBold, color: rgb(0.05, 0.13, 0.22) });
+      page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.05, 0.13, 0.22) });
+      y -= 22;
+
+      if (leaveItems.length === 0) {
+        checkPageOverflow(20);
+        page.drawText('Nessuna richiesta ferie o permesso nel periodo selezionato.', { x: 50, y, size: 10, font: fontItalic });
+        y -= 25;
+      } else {
+        checkPageOverflow(20);
+        page.drawText('Collaboratore', { x: 50, y, size: 9, font: fontBold });
+        page.drawText('Tipo', { x: 230, y, size: 9, font: fontBold });
+        page.drawText('Periodo', { x: 290, y, size: 9, font: fontBold });
+        page.drawText('Stato', { x: 450, y, size: 9, font: fontBold });
+        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+        y -= 16;
+
+        for (const item of leaveItems) {
+          checkPageOverflow(18);
+          const name = `${item.surname} ${item.name}`;
+          const period = `${new Date(item.start_date).toLocaleDateString('it-IT')} - ${new Date(item.end_date).toLocaleDateString('it-IT')}`;
+
+          page.drawText(name.length > 30 ? name.substring(0, 27) + '...' : name, { x: 50, y, size: 9, font });
+          page.drawText(item.leave_type, { x: 230, y, size: 9, font });
+          page.drawText(period, { x: 290, y, size: 9, font });
+          page.drawText(item.status, { x: 450, y, size: 9, font });
+          y -= 14;
+        }
+        y -= 15;
+      }
+    }
+
+    if (isMonthly && hasSection(config.sections, 'Contratti in scadenza', 'Expiring contracts')) {
+      const contracts = await query<{
+        name: string;
+        surname: string;
+        email: string | null;
+        termination_date: string;
+      }>(
+        `SELECT name, surname, email, termination_date
+         FROM users
+         WHERE company_id = $1
+           AND role = 'employee'
+           AND termination_date BETWEEN $2 AND $3
+         ORDER BY termination_date ASC`,
+        [companyId, startDateStr, endDateStr]
+      );
+
+      checkPageOverflow(50);
+      page.drawText('10. Contratti in Scadenza', { x: 50, y, size: 13, font: fontBold, color: rgb(0.05, 0.13, 0.22) });
+      page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.05, 0.13, 0.22) });
+      y -= 22;
+
+      if (contracts.length === 0) {
+        checkPageOverflow(20);
+        page.drawText('Nessun contratto in scadenza nel periodo di analisi.', { x: 50, y, size: 10, font: fontItalic });
+        y -= 25;
+      } else {
+        checkPageOverflow(20);
+        page.drawText('Collaboratore', { x: 50, y, size: 9, font: fontBold });
+        page.drawText('Email', { x: 230, y, size: 9, font: fontBold });
+        page.drawText('Scadenza', { x: 450, y, size: 9, font: fontBold });
+        page.drawLine({ start: { x: 50, y: y - 3 }, end: { x: width - 50, y: y - 3 }, thickness: 0.5, color: rgb(0.7, 0.7, 0.7) });
+        y -= 16;
+
+        for (const contract of contracts) {
+          checkPageOverflow(18);
+          const name = `${contract.surname} ${contract.name}`;
+          const email = contract.email || '-';
+          const deadline = new Date(contract.termination_date).toLocaleDateString('it-IT');
+
+          page.drawText(name.length > 30 ? name.substring(0, 27) + '...' : name, { x: 50, y, size: 9, font });
+          page.drawText(email.length > 28 ? email.substring(0, 25) + '...' : email, { x: 230, y, size: 9, font });
+          page.drawText(deadline, { x: 450, y, size: 9, font });
+          y -= 14;
+        }
+        y -= 15;
+      }
+    }
+
+    if (isMonthly && hasSection(config.sections, 'Turnover mensile', 'Monthly turnover')) {
+      const turnover = await queryOne<{
+        active_count: string;
+        hires_count: string;
+        exits_count: string;
+      }>(
+        `SELECT
+           COUNT(*) FILTER (WHERE role = 'employee' AND status = 'active')::text AS active_count,
+           COUNT(*) FILTER (WHERE role = 'employee' AND created_at::DATE BETWEEN $2 AND $3)::text AS hires_count,
+           COUNT(*) FILTER (WHERE role = 'employee' AND termination_date BETWEEN $2 AND $3)::text AS exits_count
+         FROM users
+         WHERE company_id = $1`,
+        [companyId, startDateStr, endDateStr]
+      );
+
+      const activeCount = parseInt(turnover?.active_count || '0', 10);
+      const hiresCount = parseInt(turnover?.hires_count || '0', 10);
+      const exitsCount = parseInt(turnover?.exits_count || '0', 10);
+      const turnoverRate = activeCount > 0 ? ((exitsCount / activeCount) * 100) : 0;
+
+      checkPageOverflow(70);
+      page.drawText('11. Turnover Mensile', { x: 50, y, size: 13, font: fontBold, color: rgb(0.05, 0.13, 0.22) });
+      page.drawLine({ start: { x: 50, y: y - 4 }, end: { x: width - 50, y: y - 4 }, thickness: 1.5, color: rgb(0.05, 0.13, 0.22) });
+      y -= 22;
+
+      checkPageOverflow(40);
+      page.drawRectangle({
+        x: 50,
+        y: y - 24,
+        width: width - 100,
+        height: 24,
+        color: rgb(0.96, 0.97, 0.99),
+      });
+      page.drawText(`Assunzioni: ${hiresCount}  |  Uscite: ${exitsCount}  |  Tasso di turnover: ${turnoverRate.toFixed(1)}%`, {
+        x: 60,
+        y: y - 16,
+        size: 9,
+        font: fontBold,
+        color: rgb(0.12, 0.18, 0.26),
+      });
+      y -= 36;
+    }
+
     // SECTION: ATS/Candidates (Daily HR Alert - ATS)
     if (config.reportId === 'anomaly_daily') {
       const dailyEnd = new Date(generationDate);
@@ -999,10 +1235,13 @@ export async function generateAndSendWeeklyReport(
 
     // 3. Dispatch Emails via configured SMTP (resilient to email-sending failures)
     try {
+      let sentCount = 0;
+      let failedCount = 0;
+
       for (const recipient of config.recipients) {
         if (!recipient || !recipient.trim().includes('@')) continue;
 
-        await sendEmailForCompany(companyId, {
+        const result = await sendEmailForCompany(companyId, {
           to: recipient.trim(),
           subject: isMonthly
             ? `Monthly HR Report / Report Risorse Umane Mensile - ${companyName}`
@@ -1037,6 +1276,16 @@ export async function generateAndSendWeeklyReport(
             },
           ],
         });
+
+        if (result.ok) {
+          sentCount += 1;
+        } else if (result.status === 'failed') {
+          failedCount += 1;
+        }
+      }
+
+      if (failedCount > 0) {
+        console.warn(`[REPORTS-GEN] ${failedCount} email delivery attempt(s) failed for company ${companyId}; ${sentCount} succeeded.`);
       }
     } catch (emailErr) {
       console.error(`[REPORTS-GEN] Resilient email dispatch failed for ${isMonthly ? 'Monthly' : isDaily ? 'Daily' : 'Weekly'} HR Report, but PDF was successfully generated:`, emailErr);
@@ -2162,10 +2411,13 @@ export async function generateAndSendMonthlyAdminReport(
 
     // 3. Dispatch Emails via configured SMTP (resilient to email-sending failures)
     try {
+      let sentCount = 0;
+      let failedCount = 0;
+
       for (const recipient of config.recipients) {
         if (!recipient || !recipient.trim().includes('@')) continue;
 
-        await sendEmailForCompany(companyId, {
+        const result = await sendEmailForCompany(companyId, {
           to: recipient.trim(),
           subject: `[Automated] Report Direzionale Mensile (Admin) - ${companyName}`,
           html: `<p>Gentile Amministratore,</p>
@@ -2180,6 +2432,16 @@ export async function generateAndSendMonthlyAdminReport(
             },
           ],
         });
+
+        if (result.ok) {
+          sentCount += 1;
+        } else if (result.status === 'failed') {
+          failedCount += 1;
+        }
+      }
+
+      if (failedCount > 0) {
+        console.warn(`[REPORTS-GEN] ${failedCount} admin report email delivery attempt(s) failed for company ${companyId}; ${sentCount} succeeded.`);
       }
     } catch (emailErr) {
       console.error('[REPORTS-GEN] Resilient email dispatch failed for Monthly Admin Report, but PDF was successfully generated:', emailErr);

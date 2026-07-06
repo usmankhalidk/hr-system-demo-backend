@@ -1,5 +1,6 @@
 import { query } from '../config/database';
 import { generateAndSendWeeklyReport, generateAndSendMonthlyAdminReport } from '../modules/reports/reports-generation.service';
+import { getCurrentReportClock, getLastScheduledRunDate, shouldRunReportAtCurrentTime } from '../modules/reports/reports-schedule';
 import { saveGeneratedReportPdf } from '../modules/reports/reports-storage.service';
 
 interface ActiveReportConfig {
@@ -17,23 +18,22 @@ interface ActiveReportConfig {
 export async function runReportConfigurationsJob(): Promise<void> {
   try {
     const now = new Date();
-    // 1 (Mon) to 7 (Sun) matching our db mapping
-    const currentDay = now.getDay() === 0 ? 7 : now.getDay();
-    const currentHHMM = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const currentClock = getCurrentReportClock(now);
+    const currentHHMM = currentClock.time;
 
-    console.log(`[REPORTS-JOB] Tick - Day: ${currentDay}, Time: ${currentHHMM}`);
+    console.log(`[REPORTS-JOB] Tick - Time: ${currentHHMM}`);
 
-    // Query active reports matching this exact minute
-    const configs = await query<ActiveReportConfig>(
+    // Query active reports matching this exact minute, then apply per-report schedule rules in code.
+    const pendingConfigs = await query<ActiveReportConfig>(
       `SELECT company_id, report_id, day, time, recipients, sections
        FROM report_configurations
        WHERE status = 'attivo'
-         AND (
-           (report_id = 'anomaly_daily' AND time = $2)
-           OR
-           (report_id != 'anomaly_daily' AND day = $1 AND time = $2)
-         )`,
-      [currentDay, currentHHMM]
+         AND time = $1`,
+      [currentHHMM]
+    );
+
+    const configs = pendingConfigs.filter((conf) =>
+      shouldRunReportAtCurrentTime(conf.report_id, conf.day, now),
     );
 
     if (configs.length === 0) return;
@@ -41,6 +41,7 @@ export async function runReportConfigurationsJob(): Promise<void> {
     console.log(`[REPORTS-JOB] Found ${configs.length} scheduled report(s) matching current time.`);
 
     for (const conf of configs) {
+      const scheduledRunDate = getLastScheduledRunDate(conf.report_id, conf.day, conf.time, now);
       let parsedRecipients: string[] = [];
       let parsedSections: string[] = [];
 
@@ -58,15 +59,15 @@ export async function runReportConfigurationsJob(): Promise<void> {
 
       // Fire off background generator for matching companies
       const reportPromise = conf.report_id === 'admin_monthly'
-        ? generateAndSendMonthlyAdminReport(conf.company_id, {
-            recipients: parsedRecipients,
-            sections: parsedSections,
-          }, now)
+          ? generateAndSendMonthlyAdminReport(conf.company_id, {
+              recipients: parsedRecipients,
+              sections: parsedSections,
+          }, scheduledRunDate)
         : generateAndSendWeeklyReport(conf.company_id, {
             recipients: parsedRecipients,
             sections: parsedSections,
             reportId: conf.report_id,
-          }, now);
+          }, scheduledRunDate);
 
       reportPromise
         .then(async (pdfBuffer) => {
@@ -74,7 +75,7 @@ export async function runReportConfigurationsJob(): Promise<void> {
             const storagePath = await saveGeneratedReportPdf(
               conf.company_id,
               conf.report_id,
-              now,
+              scheduledRunDate,
               pdfBuffer,
             );
 
@@ -90,10 +91,10 @@ export async function runReportConfigurationsJob(): Promise<void> {
             await query(
               `INSERT INTO generated_reports (company_id, report_id, size_bytes, sections, target_date, storage_path)
                VALUES ($1, $2, $3, $4::jsonb, $5, $6)`,
-              [conf.company_id, conf.report_id, pdfBuffer.length, JSON.stringify(parsedSections), now, storagePath]
+              [conf.company_id, conf.report_id, pdfBuffer.length, JSON.stringify(parsedSections), scheduledRunDate, storagePath]
             );
 
-            console.log(`[REPORTS-JOB] Successfully processed, saved statistics and emailed report for company: ${conf.company_id}`);
+            console.log(`[REPORTS-JOB] Successfully processed and archived report for company: ${conf.company_id}`);
           } else {
             console.log(`[REPORTS-JOB] Completed report but generation returned null buffer for company: ${conf.company_id}`);
           }
