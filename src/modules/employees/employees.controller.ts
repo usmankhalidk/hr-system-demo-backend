@@ -28,7 +28,7 @@ const LIST_FIELDS = `
   u.termination_date, u.termination_type, u.created_at,
   u.avatar_filename,
   u.device_reset_pending,
-  (u.registered_device_token IS NOT NULL) AS device_registered,
+  ((u.registered_device_token IS NOT NULL) OR (u.registered_device_identifier IS NOT NULL)) AS device_registered,
   u.registered_device_registered_at AS device_registered_at,
   u.registered_device_metadata AS device_metadata,
   u.last_seen_ip,
@@ -51,7 +51,7 @@ const DETAIL_FIELDS = `
   u.iban, u.address, u.cap, u.country, u.state, u.city, u.phone,
   u.contract_type, u.probation_months,
   u.device_reset_pending,
-  (u.registered_device_token IS NOT NULL) AS device_registered,
+  ((u.registered_device_token IS NOT NULL) OR (u.registered_device_identifier IS NOT NULL)) AS device_registered,
   u.registered_device_registered_at AS device_registered_at
 `;
 
@@ -1323,6 +1323,7 @@ export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Respon
     `UPDATE users
      SET device_reset_pending = false,
          registered_device_token = NULL,
+         registered_device_identifier = NULL,
          registered_device_metadata = NULL,
          registered_device_registered_at = NULL,
          updated_at = NOW()
@@ -1331,7 +1332,7 @@ export const resetEmployeeDevice = asyncHandler(async (req: Request, res: Respon
        AND role IN ('employee', 'store_terminal', 'store_manager', 'area_manager', 'hr')
        AND status = 'active'
      RETURNING id, company_id, device_reset_pending,
-               (registered_device_token IS NOT NULL) AS device_registered,
+               ((registered_device_token IS NOT NULL) OR (registered_device_identifier IS NOT NULL)) AS device_registered,
                registered_device_registered_at AS device_registered_at`,
      [empId, allowedCompanyIds],
   );

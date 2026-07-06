@@ -52,6 +52,65 @@ export function computeDeviceProfileHash(metadata: unknown): string | null {
   return crypto.createHash('sha256').update(JSON.stringify(profile)).digest('hex');
 }
 
+function hashStableIdentifier(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function pickNestedText(root: Record<string, any>, paths: string[][]): string | null {
+  for (const path of paths) {
+    let current: unknown = root;
+    for (const key of path) {
+      current = normalizeObject(current)[key];
+    }
+    const value = normalizeText(current);
+    if (value) return value;
+  }
+  return null;
+}
+
+export function resolveStableDeviceIdentifier(metadata: unknown, fallbackToken?: string | null): string | null {
+  const root = normalizeObject(metadata);
+  const nativeIdentifier = pickNestedText(root, [
+    ['stableDevice', 'nativeId'],
+    ['stableDevice', 'identifier'],
+    ['nativeDeviceId'],
+    ['deviceIdentifier'],
+    ['deviceId'],
+    ['androidId'],
+    ['iosVendorId'],
+    ['identifierForVendor'],
+  ]);
+
+  if (nativeIdentifier) {
+    return `native:${hashStableIdentifier(nativeIdentifier)}`;
+  }
+
+  const stableDevice = normalizeObject(root.stableDevice);
+  const stableHash = normalizeText(stableDevice.hash);
+  if (stableHash) {
+    return `profile:${stableHash}`;
+  }
+
+  const profileHash = getStoredDeviceProfileHash(metadata);
+  if (profileHash) {
+    return `profile:${profileHash}`;
+  }
+
+  return fallbackToken ? `fingerprint:${fallbackToken}` : null;
+}
+
+export function resolveStableDeviceIdentifierFromFingerprint(fingerprint: unknown, fallbackToken?: string | null): string | null {
+  const rawFingerprint = normalizeText(fingerprint);
+  if (rawFingerprint?.startsWith('web-profile-v1:')) {
+    const profileHash = rawFingerprint.slice('web-profile-v1:'.length).trim();
+    if (/^[a-f0-9]{32,64}$/.test(profileHash)) {
+      return `profile:${profileHash}`;
+    }
+  }
+
+  return fallbackToken ? `fingerprint:${fallbackToken}` : null;
+}
+
 export function getStoredDeviceProfileHash(metadata: unknown): string | null {
   const root = normalizeObject(metadata);
   const deviceProfile = normalizeObject(root.deviceProfile);

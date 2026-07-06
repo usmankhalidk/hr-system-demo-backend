@@ -190,6 +190,7 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS device_reset_pending BOOLEAN NOT NULL DEFAULT false,
       ADD COLUMN IF NOT EXISTS registered_device_token VARCHAR(128),
+      ADD COLUMN IF NOT EXISTS registered_device_identifier VARCHAR(160),
       ADD COLUMN IF NOT EXISTS registered_device_metadata JSONB,
       ADD COLUMN IF NOT EXISTS registered_device_registered_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS last_seen_ip VARCHAR(45),
@@ -197,6 +198,14 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
 
     CREATE INDEX IF NOT EXISTS idx_users_registered_device_token
       ON users(registered_device_token);
+
+    CREATE INDEX IF NOT EXISTS idx_users_registered_device_identifier
+      ON users(registered_device_identifier);
+
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_users_registered_device_identifier_active
+      ON users(registered_device_identifier)
+      WHERE device_reset_pending = false
+        AND registered_device_identifier IS NOT NULL;
 
     CREATE TABLE IF NOT EXISTS device_events (
       id SERIAL PRIMARY KEY,

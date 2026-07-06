@@ -1,9 +1,5 @@
 import nodemailer from 'nodemailer';
-import { query, queryOne } from '../config/database';
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
+import { queryOne } from '../config/database';
 
 export interface EmailOptions {
   to: string;
@@ -18,6 +14,13 @@ export interface EmailOptions {
   }[];
 }
 
+export interface EmailSendResult {
+  ok: boolean;
+  status: 'sent' | 'skipped' | 'failed';
+  portTried?: number;
+  message?: string;
+}
+
 interface CompanySmtpConfig {
   smtp_host: string;
   smtp_port: number;
@@ -26,22 +29,60 @@ interface CompanySmtpConfig {
   smtp_from: string;
 }
 
-// ---------------------------------------------------------------------------
-// Per-company email sender (primary path)
-// ---------------------------------------------------------------------------
+interface NotificationTemplate {
+  id: number;
+  event_key: string;
+  channel: string;
+  subject_it: string | null;
+  body_it: string;
+}
 
-/**
- * Sends an email using the SMTP credentials configured for the given company.
- *
- * Rules:
- *  - If no SMTP config exists in the DB for the company → silently skip (no error).
- *  - If config exists but credentials are incomplete → silently skip.
- *  - Never throws; always logs errors and returns gracefully.
- */
+function buildCandidatePorts(configuredPort: number): number[] {
+  const ports = [configuredPort];
+  if (configuredPort === 587) {
+    ports.push(465);
+  } else if (configuredPort === 465) {
+    ports.push(587);
+  }
+  return Array.from(new Set(ports));
+}
+
+function isRetryableSmtpError(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  return code === 'ETIMEDOUT' || code === 'ECONNREFUSED' || code === 'ESOCKET' || code === 'EHOSTUNREACH';
+}
+
+function createSmtpTransport(config: {
+  host: string;
+  port: number;
+  user: string;
+  pass: string;
+}): nodemailer.Transporter {
+  return nodemailer.createTransport({
+    host: config.host,
+    port: config.port,
+    secure: config.port === 465,
+    auth: {
+      user: config.user,
+      pass: config.pass,
+    },
+    tls: {
+      rejectUnauthorized: false,
+    },
+    connectionTimeout: 15000,
+    greetingTimeout: 15000,
+    socketTimeout: 20000,
+    debug: true,
+    logger: true,
+    family: 4,
+  } as any);
+}
+
 export async function sendEmailForCompany(
   companyId: number,
   options: EmailOptions,
-): Promise<void> {
+): Promise<EmailSendResult> {
   try {
     const cfg = await queryOne<CompanySmtpConfig>(
       `SELECT smtp_host, smtp_port, smtp_user, smtp_pass, smtp_from
@@ -58,73 +99,94 @@ export async function sendEmailForCompany(
     const smtpFrom = cfg?.smtp_from;
 
     if (!smtpHost || !smtpUser || !smtpPass) {
-      // No DB config or incomplete config — silently skip, do NOT crash
-      console.log(
-        `[EMAIL] No DB SMTP config for company ${companyId} — email to ${options.to} skipped.`,
-      );
-      return;
+      console.log(`[EMAIL] No DB SMTP config for company ${companyId} - email to ${options.to} skipped.`);
+      return {
+        ok: false,
+        status: 'skipped',
+        message: 'SMTP configuration missing or incomplete',
+      };
     }
 
-    const transporter = nodemailer.createTransport({
-      host: smtpHost,
-      port: smtpPort,
-      secure: smtpPort === 465, // true for 465, false for others (STARTTLS)
-      auth: {
+    const candidatePorts = buildCandidatePorts(smtpPort);
+    let lastError: unknown = null;
+
+    for (let index = 0; index < candidatePorts.length; index += 1) {
+      const port = candidatePorts[index];
+      const transporter = createSmtpTransport({
+        host: smtpHost,
+        port,
         user: smtpUser,
         pass: smtpPass,
-      },
-      tls: {
-        // Let Node.js negotiate modern TLS (e.g. TLS 1.2, TLS 1.3) automatically
-        rejectUnauthorized: false
-      },
-      debug: true, // Enable debug logs in the terminal
-      logger: true, // Log the SMTP transaction
-      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
-    } as any);
+      });
 
-    console.log(`[EMAIL] Attempting to send email to ${options.to} via ${smtpHost}...`);
+      try {
+        console.log(`[EMAIL] Attempting to send email to ${options.to} via ${smtpHost}:${port}...`);
 
-    await transporter.sendMail({
-      from: smtpFrom || smtpUser,
-      to: options.to,
-      subject: options.subject,
-      html: options.html,
-      text: options.text,
-      attachments: options.attachments,
-    });
+        await transporter.sendMail({
+          from: smtpFrom || smtpUser,
+          to: options.to,
+          subject: options.subject,
+          html: options.html,
+          text: options.text,
+          attachments: options.attachments,
+        });
+
+        console.log(`[EMAIL] Email sent successfully for company ${companyId} to ${options.to} via port ${port}.`);
+        return {
+          ok: true,
+          status: 'sent',
+          portTried: port,
+        };
+      } catch (err: unknown) {
+        lastError = err;
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(`[EMAIL] Failed to send email for company ${companyId} to ${options.to} via ${smtpHost}:${port}: ${msg}`);
+
+        const shouldRetry = index < candidatePorts.length - 1 && isRetryableSmtpError(err);
+        if (!shouldRetry) {
+          break;
+        }
+
+        console.log(`[EMAIL] Retrying email delivery for company ${companyId} to ${options.to} using fallback SMTP port.`);
+      }
+    }
+
+    const finalMessage = lastError instanceof Error ? lastError.message : String(lastError ?? 'Unknown SMTP failure');
+    return {
+      ok: false,
+      status: 'failed',
+      portTried: candidatePorts[candidatePorts.length - 1],
+      message: finalMessage,
+    };
   } catch (err: unknown) {
-    // Never propagate — a failed email must not crash the system
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[EMAIL] Failed to send email for company ${companyId} to ${options.to}: ${msg}`);
+    return {
+      ok: false,
+      status: 'failed',
+      message: msg,
+    };
   }
 }
-
-// ---------------------------------------------------------------------------
-// Legacy singleton (kept only for the /api/email/test endpoint)
-// Uses .env credentials. Not used for any notification flow.
-// ---------------------------------------------------------------------------
 
 class EmailService {
   private transporter: nodemailer.Transporter | null = null;
 
   constructor() {
     if (process.env.SMTP_HOST) {
-      this.transporter = nodemailer.createTransport({
+      this.transporter = createSmtpTransport({
         host: process.env.SMTP_HOST,
         port: parseInt(process.env.SMTP_PORT || '587', 10),
-        secure: process.env.SMTP_PORT === '465',
-        auth: {
-          user: process.env.SMTP_USER,
-          pass: process.env.SMTP_PASS,
-        },
-        family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
-      } as any);
+        user: process.env.SMTP_USER || '',
+        pass: process.env.SMTP_PASS || '',
+      });
     }
   }
 
   async send(options: EmailOptions & { companyId?: number }): Promise<void> {
     if (options.companyId) {
-      return sendEmailForCompany(options.companyId, options);
+      await sendEmailForCompany(options.companyId, options);
+      return;
     }
 
     if (!this.transporter) {
@@ -135,6 +197,7 @@ class EmailService {
       });
       return;
     }
+
     await this.transporter.sendMail({
       from: process.env.SMTP_FROM || 'noreply@hr-system.it',
       to: options.to,
@@ -147,23 +210,6 @@ class EmailService {
 
 export const emailService = new EmailService();
 
-// ---------------------------------------------------------------------------
-// Template-based notification email helper
-// ---------------------------------------------------------------------------
-
-interface NotificationTemplate {
-  id: number;
-  event_key: string;
-  channel: string;
-  subject_it: string | null;
-  body_it: string;
-}
-
-/**
- * Sends a notification email using a stored template for the given event_key.
- * Uses the company's DB-configured SMTP credentials.
- * If the company has no SMTP config, the email is silently skipped.
- */
 export async function sendNotificationEmail(options: {
   companyId: number;
   toEmail: string;
@@ -175,7 +221,6 @@ export async function sendNotificationEmail(options: {
 }): Promise<void> {
   const { companyId, toEmail, eventKey, variables, fallbackSubject, fallbackBody, attachments } = options;
 
-  // Attempt to load the template
   const template = await queryOne<NotificationTemplate>(
     `SELECT id, event_key, channel, subject_it, body_it
      FROM notification_templates
@@ -192,7 +237,6 @@ export async function sendNotificationEmail(options: {
     htmlBody = template.body_it;
   }
 
-  // Interpolate {{key}} placeholders
   const interpolate = (tpl: string): string =>
     tpl.replace(/\{\{(\w+)\}\}/g, (_match, key) => variables[key] ?? '');
 
@@ -201,7 +245,6 @@ export async function sendNotificationEmail(options: {
 
   const plainText = htmlBody.replace(/<[^>]+>/g, '');
 
-  // Use the per-company sender — silently skips if no config exists
   await sendEmailForCompany(companyId, {
     to: toEmail,
     subject,
@@ -211,10 +254,6 @@ export async function sendNotificationEmail(options: {
   });
 }
 
-/**
- * Verifies if the given SMTP configuration is valid.
- * Confirms that credentials are correct, the host is reachable, and authentication succeeds.
- */
 export async function verifySmtpConfig(config: {
   smtpHost: string;
   smtpPort: number;
@@ -222,25 +261,33 @@ export async function verifySmtpConfig(config: {
   smtpPass: string;
 }): Promise<boolean> {
   try {
-    const transporter = nodemailer.createTransport({
-      host: config.smtpHost,
-      port: config.smtpPort,
-      secure: config.smtpPort === 465,
-      auth: {
+    const candidatePorts = buildCandidatePorts(config.smtpPort);
+
+    for (let index = 0; index < candidatePorts.length; index += 1) {
+      const port = candidatePorts[index];
+      const transporter = createSmtpTransport({
+        host: config.smtpHost,
+        port,
         user: config.smtpUser,
         pass: config.smtpPass,
-      },
-      tls: {
-        rejectUnauthorized: false
-      },
-      family: 4 // Force IPv4 to prevent ENETUNREACH errors on IPv6-unsupported servers
-    } as any);
+      });
 
-    await transporter.verify();
-    return true;
+      try {
+        await transporter.verify();
+        return true;
+      } catch (err: unknown) {
+        const shouldRetry = index < candidatePorts.length - 1 && isRetryableSmtpError(err);
+        if (!shouldRetry) {
+          throw err;
+        }
+
+        console.log(`[EMAIL_VERIFY] SMTP verify failed on port ${port}, retrying with fallback port.`);
+      }
+    }
+
+    return false;
   } catch (err: unknown) {
     console.error('[EMAIL_VERIFY] SMTP verification failed:', err);
     return false;
   }
 }
-
