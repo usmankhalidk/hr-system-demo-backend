@@ -1,7 +1,8 @@
 import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
-import { ok, notFound, badRequest } from '../../utils/response';
+import { ok, notFound, badRequest, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
+import { getDefaultAutomationRoles, sanitizeAutomationRoles } from './automationDefaults';
 
 // GET /api/automations
 export const getAutomations = asyncHandler(async (req: Request, res: Response) => {
@@ -13,16 +14,19 @@ export const getAutomations = asyncHandler(async (req: Request, res: Response) =
     return;
   }
 
-  const automations = await query<{ automation_id: string; is_enabled: boolean }>(
-    `SELECT automation_id, is_enabled FROM company_automations WHERE company_id = $1`,
+  const automations = await query<{ automation_id: string; is_enabled: boolean; recipient_roles: string[] | null }>(
+    `SELECT automation_id, is_enabled, recipient_roles FROM company_automations WHERE company_id = $1`,
     [targetCompanyId],
   );
 
-  // Return a map of automation_id -> is_enabled
+  // Return a map of automation_id -> { is_enabled, recipient_roles }
   const automationsMap = automations.reduce((acc, row) => {
-    acc[row.automation_id] = row.is_enabled;
+    acc[row.automation_id] = {
+      is_enabled: row.is_enabled,
+      recipient_roles: sanitizeAutomationRoles(row.recipient_roles, row.automation_id),
+    };
     return acc;
-  }, {} as Record<string, boolean>);
+  }, {} as Record<string, { is_enabled: boolean; recipient_roles: string[] }>);
 
   ok(res, automationsMap);
 });
@@ -41,20 +45,48 @@ export const updateAutomation = asyncHandler(async (req: Request, res: Response)
   const isEnabledValue = typeof req.body.is_enabled === 'boolean'
     ? req.body.is_enabled
     : req.body.isEnabled;
+  const hasIsEnabled = typeof isEnabledValue === 'boolean';
+  const hasRoles = Object.prototype.hasOwnProperty.call(req.body, 'recipient_roles')
+    || Object.prototype.hasOwnProperty.call(req.body, 'recipientRoles');
+  const recipientRolesInput = req.body.recipient_roles ?? req.body.recipientRoles;
 
-  if (typeof isEnabledValue !== 'boolean') {
-    badRequest(res, 'is_enabled must be a boolean');
+  if (!hasIsEnabled && !hasRoles) {
+    badRequest(res, 'Provide is_enabled and/or recipient_roles');
     return;
   }
 
-  const result = await queryOne<{ automation_id: string; is_enabled: boolean }>(
-    `INSERT INTO company_automations (company_id, automation_id, is_enabled)
-     VALUES ($1, $2, $3)
-     ON CONFLICT (company_id, automation_id)
-     DO UPDATE SET is_enabled = EXCLUDED.is_enabled, updated_at = CURRENT_TIMESTAMP
-     RETURNING automation_id, is_enabled`,
-    [targetCompanyId, id, isEnabledValue],
+  if (hasRoles && req.user?.is_super_admin !== true) {
+    forbidden(res, 'Only super admin can update automation recipient roles');
+    return;
+  }
+
+  const current = await queryOne<{ is_enabled: boolean; recipient_roles: string[] | null }>(
+    `SELECT is_enabled, recipient_roles
+     FROM company_automations
+     WHERE company_id = $1 AND automation_id = $2`,
+    [targetCompanyId, id],
   );
 
-  ok(res, result);
+  const finalIsEnabled = hasIsEnabled ? isEnabledValue : (current?.is_enabled ?? false);
+  const finalRecipientRoles = hasRoles
+    ? sanitizeAutomationRoles(recipientRolesInput, id)
+    : (current ? sanitizeAutomationRoles(current.recipient_roles, id) : getDefaultAutomationRoles(id));
+
+  const result = await queryOne<{ automation_id: string; is_enabled: boolean; recipient_roles: string[] | null }>(
+    `INSERT INTO company_automations (company_id, automation_id, is_enabled, recipient_roles)
+     VALUES ($1, $2, $3, $4)
+     ON CONFLICT (company_id, automation_id)
+     DO UPDATE SET
+       is_enabled = EXCLUDED.is_enabled,
+       recipient_roles = EXCLUDED.recipient_roles,
+       updated_at = CURRENT_TIMESTAMP
+     RETURNING automation_id, is_enabled, recipient_roles`,
+    [targetCompanyId, id, finalIsEnabled, finalRecipientRoles],
+  );
+
+  ok(res, {
+    automation_id: result?.automation_id ?? id,
+    is_enabled: result?.is_enabled ?? finalIsEnabled,
+    recipient_roles: sanitizeAutomationRoles(result?.recipient_roles ?? finalRecipientRoles, id),
+  });
 });
