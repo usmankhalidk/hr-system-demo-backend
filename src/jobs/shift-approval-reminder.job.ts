@@ -1,5 +1,7 @@
 import { query, queryOne } from '../config/database';
 import { sendEmailForCompany } from '../services/email.service';
+import { resolveAutomationRecipientEmails } from '../modules/automations/automationRecipients';
+import { getAutomationSettings } from '../modules/automations/automationSettings';
 
 interface ShiftApprovalReminderRow {
   shift_date: string;
@@ -10,27 +12,14 @@ interface ShiftApprovalReminderRow {
   store_name: string | null;
 }
 
-interface HrRecipientRow {
-  personal_email: string | null;
-}
-
 export async function runShiftApprovalReminderJob(companyId: number): Promise<void> {
-  const automation = await queryOne<{ is_enabled: boolean }>(
-    `SELECT is_enabled
-     FROM company_automations
-     WHERE company_id = $1 AND automation_id = 'approvazione_turni'`,
-    [companyId],
-  );
-
-  const isEnabled = automation ? automation.is_enabled : false;
-  if (!isEnabled) {
+  const automation = await getAutomationSettings(companyId, 'approvazione_turni', false);
+  if (!automation.isEnabled) {
     return;
   }
 
   const company = await queryOne<{ name: string }>(
-    `SELECT name
-     FROM companies
-     WHERE id = $1`,
+    `SELECT name FROM companies WHERE id = $1`,
     [companyId],
   );
 
@@ -57,24 +46,10 @@ export async function runShiftApprovalReminderJob(companyId: number): Promise<vo
     return;
   }
 
-  const hrRecipients = await query<HrRecipientRow>(
-    `SELECT DISTINCT personal_email
-     FROM users
-     WHERE company_id = $1
-       AND role = 'hr'
-       AND status = 'active'
-       AND personal_email IS NOT NULL`,
-    [companyId],
-  );
-
-  const recipientEmails = Array.from(
-    new Set(
-      hrRecipients
-        .map((recipient) => recipient.personal_email?.trim())
-        .filter((value): value is string => Boolean(value && value.includes('@'))),
-    ),
-  );
-
+  const recipientEmails = await resolveAutomationRecipientEmails({
+    companyId,
+    roles: automation.recipientRoles,
+  });
   if (recipientEmails.length === 0) {
     return;
   }
@@ -114,7 +89,6 @@ export async function runShiftApprovalReminderJob(companyId: number): Promise<vo
                   <p style="font-size: 16px; color: #475569; line-height: 1.6; margin-bottom: 30px;">
                     Sono presenti <strong>${scheduledShifts.length}</strong> turni con stato <strong>Scheduled</strong> nei prossimi 7 giorni per <strong>${companyLabel}</strong>. Verifica e conferma i turni elencati qui sotto.
                   </p>
-
                   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="border-collapse: collapse; border: 1px solid #e2e8f0; border-radius: 12px; overflow: hidden;">
                     <thead>
                       <tr style="background-color: #f8fafc;">
@@ -132,7 +106,7 @@ export async function runShiftApprovalReminderJob(companyId: number): Promise<vo
               </tr>
               <tr>
                 <td style="background-color: #f8fafc; padding: 24px 30px; text-align: center; border-top: 1px solid #e2e8f0;">
-                  <p style="font-size: 12px; color: #94a3b8; margin: 0;">Questa è una notifica automatica di ${companyLabel}.</p>
+                  <p style="font-size: 12px; color: #94a3b8; margin: 0;">Questa e una notifica automatica di ${companyLabel}.</p>
                 </td>
               </tr>
             </table>

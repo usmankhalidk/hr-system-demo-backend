@@ -752,6 +752,15 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
   const { user_id, store_id, date_from, date_to, event_type, search, timezone } = req.query as Record<string, string>;
   const displayTimezone = normalizeShiftTimezone(timezone, DEFAULT_SHIFT_TIMEZONE);
 
+  // Pagination: logs view requests small pages (100) + "load more"; the summary/
+  // analytics views request a complete scoped dataset with a high limit so their
+  // aggregates are accurate. Hard ceiling protects the server from runaway pulls.
+  const MAX_LIMIT = 20000;
+  const limitRaw = parseInt(req.query.limit as string, 10);
+  const offsetRaw = parseInt(req.query.offset as string, 10);
+  const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, MAX_LIMIT) : 100;
+  const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : 0;
+
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
   const VALID_EVENT_TYPES = new Set(['checkin', 'checkout', 'break_start', 'break_end']);
 
@@ -912,11 +921,11 @@ export const listAttendanceEvents = asyncHandler(async (req: Request, res: Respo
      LEFT JOIN stores st ON st.id = ae.store_id
     WHERE ae.company_id = ANY($1)${extraWhere}
      ORDER BY ae.event_time DESC
-     LIMIT 500`,
-    params,
+     LIMIT $${idx} OFFSET $${idx + 1}`,
+    [...params, limit, offset],
   );
 
-  ok(res, { events, total, has_more: total > events.length });
+  ok(res, { events, total, has_more: total > offset + events.length });
 });
 
 // ---------------------------------------------------------------------------

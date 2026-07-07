@@ -93,6 +93,8 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       company_id  INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
       store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
       date        DATE NOT NULL,
+      start_date  DATE,
+      end_date    DATE,
       year_month  VARCHAR(7) NOT NULL,
       flagged_by  INTEGER NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
       activity_type VARCHAR(40) NOT NULL DEFAULT 'window_display',
@@ -102,7 +104,6 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
       notes       TEXT,
       created_at  TIMESTAMPTZ DEFAULT NOW(),
       updated_at  TIMESTAMPTZ DEFAULT NOW(),
-      CONSTRAINT unique_store_month UNIQUE (store_id, year_month),
       CONSTRAINT chk_year_month_matches_date CHECK (year_month = TO_CHAR(date, 'YYYY-MM')),
       CONSTRAINT chk_wda_activity_type
         CHECK (activity_type IN (
@@ -157,6 +158,40 @@ export async function seedTestData(): Promise<{ acmeId: number; betaId: number; 
     ALTER TABLE window_display_activities
       ADD CONSTRAINT chk_wda_duration_hours
         CHECK (duration_hours IS NULL OR (duration_hours >= 0 AND duration_hours <= 24));
+
+    -- Date-range columns (migration 078) + per-date uniqueness (migration 113).
+    ALTER TABLE window_display_activities
+      ADD COLUMN IF NOT EXISTS start_date DATE,
+      ADD COLUMN IF NOT EXISTS end_date DATE;
+
+    UPDATE window_display_activities SET start_date = date WHERE start_date IS NULL;
+    UPDATE window_display_activities SET end_date = date WHERE end_date IS NULL;
+
+    ALTER TABLE window_display_activities
+      ALTER COLUMN start_date SET NOT NULL,
+      ALTER COLUMN end_date SET NOT NULL;
+
+    ALTER TABLE window_display_activities
+      DROP CONSTRAINT IF EXISTS chk_wda_date_range;
+
+    ALTER TABLE window_display_activities
+      ADD CONSTRAINT chk_wda_date_range CHECK (end_date >= start_date);
+
+    -- Replace the stale per-month restriction with per-date uniqueness.
+    ALTER TABLE window_display_activities
+      DROP CONSTRAINT IF EXISTS unique_store_month;
+
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'uq_wda_store_start_date'
+          AND conrelid = 'window_display_activities'::regclass
+      ) THEN
+        ALTER TABLE window_display_activities
+          ADD CONSTRAINT uq_wda_store_start_date UNIQUE (store_id, start_date);
+      END IF;
+    END $$;
   `);
 
   // Ensure companies.is_active exists (used to block operations on deactivated companies).

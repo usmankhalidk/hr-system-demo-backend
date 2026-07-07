@@ -26,6 +26,7 @@ const createSchema = z.object({
   date: z.string().regex(isoDate, 'Date must be YYYY-MM-DD').optional(),
   start_date: z.string().regex(isoDate, 'start_date must be YYYY-MM-DD').optional(),
   end_date: z.string().regex(isoDate, 'end_date must be YYYY-MM-DD').optional(),
+  dates: z.array(z.string().regex(isoDate, 'each date must be YYYY-MM-DD')).min(1).max(60).optional(),
   activity_type: z.enum(activityTypes).optional(),
   activity_icon: z.string().trim().min(1).max(16).nullable().optional(),
   custom_activity_name: z.string().trim().min(1).max(120).nullable().optional(),
@@ -37,12 +38,13 @@ const createSchema = z.object({
   const hasDate = Boolean(data.date);
   const hasStart = Boolean(data.start_date);
   const hasEnd = Boolean(data.end_date);
+  const hasDates = Array.isArray(data.dates) && data.dates.length > 0;
 
-  if (!hasDate && !hasStart && !hasEnd) {
+  if (!hasDate && !hasStart && !hasEnd && !hasDates) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,
-      message: 'date or start_date/end_date is required',
-      path: ['date'],
+      message: 'dates, date, or start_date/end_date is required',
+      path: ['dates'],
     });
   }
 
