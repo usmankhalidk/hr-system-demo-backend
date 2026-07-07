@@ -1,10 +1,7 @@
-import { query, queryOne } from '../../config/database';
+import { queryOne } from '../../config/database';
 import { sendEmailForCompany } from '../../services/email.service';
-
-interface LateArrivalRecipientsRow {
-  personal_email: string | null;
-  role: string;
-}
+import { resolveAutomationRecipientEmails } from './automationRecipients';
+import { getAutomationSettings } from './automationSettings';
 
 export async function sendLateArrivalAlertAutomation(options: {
   companyId: number;
@@ -31,55 +28,23 @@ export async function sendLateArrivalAlertAutomation(options: {
     lateMinutes,
   } = options;
 
-  const automation = await queryOne<{ is_enabled: boolean }>(
-    `SELECT is_enabled
-     FROM company_automations
-     WHERE company_id = $1 AND automation_id = 'anomalia_ritardo'`,
-    [companyId],
-  );
-
-  const isEnabled = automation ? automation.is_enabled : true;
-
-  if (!isEnabled) {
+  const automation = await getAutomationSettings(companyId, 'anomalia_ritardo', true);
+  if (!automation.isEnabled) {
     return;
   }
 
   const company = await queryOne<{ name: string }>(
-    `SELECT name
-     FROM companies
-     WHERE id = $1`,
+    `SELECT name FROM companies WHERE id = $1`,
     [companyId],
   );
 
-  const recipients = await query<LateArrivalRecipientsRow>(
-    `SELECT DISTINCT u.personal_email, u.role
-     FROM users u
-     WHERE u.company_id = $1
-       AND u.status = 'active'
-       AND u.personal_email IS NOT NULL
-       AND (
-         (u.role = 'store_manager' AND $2::int IS NOT NULL AND u.store_id = $2)
-         OR (
-           u.role = 'area_manager'
-           AND $2::int IS NOT NULL
-           AND (
-             u.store_id = $2
-             OR EXISTS (
-               SELECT 1
-               FROM users sm
-               WHERE sm.company_id = u.company_id
-                 AND sm.status = 'active'
-                 AND sm.role = 'store_manager'
-                 AND sm.store_id = $2
-                 AND sm.supervisor_id = u.id
-             )
-           )
-         )
-       )`,
-    [companyId, storeId],
-  );
-
-  if (recipients.length === 0) {
+  const recipientEmails = await resolveAutomationRecipientEmails({
+    companyId,
+    roles: automation.recipientRoles,
+    targetEmployeeId: employeeId,
+    storeId,
+  });
+  if (recipientEmails.length === 0) {
     return;
   }
 
@@ -91,7 +56,6 @@ export async function sendLateArrivalAlertAutomation(options: {
   const storeLabel = storeName || 'Store not assigned';
   const companyLabel = company?.name || 'Azienda';
   const scheduledStartLabel = shiftStartTime.slice(0, 5);
-
   const subject = `Avviso ritardo - ${employeeFullName}`;
   const html = `
     <!DOCTYPE html>
@@ -117,7 +81,6 @@ export async function sendLateArrivalAlertAutomation(options: {
                   <p style="font-size: 16px; color: #475569; line-height: 1.6; margin-bottom: 30px;">
                     Un dipendente di <strong>${companyLabel}</strong> ha effettuato il check-in con oltre 10 minuti di ritardo rispetto all'orario di inizio turno previsto.
                   </p>
-
                   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="background-color: #fff7ed; border: 1px solid #fdba74; border-radius: 12px; padding: 24px; margin-bottom: 30px;">
                     <tr>
                       <td align="center">
@@ -126,7 +89,6 @@ export async function sendLateArrivalAlertAutomation(options: {
                       </td>
                     </tr>
                   </table>
-
                   <table width="100%" border="0" cellspacing="0" cellpadding="0" style="border-top: 1px solid #e2e8f0; padding-top: 20px;">
                     <tr>
                       <td style="padding: 10px 0; color: #64748b; font-size: 14px; width: 150px;">Dipendente:</td>
@@ -158,7 +120,7 @@ export async function sendLateArrivalAlertAutomation(options: {
               </tr>
               <tr>
                 <td style="background-color: #f8fafc; padding: 24px 30px; text-align: center; border-top: 1px solid #e2e8f0;">
-                  <p style="font-size: 12px; color: #94a3b8; margin: 0;">Questa è una notifica automatica di ${companyLabel}.</p>
+                  <p style="font-size: 12px; color: #94a3b8; margin: 0;">Questa e una notifica automatica di ${companyLabel}.</p>
                 </td>
               </tr>
             </table>
@@ -168,14 +130,6 @@ export async function sendLateArrivalAlertAutomation(options: {
     </body>
     </html>
   `;
-
-  const recipientEmails = Array.from(
-    new Set(
-      recipients
-        .map((recipient) => recipient.personal_email?.trim())
-        .filter((value): value is string => Boolean(value && value.includes('@'))),
-    ),
-  );
 
   for (const recipientEmail of recipientEmails) {
     await sendEmailForCompany(companyId, {

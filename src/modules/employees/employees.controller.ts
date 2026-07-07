@@ -989,6 +989,7 @@ export const createEmployee = asyncHandler(async (req: Request, res: Response) =
   if (body.personal_email && typeof body.personal_email === 'string') {
     sendWelcomeEmailAutomation(
       companyId,
+      employee.id,
       body.personal_email,
       { name: body.name, surname: body.surname, email: body.email },
       tempPassword
