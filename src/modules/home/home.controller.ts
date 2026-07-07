@@ -608,8 +608,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         upcomingWeekCheck,
         activeEmpRes,
         presentEmpRes,
-        weeklyHoursRes,
-        overtimeRes,
+        ongoingOnboardingRes,
+        pendingLeaveRequestsRes,
         nextShiftRow
       ] = await Promise.all([
         queryOne(
@@ -671,32 +671,20 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
            WHERE store_id = $1 AND event_type = 'checkin' AND event_time::date = CURRENT_DATE`,
           [storeId]
         ),
-        // Total Weekly Hours (sum of contractual weekly_hours)
+        // Ongoing Onboarding Tasks Count (not completed)
         queryOne<{ total: string }>(
-          `SELECT COALESCE(SUM(weekly_hours), 0)::text AS total
-           FROM users
-           WHERE store_id = $1 AND role = 'employee' AND status = 'active'`,
-          [storeId]
+          `SELECT COUNT(t.id)::text AS total 
+           FROM employee_onboarding_tasks t
+           JOIN users u ON u.id = t.employee_id
+           WHERE u.store_id = $1 AND u.company_id = $2 AND u.status = 'active' AND t.completed = FALSE`,
+          [storeId, companyId]
         ),
-        // Total Overtime (this week)
+        // Pending Leave Requests Count (store manager approval stage)
         queryOne<{ total: string }>(
-          `SELECT COALESCE(SUM(EXTRACT(EPOCH FROM (ae.event_time - (s.date + s.end_time))) / 3600.0), 0)::text AS total
-           FROM shifts s
-           JOIN LATERAL (
-             SELECT event_time 
-             FROM attendance_events 
-             WHERE user_id = s.user_id 
-               AND event_type = 'checkout' 
-               AND event_time::date = s.date
-             ORDER BY event_time DESC 
-             LIMIT 1
-           ) ae ON TRUE
-           WHERE s.store_id = $1 
-             AND s.status != 'cancelled'
-             AND s.date >= DATE_TRUNC('week', CURRENT_DATE)
-             AND s.date < DATE_TRUNC('week', CURRENT_DATE) + INTERVAL '7 days'
-             AND ae.event_time > (s.date + s.end_time)`,
-          [storeId]
+          `SELECT COUNT(*)::text AS total
+           FROM leave_requests lr
+           WHERE lr.store_id = $1 AND lr.company_id = $2 AND lr.current_approver_role = 'store_manager'`,
+          [storeId, companyId]
         ),
         // Manager's own next shift
         queryOne(
@@ -716,8 +704,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
 
       const activeCount = parseInt(activeEmpRes?.c ?? '0', 10);
       const presentCount = parseInt(presentEmpRes?.c ?? '0', 10);
-      const weeklyHours = Math.round(parseFloat(weeklyHoursRes?.total ?? '0'));
-      const overtimeHours = Math.round(parseFloat(overtimeRes?.total ?? '0'));
+      const ongoingOnboarding = parseInt(ongoingOnboardingRes?.total ?? '0', 10);
+      const pendingLeaveRequests = parseInt(pendingLeaveRequestsRes?.total ?? '0', 10);
 
       // ── Anomalies calculation (mirrors attendance.controller.ts) ──────────
       // 1. Fetch finished shifts for today
@@ -872,8 +860,8 @@ export const getHomeData = asyncHandler(async (req: Request, res: Response) => {
         stats: {
           activeEmployees: activeCount,
           presentEmployees: presentCount,
-          weeklyHours: weeklyHours,
-          overtime: overtimeHours
+          ongoingOnboarding: ongoingOnboarding,
+          pendingLeaveRequests: pendingLeaveRequests
         }
       });
       break;
