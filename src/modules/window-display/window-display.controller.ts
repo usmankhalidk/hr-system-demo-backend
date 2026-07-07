@@ -1,6 +1,6 @@
 // src/modules/window-display/window-display.controller.ts
 import { Request, Response } from 'express';
-import { query, queryOne } from '../../config/database';
+import { pool, query, queryOne } from '../../config/database';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, notFound, conflict } from '../../utils/response';
 import { CUSTOM_ACTIVITY_TYPE, WindowDisplayActivityType } from './activity-types';
@@ -147,19 +147,23 @@ export const getWindowDisplay = asyncHandler(async (req: Request, res: Response)
   const storeId = parseInt(String(rawStoreId), 10);
   if (isNaN(storeId)) return badRequest(res, 'store_id must be a number');
 
-  const row = companyId == null
-    ? await queryOne<WindowDisplayActivity>(
+  // A store can now hold multiple activities in a month (one per date), so this
+  // returns the full list for the store instead of a single row.
+  const rows = companyId == null
+    ? await query<WindowDisplayActivity>(
       `${WINDOW_DISPLAY_SELECT}
-       WHERE wda.store_id = $1 AND wda.year_month = $2`,
+       WHERE wda.store_id = $1 AND wda.year_month = $2
+       ORDER BY wda.start_date ASC`,
       [storeId, month],
     )
-    : await queryOne<WindowDisplayActivity>(
+    : await query<WindowDisplayActivity>(
       `${WINDOW_DISPLAY_SELECT}
-       WHERE wda.company_id = $1 AND wda.store_id = $2 AND wda.year_month = $3`,
+       WHERE wda.company_id = $1 AND wda.store_id = $2 AND wda.year_month = $3
+       ORDER BY wda.start_date ASC`,
       [companyId, storeId, month],
     );
 
-  return ok(res, row ?? null);
+  return ok(res, rows);
 });
 
 export const createWindowDisplay = asyncHandler(async (req: Request, res: Response) => {
@@ -173,6 +177,7 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     date, // Deprecated: use start_date/end_date
     start_date,
     end_date,
+    dates, // New: one activity per date (multi-date create)
     activity_type,
     activity_icon,
     custom_activity_name,
@@ -183,6 +188,7 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     date?: string; // Deprecated
     start_date?: string;
     end_date?: string;
+    dates?: string[];
     activity_type?: WindowDisplayActivityType;
     activity_icon?: string | null;
     custom_activity_name?: string | null;
@@ -190,19 +196,6 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     notes?: string | null;
   };
 
-  // Support both old (date) and new (start_date/end_date) formats
-  const activityStartDate = start_date || date;
-  const activityEndDate = end_date || date;
-
-  if (!activityStartDate || !activityEndDate) {
-    return badRequest(res, 'start_date and end_date are required');
-  }
-
-  if (activityEndDate < activityStartDate) {
-    return badRequest(res, 'end_date must be greater than or equal to start_date');
-  }
-
-  const yearMonth = activityStartDate.slice(0, 7);
   const normalizedNotes = normalizeNotes(notes);
   const nextActivityType = activity_type ?? 'window_display';
   const normalizedActivityIcon = normalizeActivityIcon(activity_icon);
@@ -229,23 +222,84 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
 
   const targetCompanyId = store.company_id;
 
+  const customName = nextActivityType === CUSTOM_ACTIVITY_TYPE ? normalizedCustomActivityName : null;
+  const INSERT_SQL = `INSERT INTO window_display_activities
+       (company_id, store_id, date, start_date, end_date, year_month, flagged_by, activity_type, activity_icon, custom_activity_name, duration_hours, notes)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`;
+  const rowValues = (theDate: string) => [
+    targetCompanyId,
+    store_id,
+    theDate,
+    theDate,
+    theDate,
+    theDate.slice(0, 7),
+    userId,
+    nextActivityType,
+    normalizedActivityIcon,
+    customName,
+    duration_hours ?? null,
+    normalizedNotes,
+  ];
+
+  // ---- New multi-date path: create one single-day activity per selected date ----
+  // Dates that already have an activity are skipped (not an error) and reported back.
+  if (Array.isArray(dates) && dates.length > 0) {
+    const uniqueDates = Array.from(new Set(dates)).sort();
+    const client = await pool.connect();
+    const createdIds: number[] = [];
+    const skipped: string[] = [];
+    try {
+      await client.query('BEGIN');
+      for (const theDate of uniqueDates) {
+        const result = await client.query<{ id: number }>(
+          `${INSERT_SQL} ON CONFLICT (store_id, start_date) DO NOTHING RETURNING id`,
+          rowValues(theDate),
+        );
+        if (result.rows[0]?.id) createdIds.push(result.rows[0].id);
+        else skipped.push(theDate);
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const createdRows: WindowDisplayActivity[] = [];
+    for (const id of createdIds) {
+      const row = await findWindowDisplayById(targetCompanyId, id);
+      if (row) createdRows.push(row);
+    }
+    return created(res, { created: createdRows, skipped });
+  }
+
+  // ---- Legacy single-date path (back-compat with date / start_date+end_date) ----
+  const activityStartDate = start_date || date;
+  const activityEndDate = end_date || date;
+
+  if (!activityStartDate || !activityEndDate) {
+    return badRequest(res, 'start_date and end_date are required');
+  }
+
+  if (activityEndDate < activityStartDate) {
+    return badRequest(res, 'end_date must be greater than or equal to start_date');
+  }
+
   try {
     const inserted = await queryOne<{ id: number }>(
-      `INSERT INTO window_display_activities
-         (company_id, store_id, date, start_date, end_date, year_month, flagged_by, activity_type, activity_icon, custom_activity_name, duration_hours, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-       RETURNING id`,
+      `${INSERT_SQL} RETURNING id`,
       [
         targetCompanyId,
         store_id,
         activityStartDate, // Keep date for backward compatibility
         activityStartDate,
         activityEndDate,
-        yearMonth,
+        activityStartDate.slice(0, 7),
         userId,
         nextActivityType,
         normalizedActivityIcon,
-        nextActivityType === CUSTOM_ACTIVITY_TYPE ? normalizedCustomActivityName : null,
+        customName,
         duration_hours ?? null,
         normalizedNotes,
       ],
@@ -255,7 +309,7 @@ export const createWindowDisplay = asyncHandler(async (req: Request, res: Respon
     return created(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'A window display activity with overlapping dates already exists for this store. Please adjust the date range.', 'WINDOW_DISPLAY_ALREADY_SET');
+      return conflict(res, 'An activity already exists on this date for this store. Please pick another date.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }
@@ -381,7 +435,7 @@ export const updateWindowDisplay = asyncHandler(async (req: Request, res: Respon
     return ok(res, row!);
   } catch (err: unknown) {
     if ((err as { code?: string }).code === '23505') {
-      return conflict(res, 'Another window display activity with overlapping dates already exists. Please adjust the date range.', 'WINDOW_DISPLAY_ALREADY_SET');
+      return conflict(res, 'Another activity already exists on this date for this store. Please pick another date.', 'WINDOW_DISPLAY_ALREADY_SET');
     }
     throw err;
   }

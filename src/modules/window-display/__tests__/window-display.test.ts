@@ -93,13 +93,14 @@ describe('GET /api/window-display', () => {
     expect(res.status).toBe(400);
   });
 
-  it('returns null when no activity exists for the month', async () => {
+  it('returns an empty array when no activity exists for the store/month', async () => {
     const res = await request
       .get('/api/window-display')
       .query({ store_id: seeds.romaStoreId, month: '2026-04' })
       .set('Authorization', `Bearer ${adminToken}`);
     expect(res.status).toBe(200);
-    expect(res.body.data).toBeNull();
+    expect(Array.isArray(res.body.data)).toBe(true);
+    expect(res.body.data.length).toBe(0);
   });
 });
 
@@ -153,12 +154,27 @@ describe('POST /api/window-display', () => {
     expect(res.body.data[0].store_name).toBeDefined();
   });
 
-  it('returns 409 when trying to create a second activity for the same month', async () => {
+  it('allows a second activity in the same month on a different date', async () => {
     const res = await request
       .post('/api/window-display')
       .set('Authorization', `Bearer ${areaToken}`)
       .send({ store_id: seeds.romaStoreId, date: '2026-04-20' });
+    expect(res.status).toBe(201);
+    expect(res.body.data.date).toBe('2026-04-20');
+
+    // Clean up so later store/month assertions stay deterministic.
+    await request
+      .delete(`/api/window-display/${res.body.data.id}`)
+      .set('Authorization', `Bearer ${areaToken}`);
+  });
+
+  it('returns 409 when creating a second activity on the same date for a store', async () => {
+    const res = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${areaToken}`)
+      .send({ store_id: seeds.romaStoreId, date: '2026-04-15' });
     expect(res.status).toBe(409);
+    expect(res.body.code).toBe('WINDOW_DISPLAY_ALREADY_SET');
   });
 
   it('returns 400 when custom_activity_name is missing for custom_activity', async () => {
@@ -238,6 +254,27 @@ describe('POST /api/window-display', () => {
     expect(res.body.data.custom_activity_name).toBe('VIP private fitting');
     expect(res.body.data.activity_icon).toBe('🧵');
   });
+
+  it('creates one activity per date via the dates[] batch and reports skipped duplicates', async () => {
+    const first = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ store_id: seeds.romaStoreId, dates: ['2026-06-01', '2026-06-02', '2026-06-03'], activity_type: 'store_cleaning' });
+    expect(first.status).toBe(201);
+    expect(Array.isArray(first.body.data.created)).toBe(true);
+    expect(first.body.data.created.length).toBe(3);
+    expect(first.body.data.skipped).toEqual([]);
+
+    // Re-submitting overlapping dates skips the taken ones and creates only the new date.
+    const second = await request
+      .post('/api/window-display')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ store_id: seeds.romaStoreId, dates: ['2026-06-02', '2026-06-04'], activity_type: 'store_cleaning' });
+    expect(second.status).toBe(201);
+    expect(second.body.data.created.length).toBe(1);
+    expect(second.body.data.created[0].date).toBe('2026-06-04');
+    expect(second.body.data.skipped).toEqual(['2026-06-02']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -298,6 +335,7 @@ describe('DELETE /api/window-display/:id', () => {
       .get('/api/window-display')
       .query({ store_id: seeds.romaStoreId, month: '2026-04' })
       .set('Authorization', `Bearer ${areaToken}`);
-    expect(getAfter.body.data).toBeNull();
+    expect(Array.isArray(getAfter.body.data)).toBe(true);
+    expect(getAfter.body.data.length).toBe(0);
   });
 });
