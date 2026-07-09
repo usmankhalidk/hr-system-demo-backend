@@ -251,4 +251,44 @@ describe('jobFeedHandler — Indeed feed compliance', () => {
     expect(stateMatch).toBeTruthy();
     expect(stateMatch[1]).toMatch(/^[A-Za-z]/);
   });
+
+  const feedSalary = async (job: any): Promise<string | null> => {
+    jest.clearAllMocks();
+    mockGetPublishedJobsForFeed.mockResolvedValue({ company: mockCompany, jobs: [job] });
+    await jobFeedHandler(req as Request, res as Response);
+    const xml = sendMock.mock.calls[0][0];
+    const match = xml.match(/<salary><!\[CDATA\[(.*?)\]\]><\/salary>/);
+    return match ? match[1] : null;
+  };
+
+  it('emits <salary> with the period actually selected on the job', async () => {
+    // Regression: every period used to be emitted as "per anno", so Indeed
+    // published monthly salaries as annual ones.
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'monthly' }))).toBe('€1800 - €2400 al mese');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'yearly', salaryMin: 30000, salaryMax: 45000 })))
+      .toBe('€30.000 - €45.000 per anno');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'hourly', salaryMin: 12, salaryMax: 15 })))
+      .toBe("€12 - €15 all'ora");
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'weekly', salaryMin: 600, salaryMax: 800 })))
+      .toBe('€600 - €800 a settimana');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'daily', salaryMin: 120, salaryMax: null })))
+      .toBe('€120 al giorno');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'annually', salaryMin: 30000, salaryMax: null })))
+      .toBe('€30.000 per anno');
+  });
+
+  it('accepts legacy Italian salary period values stored in the database', async () => {
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'al mese' }))).toBe('€1800 - €2400 al mese');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'per anno' }))).toBe('€1800 - €2400 per anno');
+    expect(await feedSalary(createMockJob({ salaryPeriod: "all'ora" }))).toBe("€1800 - €2400 all'ora");
+  });
+
+  it('never claims a period when none is set', async () => {
+    expect(await feedSalary(createMockJob({ salaryPeriod: null }))).toBe('€1800 - €2400');
+    expect(await feedSalary(createMockJob({ salaryPeriod: 'not-a-period' }))).toBe('€1800 - €2400');
+  });
+
+  it('omits <salary> entirely when no amount is set', async () => {
+    expect(await feedSalary(createMockJob({ salaryMin: null, salaryMax: null }))).toBeNull();
+  });
 });

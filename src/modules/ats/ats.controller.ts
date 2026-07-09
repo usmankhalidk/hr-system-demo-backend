@@ -6,6 +6,7 @@ import sanitizeHtml from 'sanitize-html';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { asyncHandler } from '../../utils/asyncHandler';
 import { ok, created, badRequest, forbidden, notFound } from '../../utils/response';
+import { buildSalaryText, canonicalizeSalaryPeriod } from '../../utils/salaryPeriod';
 import { sendEmailForCompany } from '../../services/email.service';
 import { query, queryOne } from '../../config/database';
 import {
@@ -377,9 +378,8 @@ export const createJobHandler = asyncHandler(async (req: Request, res: Response)
       badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
       return;
     }
-    const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
-    const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
-    if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+    const normalizedSalaryPeriod = canonicalizeSalaryPeriod(salary_period);
+    if (!normalizedSalaryPeriod) {
       badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
       return;
     }
@@ -612,9 +612,8 @@ export const updateJobHandler = asyncHandler(async (req: Request, res: Response)
     if (salary_period === null || String(salary_period).trim() === '') {
       parsedSalaryPeriod = null;
     } else if (typeof salary_period === 'string') {
-      const normalizedSalaryPeriod = salary_period.trim().toLowerCase();
-      const allowedSalaryPeriods = new Set(['hourly', 'daily', 'weekly', 'monthly', 'yearly', 'annually']);
-      if (!allowedSalaryPeriods.has(normalizedSalaryPeriod)) {
+      const normalizedSalaryPeriod = canonicalizeSalaryPeriod(salary_period);
+      if (!normalizedSalaryPeriod) {
         badRequest(res, 'Periodo salario non valido', 'VALIDATION_ERROR');
         return;
       }
@@ -1749,42 +1748,6 @@ function normalizeLanguage(value: string): 'it' | 'en' | 'it,en' {
   if (normalized === 'en') return 'en';
   if (normalized === 'both' || normalized === 'it,en') return 'it,en';
   return 'it';
-}
-
-function normalizeSalaryPeriod(value: string | null): 'per anno' | 'al mese' | "all'ora" | 'a settimana' | null {
-  if (!value) return null;
-  const normalized = value.trim().toLowerCase().replace(/’/g, "'");
-  if (normalized === 'per anno') return 'per anno';
-  if (normalized === 'al mese') return 'al mese';
-  if (normalized === "all'ora") return "all'ora";
-  if (normalized === 'a settimana') return 'a settimana';
-  return null;
-}
-
-function formatItalianAmount(value: number): string {
-  return new Intl.NumberFormat('it-IT', {
-    minimumFractionDigits: 0,
-    maximumFractionDigits: 0,
-  }).format(Math.round(value));
-}
-
-function buildSalaryText(min: number | null, max: number | null, periodRaw: string | null): string | null {
-  if (min === null && max === null) return null;
-
-  const period = normalizeSalaryPeriod(periodRaw) ?? 'per anno';
-  const minText = min !== null ? `€${formatItalianAmount(min)}` : null;
-  const maxText = max !== null ? `€${formatItalianAmount(max)}` : null;
-
-  if (minText && maxText) {
-    return `${minText} - ${maxText} ${period}`;
-  }
-  if (minText) {
-    return `${minText} ${period}`;
-  }
-  if (maxText) {
-    return `${maxText} ${period}`;
-  }
-  return null;
 }
 
 function normalizeCountryCode(value: string): string {

@@ -4,8 +4,9 @@ import {
   getPublicJobById, 
   getPublicCompanyBySlug,
   getPublicCompanyById,
-  mapPublicJob 
+  mapPublicJob
 } from '../modules/publicCareers/publicCareers.routes';
+import { salaryPeriodItalianLabel } from '../utils/salaryPeriod';
 
 // In-memory cache for rendered HTML pages
 interface CacheEntry {
@@ -457,7 +458,9 @@ export const ssrRendererMiddleware = async (req: Request, res: Response, next: N
       let salaryHtml = '';
       if (job.salary_min != null) {
         const maxPart = job.salary_max != null ? `–${job.salary_max}` : '';
-        const periodPart = job.salary_period ? ` ${job.salary_period}` : '';
+        // Render the Italian period label rather than the raw stored token.
+        const periodLabel = salaryPeriodItalianLabel(job.salary_period);
+        const periodPart = periodLabel ? ` ${periodLabel}` : '';
         salaryHtml = `<p>Stipendio: ${job.salary_min}${maxPart}${periodPart}</p>`;
       }
 
