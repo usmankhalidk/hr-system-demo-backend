@@ -1,10 +1,26 @@
 import { Request, Response } from 'express';
 import { query, queryOne } from '../../config/database';
-import { ok, notFound, badRequest } from '../../utils/response';
+import { ok, notFound, badRequest, forbidden } from '../../utils/response';
 import { asyncHandler } from '../../utils/asyncHandler';
-import { generateAndSendWeeklyReport, generateAndSendMonthlyAdminReport } from './reports-generation.service';
+import { generateReport } from './reports-generation.service';
 import { getLastScheduledRunDate } from './reports-schedule';
-import { readGeneratedReportPdf } from './reports-storage.service';
+import { readGeneratedReportPdf, deleteGeneratedReportPdf } from './reports-storage.service';
+import { resolveThresholds } from './reports-thresholds';
+import { previousPeriod, snapshotPeriod, completionRate } from './reports-metrics.service';
+import {
+  getReportDefinition,
+  reportsForRole,
+  canRoleAccessReport,
+  REPORT_DEFINITIONS,
+  OwnerRole,
+} from './reports-registry';
+
+/** Reports an HR user must never see, regardless of what the frontend renders. */
+const ADMIN_ONLY_REPORT_IDS = new Set(
+  REPORT_DEFINITIONS.filter(d => d.ownerRole === 'admin').map(d => d.id),
+);
+
+const canAccessReport = canRoleAccessReport;
 
 interface ReportConfigRow {
   id: number;
@@ -16,6 +32,50 @@ interface ReportConfigRow {
   status: string;
   run_count: number;
   last_generated: string | null;
+  period: string;
+  custom_start: string | null;
+  custom_end: string | null;
+  thresholds: Record<string, number> | string;
+  max_pages: number;
+  max_rows_per_section: number;
+  retention_count: number;
+  owner_user_id: number | null;
+  store_id: number | null;
+}
+
+const CONFIG_COLUMNS = `id, report_id, day, time, recipients, sections, status, run_count, last_generated,
+                        period, custom_start, custom_end, thresholds, max_pages, max_rows_per_section, retention_count,
+                        owner_user_id, store_id`;
+
+function parseJsonColumn<T>(value: T | string, fallback: T): T {
+  if (typeof value !== 'string') return value ?? fallback;
+  try {
+    return JSON.parse(value) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function mapConfigRow(r: ReportConfigRow) {
+  return {
+    reportId: r.report_id,
+    day: r.day,
+    time: r.time,
+    recipients: parseJsonColumn<string[]>(r.recipients, []),
+    sections: parseJsonColumn<string[]>(r.sections, []),
+    status: r.status,
+    runCount: r.run_count,
+    lastGenerated: r.last_generated,
+    period: r.period,
+    customStart: r.custom_start,
+    customEnd: r.custom_end,
+    thresholds: parseJsonColumn<Record<string, number>>(r.thresholds, {}),
+    maxPages: r.max_pages,
+    maxRowsPerSection: r.max_rows_per_section,
+    retentionCount: r.retention_count,
+    ownerUserId: r.owner_user_id,
+    storeId: r.store_id,
+  };
 }
 
 function getClampedMonthDay(year: number, monthIndex: number, targetDay: number): number {
@@ -76,42 +136,12 @@ export const getReportConfigurations = asyncHandler(async (req: Request, res: Re
   }
 
   const rows = await query<ReportConfigRow>(
-    `SELECT id, report_id, day, time, recipients, sections, status, run_count, last_generated 
-     FROM report_configurations 
-     WHERE company_id = $1`,
+    `SELECT ${CONFIG_COLUMNS} FROM report_configurations WHERE company_id = $1`,
     [targetCompanyId],
   );
 
-  // Map database response to match the expected frontend schema
-  const configs = rows.map(r => {
-    let parsedRecipients: string[] = [];
-    let parsedSections: string[] = [];
-
-    try {
-      parsedRecipients = typeof r.recipients === 'string' ? JSON.parse(r.recipients) : r.recipients;
-    } catch {
-      parsedRecipients = [];
-    }
-
-    try {
-      parsedSections = typeof r.sections === 'string' ? JSON.parse(r.sections) : r.sections;
-    } catch {
-      parsedSections = [];
-    }
-
-    return {
-      reportId: r.report_id,
-      day: r.day,
-      time: r.time,
-      recipients: parsedRecipients,
-      sections: parsedSections,
-      status: r.status,
-      runCount: r.run_count,
-      lastGenerated: r.last_generated
-    };
-  });
-
-  ok(res, configs);
+  const visible = rows.filter(r => canAccessReport(req.user?.role, r.report_id));
+  ok(res, visible.map(mapConfigRow));
 });
 
 // PUT /api/reports/configurations/:reportId
@@ -125,28 +155,57 @@ export const saveReportConfiguration = asyncHandler(async (req: Request, res: Re
   }
 
   const { reportId } = req.params;
-  const { day, time, recipients, sections, status } = req.body;
+  const { day, time, recipients, sections, status, thresholds, maxPages, maxRowsPerSection, retentionCount } = req.body;
+  const ownerUserId = req.body.ownerUserId ?? null;
+  const storeId = req.body.storeId ?? null;
+
+  if (!canAccessReport(req.user?.role, reportId)) {
+    forbidden(res, 'Non hai i permessi per questo report.');
+    return;
+  }
+
+  // An HR user may only edit their own schedules.
+  if (req.user?.role === 'hr' && ownerUserId !== null && ownerUserId !== req.user.userId) {
+    forbidden(res, 'Non hai i permessi per modificare questo report.');
+    return;
+  }
 
   const result = await queryOne<ReportConfigRow>(
-    `INSERT INTO report_configurations (company_id, report_id, day, time, recipients, sections, status, updated_at)
-     VALUES ($1, $2, COALESCE($3, 1), COALESCE($4, '07:00'), COALESCE($5::jsonb, '[]'::jsonb), COALESCE($6::jsonb, '[]'::jsonb), COALESCE($7, 'attivo'), CURRENT_TIMESTAMP)
-     ON CONFLICT (company_id, report_id)
-     DO UPDATE SET 
-       day = COALESCE($3, report_configurations.day), 
-       time = COALESCE($4, report_configurations.time), 
-       recipients = COALESCE($5::jsonb, report_configurations.recipients), 
-       sections = COALESCE($6::jsonb, report_configurations.sections), 
-       status = COALESCE($7, report_configurations.status),
+    `INSERT INTO report_configurations
+       (company_id, report_id, owner_user_id, store_id, day, time, recipients, sections, status,
+        thresholds, max_pages, max_rows_per_section, retention_count, updated_at)
+     VALUES ($1, $2, $3, $4, COALESCE($5, 1), COALESCE($6, '07:00'),
+             COALESCE($7::jsonb, '[]'::jsonb), COALESCE($8::jsonb, '[]'::jsonb), COALESCE($9, 'attivo'),
+             COALESCE($10::jsonb, '{}'::jsonb), COALESCE($11, 12), COALESCE($12, 20), COALESCE($13, 24),
+             CURRENT_TIMESTAMP)
+     ON CONFLICT (company_id, report_id, COALESCE(owner_user_id, 0))
+     DO UPDATE SET
+       store_id = COALESCE($4, report_configurations.store_id),
+       day = COALESCE($5, report_configurations.day),
+       time = COALESCE($6, report_configurations.time),
+       recipients = COALESCE($7::jsonb, report_configurations.recipients),
+       sections = COALESCE($8::jsonb, report_configurations.sections),
+       status = COALESCE($9, report_configurations.status),
+       thresholds = COALESCE($10::jsonb, report_configurations.thresholds),
+       max_pages = COALESCE($11, report_configurations.max_pages),
+       max_rows_per_section = COALESCE($12, report_configurations.max_rows_per_section),
+       retention_count = COALESCE($13, report_configurations.retention_count),
        updated_at = CURRENT_TIMESTAMP
-     RETURNING id, report_id, day, time, recipients, sections, status, run_count, last_generated`,
+     RETURNING ${CONFIG_COLUMNS}`,
     [
       targetCompanyId,
       reportId,
+      ownerUserId,
+      storeId,
       day !== undefined ? day : null,
       time || null,
       recipients ? JSON.stringify(recipients) : null,
       sections ? JSON.stringify(sections) : null,
-      status || null
+      status || null,
+      thresholds ? JSON.stringify(thresholds) : null,
+      maxPages ?? null,
+      maxRowsPerSection ?? null,
+      retentionCount ?? null,
     ],
   );
 
@@ -155,31 +214,7 @@ export const saveReportConfiguration = asyncHandler(async (req: Request, res: Re
     return;
   }
 
-  let parsedRecipients: string[] = [];
-  let parsedSections: string[] = [];
-
-  try {
-    parsedRecipients = typeof result.recipients === 'string' ? JSON.parse(result.recipients) : result.recipients;
-  } catch {
-    parsedRecipients = [];
-  }
-
-  try {
-    parsedSections = typeof result.sections === 'string' ? JSON.parse(result.sections) : result.sections;
-  } catch {
-    parsedSections = [];
-  }
-
-  ok(res, {
-    reportId: result.report_id,
-    day: result.day,
-    time: result.time,
-    recipients: parsedRecipients,
-    sections: parsedSections,
-    status: result.status,
-    runCount: result.run_count,
-    lastGenerated: result.last_generated
-  });
+  ok(res, mapConfigRow(result));
 });
 
 // GET /api/reports/configurations/:reportId/download-last
@@ -194,34 +229,29 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
 
   const { reportId } = req.params;
 
+  if (!canAccessReport(req.user?.role, reportId)) {
+    forbidden(res, 'Non hai i permessi per questo report.');
+    return;
+  }
+
+  const ownerUserId = req.query.owner_user_id ? parseInt(String(req.query.owner_user_id), 10) : null;
+
   let config = await queryOne<any>(
-    `SELECT day, time, sections
+    `SELECT day, time, sections, thresholds, max_pages, max_rows_per_section, store_id
      FROM report_configurations
-     WHERE company_id = $1 AND report_id = $2`,
-    [targetCompanyId, reportId],
+     WHERE company_id = $1 AND report_id = $2
+       AND COALESCE(owner_user_id, 0) = COALESCE($3::int, 0)`,
+    [targetCompanyId, reportId, ownerUserId],
   );
 
   if (!config) {
-    let defaultDay = 1;
-    let defaultTime = '07:00';
-    let defaultSections: string[] = [];
-
-    if (reportId === 'admin_monthly') {
-      defaultSections = ['KPI', 'Employees', 'ATS', 'Onboarding in process', 'Shift coverage', 'Contract deadlines', 'Attendance', 'Anomalies', 'Leave Requests', 'Training deadlines'];
-    } else if (reportId === 'hr_weekly') {
-      defaultSections = ['Riepilogo presenze', 'Anomalie rilevate', 'Turni confermati', 'Richieste ferie', 'Onboarding in corso'];
-    } else if (reportId === 'hr_monthly') {
-      defaultTime = '08:00';
-      defaultSections = ['Variazioni organico', 'Ferie & permessi', 'Scadenze formazioni', 'Scadenze visite mediche', 'Contratti in scadenza'];
-    } else if (reportId === 'anomaly_daily') {
-      defaultTime = '08:00';
-      defaultSections = ['position', 'Received Candidates', 'In Review Candidates', 'Phone Interview Candidates', 'In-person Interview Candidates', 'Hired Candidates', 'Rejected Candidates'];
-    }
-
+    // Fall back to the registry rather than a hand-maintained switch statement.
+    const definition = getReportDefinition(reportId);
     config = {
-      day: defaultDay,
-      time: defaultTime,
-      sections: defaultSections
+      day: definition?.defaultDay ?? 1,
+      time: definition?.defaultTime ?? '07:00',
+      sections: definition?.defaultSections ?? [],
+      store_id: null,
     };
   }
 
@@ -237,24 +267,15 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
   const targetTimeStr = config.time || '07:00';
   const lastScheduledDate = getLastScheduledRunDate(reportId, targetDay, targetTimeStr, now);
 
-  const pdfBuffer = reportId === 'admin_monthly'
-    ? await generateAndSendMonthlyAdminReport(
-        targetCompanyId,
-        {
-          recipients: [], // Empty to skip email delivery
-          sections: parsedSections,
-        },
-        lastScheduledDate,
-      )
-    : await generateAndSendWeeklyReport(
-        targetCompanyId,
-        {
-          recipients: [], // Empty to skip email delivery
-          sections: parsedSections,
-          reportId: reportId,
-        },
-        lastScheduledDate,
-      );
+  const pdfBuffer = await generateReport(targetCompanyId, {
+    recipients: [], // Empty to skip email delivery
+    sections: parsedSections,
+    reportId,
+    storeId: config.store_id ?? null,
+    thresholds: config.thresholds,
+    maxPages: config.max_pages,
+    maxRowsPerSection: config.max_rows_per_section,
+  }, lastScheduledDate);
 
   if (!pdfBuffer) {
     badRequest(res, 'Impossibile generare il PDF per la data selezionata.');
@@ -268,7 +289,9 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
   res.send(pdfBuffer);
 });
 
-// GET /api/reports/history
+// GET /api/reports/history?limit=&offset=
+// Previously this hardcoded LIMIT 10 with no offset, so the 11th archived report
+// was unreachable rather than paginated. Now it returns a page plus the true total.
 export const getReportHistory = asyncHandler(async (req: Request, res: Response) => {
   const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
   const targetCompanyId = explicit !== undefined ? parseInt(String(explicit), 10) : req.user!.companyId;
@@ -278,16 +301,26 @@ export const getReportHistory = asyncHandler(async (req: Request, res: Response)
     return;
   }
 
-  const rows = await query<{ id: number, report_id: string, generated_at: string, size_bytes: number, sections: any, target_date: string }>(
-    `SELECT id, report_id, generated_at, size_bytes, sections, target_date
+  const parsedLimit = parseInt(String(req.query.limit ?? '8'), 10);
+  const parsedOffset = parseInt(String(req.query.offset ?? '0'), 10);
+  const limit = Number.isFinite(parsedLimit) ? Math.min(Math.max(parsedLimit, 1), 50) : 8;
+  const offset = Number.isFinite(parsedOffset) ? Math.max(parsedOffset, 0) : 0;
+
+  // Enforce the admin-only filter in SQL rather than trusting the client to hide rows.
+  const hiddenReportIds = req.user?.role === 'hr' ? Array.from(ADMIN_ONLY_REPORT_IDS) : [];
+
+  const rows = await query<{ id: number, report_id: string, generated_at: string, size_bytes: number, sections: any, target_date: string, total: string }>(
+    `SELECT id, report_id, generated_at, size_bytes, sections, target_date,
+            COUNT(*) OVER() AS total
      FROM generated_reports
      WHERE company_id = $1
+       AND ($2::text[] = '{}' OR report_id <> ALL($2::text[]))
      ORDER BY generated_at DESC
-     LIMIT 10`,
-    [targetCompanyId]
+     LIMIT $3 OFFSET $4`,
+    [targetCompanyId, hiddenReportIds, limit, offset]
   );
 
-  const mapped = rows.map(r => ({
+  const items = rows.map(r => ({
     id: r.id,
     reportId: r.report_id,
     generatedAt: r.generated_at,
@@ -296,7 +329,210 @@ export const getReportHistory = asyncHandler(async (req: Request, res: Response)
     targetDate: r.target_date
   }));
 
-  ok(res, mapped);
+  // COUNT(*) OVER() only comes back on returned rows; an empty page means zero total.
+  const total = rows.length > 0 ? parseInt(rows[0].total, 10) : 0;
+
+  ok(res, { items, total, limit, offset, hasMore: offset + items.length < total });
+});
+
+// DELETE /api/reports/history/:id
+export const deleteArchivedReport = asyncHandler(async (req: Request, res: Response) => {
+  const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
+  const targetCompanyId = explicit !== undefined ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
+    notFound(res, 'Company not found');
+    return;
+  }
+
+  const { id } = req.params;
+
+  const record = await queryOne<{ report_id: string; storage_path: string | null }>(
+    `SELECT report_id, storage_path FROM generated_reports WHERE id = $1 AND company_id = $2`,
+    [id, targetCompanyId]
+  );
+
+  if (!record) {
+    notFound(res, 'Report non trovato nel registro dell\'archivio.');
+    return;
+  }
+
+  if (!canAccessReport(req.user?.role, record.report_id)) {
+    forbidden(res, 'Non hai i permessi per eliminare questo report.');
+    return;
+  }
+
+  // Unlink first; a failure here must not orphan the row silently.
+  const unlinked = await deleteGeneratedReportPdf(record.storage_path);
+  if (!unlinked) {
+    badRequest(res, 'Impossibile eliminare il file PDF archiviato.');
+    return;
+  }
+
+  await query(`DELETE FROM generated_reports WHERE id = $1 AND company_id = $2`, [id, targetCompanyId]);
+  ok(res, { id: Number(id) });
+});
+
+// DELETE /api/reports/history?olderThanDays=  (bulk purge)
+export const purgeReportHistory = asyncHandler(async (req: Request, res: Response) => {
+  const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
+  const targetCompanyId = explicit !== undefined ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
+    notFound(res, 'Company not found');
+    return;
+  }
+
+  const parsedDays = parseInt(String(req.query.olderThanDays ?? ''), 10);
+  if (!Number.isFinite(parsedDays) || parsedDays < 1) {
+    badRequest(res, 'olderThanDays deve essere un numero maggiore di zero.');
+    return;
+  }
+
+  const hiddenReportIds = req.user?.role === 'hr' ? Array.from(ADMIN_ONLY_REPORT_IDS) : [];
+
+  const doomed = await query<{ id: number; storage_path: string | null }>(
+    `SELECT id, storage_path FROM generated_reports
+      WHERE company_id = $1
+        AND generated_at < NOW() - ($2::int * INTERVAL '1 day')
+        AND ($3::text[] = '{}' OR report_id <> ALL($3::text[]))`,
+    [targetCompanyId, parsedDays, hiddenReportIds]
+  );
+
+  let deleted = 0;
+  for (const row of doomed) {
+    if (!(await deleteGeneratedReportPdf(row.storage_path))) continue;
+    await query(`DELETE FROM generated_reports WHERE id = $1`, [row.id]);
+    deleted += 1;
+  }
+
+  ok(res, { deleted, considered: doomed.length });
+});
+
+// GET /api/reports/configurations/:reportId/preview
+// Powers the live structure preview in the Configure modal: what the PDF will
+// contain, how many rows each section would hold, and the resulting page estimate.
+export const previewReportStructure = asyncHandler(async (req: Request, res: Response) => {
+  const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
+  const targetCompanyId = explicit !== undefined ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
+    notFound(res, 'Company not found');
+    return;
+  }
+
+  const { reportId } = req.params;
+
+  if (!canAccessReport(req.user?.role, reportId)) {
+    forbidden(res, 'Non hai i permessi per questo report.');
+    return;
+  }
+
+  const ownerUserId = req.query.owner_user_id ? parseInt(String(req.query.owner_user_id), 10) : null;
+
+  const config = await queryOne<{ thresholds: any; max_rows_per_section: number; store_id: number | null }>(
+    `SELECT thresholds, max_rows_per_section, store_id
+       FROM report_configurations
+      WHERE company_id = $1 AND report_id = $2
+        AND COALESCE(owner_user_id, 0) = COALESCE($3::int, 0)`,
+    [targetCompanyId, reportId, ownerUserId]
+  );
+
+  const thresholds = resolveThresholds(config?.thresholds);
+  const maxRows = config?.max_rows_per_section ?? 20;
+
+  // Sample the exact window the report covers, so the numbers are real.
+  const definition = getReportDefinition(reportId);
+  const now = new Date();
+  const end = new Date(now);
+  end.setDate(now.getDate() - 1);
+  const start = new Date(now);
+  start.setDate(now.getDate() - (definition?.windowDays ?? 7));
+
+  const scope = { companyId: targetCompanyId, storeId: config?.store_id ?? null };
+  const period = { start, end };
+
+  const [current, prior] = await Promise.all([
+    snapshotPeriod(scope, period, thresholds),
+    snapshotPeriod(scope, previousPeriod(period), thresholds),
+  ]);
+
+  const completion = completionRate(current);
+
+  ok(res, {
+    reportId,
+    periodStart: start.toISOString().slice(0, 10),
+    periodEnd: end.toISOString().slice(0, 10),
+    maxRowsPerSection: maxRows,
+    // The headline numbers the report will lead with, so the modal can show the
+    // user what this report is actually going to tell them.
+    highlights: {
+      scheduledShifts: current.scheduledShifts,
+      completedShifts: current.completedShifts,
+      completionRate: Number(completion.toFixed(1)),
+      anomalies: current.anomalies,
+      previousAnomalies: prior.anomalies,
+      pendingLeave: current.pendingLeave,
+      headcount: current.headcount,
+    },
+  });
+});
+
+// GET /api/reports/owners
+// One row per report owner: the company Admin, then each HR user with their store.
+// Drives the grouped dashboard layout.
+export const getReportOwners = asyncHandler(async (req: Request, res: Response) => {
+  const explicit = req.body?.company_id ?? req.query?.company_id ?? req.params?.company_id;
+  const targetCompanyId = explicit !== undefined ? parseInt(String(explicit), 10) : req.user!.companyId;
+
+  if (!targetCompanyId) {
+    notFound(res, 'Company not found');
+    return;
+  }
+
+  const company = await queryOne<{ name: string }>('SELECT name FROM companies WHERE id = $1', [targetCompanyId]);
+
+  const users = await query<{
+    id: number; name: string; surname: string; role: string;
+    avatar_filename: string | null; store_id: number | null; store_name: string | null;
+  }>(
+    `SELECT u.id, u.name, u.surname, u.role, u.avatar_filename,
+            u.store_id, st.name AS store_name
+       FROM users u
+       LEFT JOIN stores st ON st.id = u.store_id
+      WHERE u.company_id = $1
+        AND u.role IN ('admin', 'hr')
+        AND u.status = 'active'
+      ORDER BY (u.role = 'admin') DESC, st.name NULLS FIRST, u.surname, u.name`,
+    [targetCompanyId]
+  );
+
+  // An HR user only ever sees their own row.
+  const visible = req.user?.role === 'hr'
+    ? users.filter(u => u.role === 'hr' && u.id === req.user!.userId)
+    : users;
+
+  const owners = visible.map(u => {
+    const role = u.role as OwnerRole;
+    return {
+      userId: u.id,
+      name: `${u.name} ${u.surname ?? ''}`.trim(),
+      role,
+      avatarFilename: u.avatar_filename,
+      storeId: u.store_id,
+      // The Admin is scoped to the company; HR to their store (or all stores if unassigned).
+      scopeLabel: role === 'admin'
+        ? (company?.name ?? 'Azienda')
+        : (u.store_name ?? 'Tutte le sedi'),
+      reports: reportsForRole(role).map(d => ({
+        reportId: d.id,
+        cadence: d.cadence,
+        defaultStatus: d.defaultStatus,
+      })),
+    };
+  });
+
+  ok(res, owners);
 });
 
 // GET /api/reports/history/:id/download
@@ -311,8 +547,8 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
 
   const { id } = req.params;
 
-  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string; storage_path: string | null }>(
-    `SELECT company_id, report_id, sections, target_date, storage_path
+  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string; storage_path: string | null; store_id: number | null }>(
+    `SELECT company_id, report_id, sections, target_date, storage_path, store_id
      FROM generated_reports
      WHERE id = $1 AND company_id = $2`,
     [id, targetCompanyId]
@@ -320,6 +556,13 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
 
   if (!record) {
     notFound(res, 'Report non trovato nel registro dell\'archivio.');
+    return;
+  }
+
+  // The frontend hides admin_monthly from HR users, but that is presentation only —
+  // without this check an HR user could fetch the PDF by guessing an archive id.
+  if (!canAccessReport(req.user?.role, record.report_id)) {
+    forbidden(res, 'Non hai i permessi per questo report.');
     return;
   }
 
@@ -343,24 +586,18 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
     parsedSections = [];
   }
 
-  const pdfBuffer = record.report_id === 'admin_monthly'
-    ? await generateAndSendMonthlyAdminReport(
-        record.company_id,
-        {
-          recipients: [], // Empty to skip email delivery
-          sections: parsedSections,
-        },
-        new Date(record.target_date),
-      )
-    : await generateAndSendWeeklyReport(
-        record.company_id,
-        {
-          recipients: [], // Empty to skip email delivery
-          sections: parsedSections,
-          reportId: record.report_id,
-        },
-        new Date(record.target_date),
-      );
+  // Regenerated from the archive row when the stored PDF is missing; the store
+  // scope is carried on the row so the reproduction matches the original.
+  const pdfBuffer = await generateReport(
+    record.company_id,
+    {
+      recipients: [], // Empty to skip email delivery
+      sections: parsedSections,
+      reportId: record.report_id,
+      storeId: record.store_id ?? null,
+    },
+    new Date(record.target_date),
+  );
 
   if (!pdfBuffer) {
     badRequest(res, 'Impossibile rigenerare il PDF dall\'archivio.');
