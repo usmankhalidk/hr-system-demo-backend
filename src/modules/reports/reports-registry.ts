@@ -81,7 +81,7 @@ export const REPORT_DEFINITIONS: ReportDefinition[] = [
     defaultStatus: 'attivo',
     defaultTime: '08:00',
     defaultDay: 1,
-    defaultSections: ['anomalies', 'attendance'],
+    defaultSections: ['ats'],
   },
 ];
 

@@ -155,19 +155,29 @@ export const saveReportConfiguration = asyncHandler(async (req: Request, res: Re
   }
 
   const { reportId } = req.params;
-  const { day, time, recipients, sections, status, thresholds, maxPages, maxRowsPerSection, retentionCount } = req.body;
-  const ownerUserId = req.body.ownerUserId ?? null;
-  const storeId = req.body.storeId ?? null;
+  const { day, time, recipients, sections, status, thresholds } = req.body;
+  const ownerUserId = req.body.owner_user_id ?? req.body.ownerUserId ?? null;
+  const storeId = req.body.store_id ?? req.body.storeId ?? null;
+  const maxPages = req.body.max_pages ?? req.body.maxPages ?? null;
+  const maxRowsPerSection = req.body.max_rows_per_section ?? req.body.maxRowsPerSection ?? null;
+  const retentionCount = req.body.retention_count ?? req.body.retentionCount ?? null;
 
   if (!canAccessReport(req.user?.role, reportId)) {
     forbidden(res, 'Non hai i permessi per questo report.');
     return;
   }
 
-  // An HR user may only edit their own schedules.
-  if (req.user?.role === 'hr' && ownerUserId !== null && ownerUserId !== req.user.userId) {
-    forbidden(res, 'Non hai i permessi per modificare questo report.');
-    return;
+  // An HR user may only edit their own schedules, and cannot set ownerUserId to null or other IDs.
+  if (req.user?.role === 'hr') {
+    if (ownerUserId === null || ownerUserId !== req.user.userId) {
+      forbidden(res, 'Non hai i permessi per modificare questo report.');
+      return;
+    }
+    // Set/verify the store ID matches their token's storeId to prevent config tampering
+    if (storeId !== req.user.storeId) {
+      forbidden(res, 'Non hai i permessi per impostare questo negozio.');
+      return;
+    }
   }
 
   const result = await queryOne<ReportConfigRow>(
@@ -235,6 +245,12 @@ export const downloadLastReport = asyncHandler(async (req: Request, res: Respons
   }
 
   const ownerUserId = req.query.owner_user_id ? parseInt(String(req.query.owner_user_id), 10) : null;
+
+  // Secure owner scope for HR users
+  if (req.user?.role === 'hr' && ownerUserId !== req.user.userId) {
+    forbidden(res, 'Non hai i permessi per questo report.');
+    return;
+  }
 
   let config = await queryOne<any>(
     `SELECT day, time, sections, thresholds, max_pages, max_rows_per_section, store_id
@@ -309,15 +325,23 @@ export const getReportHistory = asyncHandler(async (req: Request, res: Response)
   // Enforce the admin-only filter in SQL rather than trusting the client to hide rows.
   const hiddenReportIds = req.user?.role === 'hr' ? Array.from(ADMIN_ONLY_REPORT_IDS) : [];
 
+  let scopeFilter = '';
+  const queryParams: any[] = [targetCompanyId, hiddenReportIds, limit, offset];
+  if (req.user?.role === 'hr') {
+    scopeFilter = ` AND (owner_user_id = $5 OR store_id = $6)`;
+    queryParams.push(req.user.userId, req.user.storeId ?? 0);
+  }
+
   const rows = await query<{ id: number, report_id: string, generated_at: string, size_bytes: number, sections: any, target_date: string, total: string }>(
     `SELECT id, report_id, generated_at, size_bytes, sections, target_date,
             COUNT(*) OVER() AS total
      FROM generated_reports
      WHERE company_id = $1
        AND ($2::text[] = '{}' OR report_id <> ALL($2::text[]))
+       ${scopeFilter}
      ORDER BY generated_at DESC
      LIMIT $3 OFFSET $4`,
-    [targetCompanyId, hiddenReportIds, limit, offset]
+    queryParams
   );
 
   const items = rows.map(r => ({
@@ -429,6 +453,12 @@ export const previewReportStructure = asyncHandler(async (req: Request, res: Res
   }
 
   const ownerUserId = req.query.owner_user_id ? parseInt(String(req.query.owner_user_id), 10) : null;
+
+  // Secure owner scope for HR users
+  if (req.user?.role === 'hr' && ownerUserId !== req.user.userId) {
+    forbidden(res, 'Non hai i permessi per questo report.');
+    return;
+  }
 
   const config = await queryOne<{ thresholds: any; max_rows_per_section: number; store_id: number | null }>(
     `SELECT thresholds, max_rows_per_section, store_id
@@ -547,8 +577,8 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
 
   const { id } = req.params;
 
-  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string; storage_path: string | null; store_id: number | null }>(
-    `SELECT company_id, report_id, sections, target_date, storage_path, store_id
+  const record = await queryOne<{ company_id: number; report_id: string; sections: string[] | string; target_date: Date | string; storage_path: string | null; store_id: number | null; owner_user_id: number | null }>(
+    `SELECT company_id, report_id, sections, target_date, storage_path, store_id, owner_user_id
      FROM generated_reports
      WHERE id = $1 AND company_id = $2`,
     [id, targetCompanyId]
@@ -564,6 +594,14 @@ export const downloadArchivedReport = asyncHandler(async (req: Request, res: Res
   if (!canAccessReport(req.user?.role, record.report_id)) {
     forbidden(res, 'Non hai i permessi per questo report.');
     return;
+  }
+
+  // Secure store/owner scope for HR users
+  if (req.user?.role === 'hr') {
+    if (record.owner_user_id !== req.user.userId && record.store_id !== req.user.storeId) {
+      forbidden(res, 'Non hai i permessi per scaricare questo report.');
+      return;
+    }
   }
 
   const targetDate = new Date(record.target_date);

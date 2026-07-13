@@ -377,7 +377,7 @@ const TITLES: Record<string, string> = {
   admin_weekly: 'Report Direzionale Settimanale',
   hr_monthly: 'Report HR Mensile',
   hr_weekly: 'Report HR Settimanale',
-  anomaly_daily: 'Alert HR Giornaliero',
+  anomaly_daily: 'Avviso ATS Giornaliero',
 };
 
 async function resolveScopeLabel(scope: ReportScope): Promise<string> {
@@ -416,50 +416,64 @@ async function renderReport(
     alert: reportId === 'anomaly_daily',
   });
 
-  const [current, previous, anomalies] = await Promise.all([
-    snapshotPeriod(scope, period, thresholds),
-    snapshotPeriod(scope, prior, thresholds),
-    computeAnomalies(scope, period, thresholds),
-  ]);
+  if (reportId === 'anomaly_daily') {
+    let index = 1;
+    const step = () => index++;
 
-  const storeBreakdown = await buildStoreBreakdown(scope, period, thresholds, anomalies);
+    if (wants(config.sections, 'ats')) await sectionAts(ctx, scope, thresholds, step(), maxRows);
+    if (wants(config.sections, 'leave')) await sectionLeave(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'attendance')) await sectionAttendance(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'workforce')) await sectionWorkforce(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'onboarding')) await sectionOnboarding(ctx, scope, step(), maxRows);
+    if (wants(config.sections, 'contracts')) await sectionContracts(ctx, scope, thresholds, step(), maxRows);
+    if (wants(config.sections, 'trainings')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'trainings');
+    if (wants(config.sections, 'medical')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'medical');
+  } else {
+    const [current, previous, anomalies] = await Promise.all([
+      snapshotPeriod(scope, period, thresholds),
+      snapshotPeriod(scope, prior, thresholds),
+      computeAnomalies(scope, period, thresholds),
+    ]);
 
-  // 1. Executive summary. The reader should be able to stop here and still know
-  //    whether anything needs their attention.
-  drawSectionHeader(ctx, 1, 'Sintesi direzionale');
-  drawKpiGrid(ctx, buildKpiCards(current, previous, thresholds));
+    const storeBreakdown = await buildStoreBreakdown(scope, period, thresholds, anomalies);
 
-  // 2. Needs attention. An empty list is itself a meaningful result.
-  drawSectionHeader(ctx, 2, 'Richiede attenzione');
-  drawExceptions(
-    ctx,
-    await buildExceptions(scope, period, thresholds, anomalies, storeBreakdown),
-    'Nessuna criticita rilevata in questo periodo.',
-  );
+    // 1. Executive summary. The reader should be able to stop here and still know
+    //    whether anything needs their attention.
+    drawSectionHeader(ctx, 1, 'Sintesi direzionale');
+    drawKpiGrid(ctx, buildKpiCards(current, previous, thresholds));
 
-  // 3. Trends.
-  drawSectionHeader(ctx, 3, 'Andamento');
-  drawTrendStrip(ctx, await buildTrends(scope, period, thresholds));
+    // 2. Needs attention. An empty list is itself a meaningful result.
+    drawSectionHeader(ctx, 2, 'Richiede attenzione');
+    drawExceptions(
+      ctx,
+      await buildExceptions(scope, period, thresholds, anomalies, storeBreakdown),
+      'Nessuna criticita rilevata in questo periodo.',
+    );
 
-  let index = 4;
-  const step = () => index++;
+    // 3. Trends.
+    drawSectionHeader(ctx, 3, 'Andamento');
+    drawTrendStrip(ctx, await buildTrends(scope, period, thresholds));
 
-  // 4. Breakdowns. Per-store only makes sense when the report spans stores.
-  if (!scope.storeId && storeBreakdown.length > 1) {
-    sectionStoreBreakdown(ctx, storeBreakdown, step(), maxRows);
+    let index = 4;
+    const step = () => index++;
+
+    // 4. Breakdowns. Per-store only makes sense when the report spans stores.
+    if (!scope.storeId && storeBreakdown.length > 1) {
+      sectionStoreBreakdown(ctx, storeBreakdown, step(), maxRows);
+    }
+    if (wants(config.sections, 'anomalies')) sectionPeopleBreakdown(ctx, anomalies, step(), maxRows);
+
+    // 5. Configured detail sections.
+    if (wants(config.sections, 'shifts') && scope.storeId) sectionStoreBreakdown(ctx, storeBreakdown, step(), maxRows);
+    if (wants(config.sections, 'leave')) await sectionLeave(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'attendance')) await sectionAttendance(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'workforce')) await sectionWorkforce(ctx, scope, period, step(), maxRows);
+    if (wants(config.sections, 'onboarding')) await sectionOnboarding(ctx, scope, step(), maxRows);
+    if (wants(config.sections, 'contracts')) await sectionContracts(ctx, scope, thresholds, step(), maxRows);
+    if (wants(config.sections, 'trainings')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'trainings');
+    if (wants(config.sections, 'medical')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'medical');
+    if (wants(config.sections, 'ats')) await sectionAts(ctx, scope, thresholds, step(), maxRows);
   }
-  if (wants(config.sections, 'anomalies')) sectionPeopleBreakdown(ctx, anomalies, step(), maxRows);
-
-  // 5. Configured detail sections.
-  if (wants(config.sections, 'shifts') && scope.storeId) sectionStoreBreakdown(ctx, storeBreakdown, step(), maxRows);
-  if (wants(config.sections, 'leave')) await sectionLeave(ctx, scope, period, step(), maxRows);
-  if (wants(config.sections, 'attendance')) await sectionAttendance(ctx, scope, period, step(), maxRows);
-  if (wants(config.sections, 'workforce')) await sectionWorkforce(ctx, scope, period, step(), maxRows);
-  if (wants(config.sections, 'onboarding')) await sectionOnboarding(ctx, scope, step(), maxRows);
-  if (wants(config.sections, 'contracts')) await sectionContracts(ctx, scope, thresholds, step(), maxRows);
-  if (wants(config.sections, 'trainings')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'trainings');
-  if (wants(config.sections, 'medical')) await sectionCompliance(ctx, scope, thresholds, step(), maxRows, 'medical');
-  if (wants(config.sections, 'ats')) await sectionAts(ctx, scope, thresholds, step(), maxRows);
 
   finalizeFooters(ctx, {
     generatedLabel: `${companyName} - generato il ${new Date().toLocaleDateString('it-IT')}`,
