@@ -98,7 +98,7 @@ function isWeekend(date: Date): boolean {
 }
 
 export function isMonthlyDayBasedReport(reportId: string): boolean {
-  return false;
+  return reportId === 'admin_monthly' || reportId === 'hr_monthly';
 }
 
 export function isWeekdayOnlyReport(reportId: string): boolean {
