@@ -61,7 +61,10 @@ export const getPermissions = asyncHandler(async (req: Request, res: Response) =
   for (const mod of ALL_MODULES) {
     grid[mod] = {};
     for (const role of VALID_ROLES) {
-      if (!canManageRole(req.user!.role, req.user!.is_super_admin, role as ManagedRole)) {
+      // Always include the 'admin' role in the grid, even if the requesting user
+      // can't manage it. The frontend needs admin's status to determine module
+      // visibility (modules disabled for admin are hidden from the permissions table).
+      if (role !== 'admin' && !canManageRole(req.user!.role, req.user!.is_super_admin, role as ManagedRole)) {
         continue;
       }
       grid[mod][role] = isDefaultEnabledForModule(role, mod);
