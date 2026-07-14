@@ -216,12 +216,12 @@ router.post(
   createLeaveAdmin,
 );
 
-// DELETE /api/leave/:id — hard delete (admin only)
+// DELETE /api/leave/:id — delete request (admin, or owner if cancelled and unapproved)
 router.delete(
   '/:id',
   authenticate,
   enforceCompany,
-  requireRole('admin'),
+  requireRole(...allRoles),
   requireModulePermission('permessi', 'write'),
   deleteLeaveRequest,
 );
