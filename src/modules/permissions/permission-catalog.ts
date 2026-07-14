@@ -132,20 +132,21 @@ export function isRoleEligibleForModule(role: UserRole, moduleName: ModuleName):
 
 export function isDefaultEnabledForModule(role: UserRole, moduleName: ModuleName): boolean {
   if (!isRoleEligibleForModule(role, moduleName)) return false;
+  // Admin should always default to enabled for every eligible module.
+  // Only an explicit super-admin toggle should disable a module for the admin role.
+  if (role === 'admin') return true;
   if (moduleName === 'messaggi') return true;
   if (moduleName === 'presenze' && role === 'store_terminal') return true;
-  if (moduleName === 'trasferimenti' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
-  if (moduleName === 'negozi' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_terminal')) return true;
-  if (moduleName === 'impostazioni' && role === 'admin') return true;
-  if (moduleName === 'gestione_accessi' && role === 'admin') return true;
-  if (moduleName === 'terminali' && (role === 'admin' || role === 'hr' || role === 'area_manager')) return true;
+  if (moduleName === 'trasferimenti' && (role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
+  if (moduleName === 'negozi' && (role === 'hr' || role === 'area_manager' || role === 'store_terminal')) return true;
+  if (moduleName === 'terminali' && (role === 'hr' || role === 'area_manager')) return true;
   if (moduleName === 'dipendenti' && role === 'employee') return true;
-  if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager' || role === 'hr' || role === 'admin')) return true;
-  if (moduleName === 'ats' && (role === 'admin' || role === 'hr')) return true;
+  if (moduleName === 'documenti' && (role === 'employee' || role === 'store_manager' || role === 'area_manager' || role === 'hr')) return true;
+  if (moduleName === 'ats' && role === 'hr') return true;
   if (moduleName === 'onboarding') return true;
   if (moduleName === 'notifiche') return true;
-  if (moduleName === 'automazioni' && (role === 'admin' || role === 'hr')) return true;
-  if (moduleName === 'report' && (role === 'admin' || role === 'hr')) return true;
-  if (moduleName === 'team_documents' && (role === 'admin' || role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
+  if (moduleName === 'automazioni' && role === 'hr') return true;
+  if (moduleName === 'report' && role === 'hr') return true;
+  if (moduleName === 'team_documents' && (role === 'hr' || role === 'area_manager' || role === 'store_manager')) return true;
   return false;
 }
