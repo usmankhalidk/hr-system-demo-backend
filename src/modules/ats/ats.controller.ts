@@ -3226,7 +3226,7 @@ export const listScreenerQuestionsHandler = asyncHandler(async (req: Request, re
   if (!job) { notFound(res, 'Annuncio non trovato'); return; }
 
   const questions = await query(
-    `SELECT id, job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order, created_at, updated_at
+    `SELECT id, job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order, is_required, created_at, updated_at
      FROM job_screener_questions
      WHERE job_id = $1 AND company_id = $2
      ORDER BY display_order ASC, id ASC`,
@@ -3245,7 +3245,7 @@ export const createScreenerQuestionHandler = asyncHandler(async (req: Request, r
   const job = await queryOne('SELECT id FROM job_postings WHERE id = $1 AND company_id = $2', [jobId, companyId]);
   if (!job) { notFound(res, 'Annuncio non trovato'); return; }
 
-  const { question_text, question_type, options, is_knockout, knockout_value, display_order } = req.body;
+  const { question_text, question_type, options, is_knockout, knockout_value, display_order, is_required } = req.body;
   if (!question_text || !question_type) {
     badRequest(res, 'Testo e tipo della domanda richiesti');
     return;
@@ -3257,8 +3257,8 @@ export const createScreenerQuestionHandler = asyncHandler(async (req: Request, r
   }
 
   const result = await queryOne(
-    `INSERT INTO job_screener_questions (job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    `INSERT INTO job_screener_questions (job_id, company_id, question_text, question_type, options, is_knockout, knockout_value, display_order, is_required)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
      RETURNING *`,
     [
       jobId,
@@ -3268,7 +3268,8 @@ export const createScreenerQuestionHandler = asyncHandler(async (req: Request, r
       options ? (typeof options === 'string' ? options : JSON.stringify(options)) : '[]',
       !!is_knockout,
       knockout_value ?? null,
-      parseInt(display_order, 10) || 0
+      parseInt(display_order, 10) || 0,
+      is_required !== undefined ? !!is_required : true
     ]
   );
   created(res, { question: result });
@@ -3290,7 +3291,7 @@ export const updateScreenerQuestionHandler = asyncHandler(async (req: Request, r
   );
   if (!existing) { notFound(res, 'Domanda non trovata'); return; }
 
-  const { question_text, question_type, options, is_knockout, knockout_value, display_order } = req.body;
+  const { question_text, question_type, options, is_knockout, knockout_value, display_order, is_required } = req.body;
 
   const updates: string[] = [];
   const params: any[] = [qId, jobId, companyId];
@@ -3324,6 +3325,10 @@ export const updateScreenerQuestionHandler = asyncHandler(async (req: Request, r
   if (display_order !== undefined) {
     updates.push(`display_order = $${paramIndex++}`);
     params.push(parseInt(display_order, 10) || 0);
+  }
+  if (is_required !== undefined) {
+    updates.push(`is_required = $${paramIndex++}`);
+    params.push(!!is_required);
   }
 
   updates.push(`updated_at = NOW()`);
