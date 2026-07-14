@@ -81,6 +81,23 @@ export const updateCompanyPermissions = asyncHandler(async (req: Request, res: R
         await client.query('ROLLBACK');
         return;
       }
+
+      // Enforce admin-first rule: non-admin roles can only be enabled if admin is already enabled
+      if (update.enabled && update.role !== 'admin') {
+        const adminRow = await client.query(
+          `SELECT is_enabled FROM role_module_permissions
+           WHERE company_id = $1 AND role = 'admin' AND module_name = $2`,
+          [companyId, update.module]
+        );
+        const adminEnabled = adminRow.rows.length > 0
+          ? adminRow.rows[0].is_enabled
+          : isDefaultEnabledForModule('admin', update.module);
+        if (!adminEnabled) {
+          badRequest(res, `Il modulo '${update.module}' deve essere prima abilitato per il ruolo Admin`, 'ADMIN_MUST_BE_ENABLED_FIRST');
+          await client.query('ROLLBACK');
+          return;
+        }
+      }
       await client.query(
         `INSERT INTO role_module_permissions (company_id, role, module_name, is_enabled, updated_by, updated_at)
          VALUES ($1, $2, $3, $4, $5, NOW())

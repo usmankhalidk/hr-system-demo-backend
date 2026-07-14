@@ -486,7 +486,7 @@ async function determineFirstApprover(
   endDate: string,
   submitterId: number,
   submitterRole: string
-): Promise<{ approver: string, skipped: string[] }> {
+): Promise<{ approver: string, skipped: string[], unavailabilitySkips: string[] }> {
   const role = submitterRole?.toLowerCase() || '';
   const chain = await getApprovalChain(companyId);
   
@@ -496,7 +496,7 @@ async function determineFirstApprover(
 
   // Use includes to be more flexible with role strings (handles underscores, spaces, etc.)
   if (role.includes('admin')) {
-    return { approver: 'admin', skipped: [] };
+    return { approver: 'admin', skipped: [], unavailabilitySkips: [] };
   } else if (role.includes('hr')) {
     hierarchySkips.push('store_manager', 'area_manager', 'hr');
     minRole = 'admin';
@@ -515,13 +515,15 @@ async function determineFirstApprover(
     companyId, storeId, startDate, endDate, submitterId, minRole, chain
   );
 
+  const realUnavailabilitySkips = unavailabilitySkips.filter(r => chain.includes(r));
+
   const allSkipped = Array.from(new Set([
     ...disabledRoles,
     ...hierarchySkips,
     ...unavailabilitySkips
   ]));
 
-  return { approver: approver || 'admin', skipped: allSkipped };
+  return { approver: approver || 'admin', skipped: allSkipped, unavailabilitySkips: realUnavailabilitySkips };
 }
 
 
@@ -644,17 +646,19 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
 
   let firstApprover = 'hr';
   let skippedApprovers: string[] = [];
+  let onLeaveSkippedApprovers: string[] = [];
   let status = 'pending';
   let nextApproverRole: string | null = null;
   const finalRole = role.toLowerCase().replace(/\s+/g, '_');
 
-  const { approver, skipped } = await determineFirstApprover(
+  const { approver, skipped, unavailabilitySkips } = await determineFirstApprover(
     companyId, storeId ?? null,
     start_date, end_date,
     userId, role
   );
   firstApprover = approver;
   skippedApprovers = skipped;
+  onLeaveSkippedApprovers = unavailabilitySkips;
   nextApproverRole = firstApprover;
 
   // Rule 2a: Admin-created requests are auto-approved
@@ -672,12 +676,12 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
     `INSERT INTO leave_requests
       (company_id, user_id, store_id, leave_type, start_date, end_date, leave_duration_type, short_start_time, short_end_time,
        status, current_approver_role, notes,
-       medical_certificate_name, medical_certificate_data, medical_certificate_type, skipped_approvers)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+       medical_certificate_name, medical_certificate_data, medical_certificate_type, skipped_approvers, on_leave_skipped_approvers)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
      RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                leave_duration_type, short_start_time, short_end_time,
                status, current_approver_role, notes, medical_certificate_name, 
-               skipped_approvers, escalated, is_emergency_override, last_action_at, created_at, updated_at`,
+               skipped_approvers, on_leave_skipped_approvers, escalated, is_emergency_override, last_action_at, created_at, updated_at`,
     [
       companyId,
       userId,
@@ -695,6 +699,7 @@ export const submitLeave = asyncHandler(async (req: Request, res: Response) => {
       certificateData,
       certificateMime,
       JSON.stringify(skippedApprovers),
+      JSON.stringify(onLeaveSkippedApprovers),
     ],
   );
 
@@ -904,7 +909,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
        lr.notes, lr.created_at, lr.updated_at,
        lr.last_action_at,
        lr.medical_certificate_name,
-       lr.skipped_approvers, lr.escalated, lr.is_emergency_override,
+       lr.skipped_approvers, lr.on_leave_skipped_approvers, lr.escalated, lr.is_emergency_override,
        (
          SELECT array_agg(DISTINCT approver_role)
          FROM leave_approvals
@@ -1005,6 +1010,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
        lr.notes, lr.created_at,
        lr.medical_certificate_name,
        lr.last_action_at,
+       lr.skipped_approvers, lr.on_leave_skipped_approvers, lr.escalated, lr.is_emergency_override,
        (
          SELECT array_agg(DISTINCT approver_role)
          FROM leave_approvals
@@ -1039,7 +1045,17 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
     scopeParams,
   );
 
-  ok(res, { requests, total: requests.length });
+  const filteredRequests = [];
+  for (const lr of requests) {
+    const startStr = lr.start_date instanceof Date ? lr.start_date.toISOString().split('T')[0] : lr.start_date;
+    const endStr = lr.end_date instanceof Date ? lr.end_date.toISOString().split('T')[0] : lr.end_date;
+    const callerOnLeave = await isUserOnLeave(req.user!.userId, startStr, endStr);
+    if (!callerOnLeave) {
+      filteredRequests.push(lr);
+    }
+  }
+
+  ok(res, { requests: filteredRequests, total: filteredRequests.length });
 });
 
 // ---------------------------------------------------------------------------
@@ -1077,13 +1093,14 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     short_end_time: string | null;
     store_id: number | null;
     skipped_approvers: string[] | null;
+    on_leave_skipped_approvers: string[] | null;
   }>(
     `SELECT id, company_id, user_id, status, current_approver_role,
             leave_type, start_date, end_date,
             leave_duration_type,
             TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
             TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
-            store_id, skipped_approvers
+            store_id, skipped_approvers, on_leave_skipped_approvers
      FROM leave_requests WHERE id = $1 AND company_id = ANY($2)`,
     [leaveId, allowedCompanyIds],
   );
@@ -1282,17 +1299,22 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
     const currentSkipped = Array.isArray(leaveRequest.skipped_approvers) ? leaveRequest.skipped_approvers : [];
     const updatedSkipped = Array.from(new Set([...currentSkipped, ...additionalSkipped]));
 
+    const currentOnLeaveSkipped = Array.isArray(leaveRequest.on_leave_skipped_approvers) ? leaveRequest.on_leave_skipped_approvers : [];
+    const realAdditionalSkipped = additionalSkipped.filter(r => approvalChain.includes(r));
+    const updatedOnLeaveSkipped = Array.from(new Set([...currentOnLeaveSkipped, ...realAdditionalSkipped]));
+
     const updatedResult = await client.query(
       `UPDATE leave_requests
        SET status=$1, current_approver_role=$2, updated_at=NOW(), last_action_at=NOW(),
-           skipped_approvers=$3
-       WHERE id=$4
+           skipped_approvers=$3, on_leave_skipped_approvers=$4
+       WHERE id=$5
        RETURNING id, company_id, user_id, store_id, leave_type, start_date, end_date,
                  leave_duration_type,
                  TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
                  TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time,
-                 status, current_approver_role, notes, created_at, updated_at`,
-      [finalNextStatus, finalNextRole, JSON.stringify(updatedSkipped), leaveId],
+                 status, current_approver_role, notes, created_at, updated_at,
+                 skipped_approvers, on_leave_skipped_approvers`,
+      [finalNextStatus, finalNextRole, JSON.stringify(updatedSkipped), JSON.stringify(updatedOnLeaveSkipped), leaveId],
     );
 
     await client.query(
@@ -1866,6 +1888,7 @@ export const setBalance = asyncHandler(async (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Response) => {
+  const { role, userId } = req.user!;
   const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
@@ -1885,6 +1908,27 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
     [leaveId, allowedCompanyIds],
   );
   if (!existing) { notFound(res, 'Richiesta non trovata'); return; }
+
+  const isAdminOrSuper = role === 'admin' || req.user!.is_super_admin === true;
+
+  if (!isAdminOrSuper) {
+    if (existing.user_id !== userId) {
+      forbidden(res, 'Non sei autorizzato a eliminare questa richiesta');
+      return;
+    }
+    if (existing.status !== 'cancelled') {
+      badRequest(res, 'È possibile eliminare solo richieste annullate');
+      return;
+    }
+    const approvals = await queryOne<{ count: string }>(
+      `SELECT COUNT(*) as count FROM leave_approvals WHERE leave_request_id = $1 AND action = 'approved'`,
+      [leaveId]
+    );
+    if (parseInt(approvals?.count ?? '0', 10) > 0) {
+      badRequest(res, 'Impossibile eliminare una richiesta che ha già ricevuto approvazioni');
+      return;
+    }
+  }
 
   const deleteClient = await pool.connect();
   try {
@@ -2210,8 +2254,9 @@ export async function processEscalationLogic() {
     current_approver_role: string;
     escalated: boolean;
     skipped_approvers: string[] | null;
+    on_leave_skipped_approvers: string[] | null;
   }>(
-    `SELECT id, company_id, user_id, store_id, start_date, end_date, current_approver_role, escalated, skipped_approvers
+    `SELECT id, company_id, user_id, store_id, start_date, end_date, current_approver_role, escalated, skipped_approvers, on_leave_skipped_approvers
      FROM leave_requests
      WHERE status NOT IN ('admin_approved', 'rejected', 'cancelled')
        AND last_action_at < NOW() - INTERVAL '2 days'
@@ -2241,13 +2286,15 @@ export async function processEscalationLogic() {
       const finalNextRole = nextActiveRole;
       const finalNextStatus = finalNextRole ? (transitions[finalNextRole]?.nextStatus || transition.nextStatus) : 'admin_approved';
       const updatedSkipped = Array.from(new Set([...(req.skipped_approvers || []), ...additionalSkipped]));
+      const realAdditionalSkipped = additionalSkipped.filter(r => chain.includes(r));
+      const updatedOnLeaveSkipped = Array.from(new Set([...(req.on_leave_skipped_approvers || []), ...realAdditionalSkipped]));
 
       await query(
         `UPDATE leave_requests
          SET current_approver_role = $1, status = $2, escalated = TRUE, last_action_at = NOW(),
-             skipped_approvers = $3
-         WHERE id = $4`,
-        [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), req.id]
+             skipped_approvers = $3, on_leave_skipped_approvers = $4
+         WHERE id = $5`,
+        [finalNextRole, finalNextStatus, JSON.stringify(updatedSkipped), JSON.stringify(updatedOnLeaveSkipped), req.id]
       );
 
       // Record the escalation

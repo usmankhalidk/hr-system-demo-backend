@@ -951,8 +951,9 @@ router.get(
       options: any;
       is_knockout: boolean;
       knockout_value: string | null;
+      is_required: boolean;
     }>(
-      `SELECT id, question_text, question_type, options, is_knockout, knockout_value
+      `SELECT id, question_text, question_type, options, is_knockout, knockout_value, is_required
        FROM job_screener_questions
        WHERE job_id = $1
        ORDER BY display_order ASC, id ASC`,
@@ -977,7 +978,7 @@ router.get(
         id: `q_${row.id}`,
         type: row.question_type,
         label: row.question_text,
-        required: true,
+        required: row.is_required !== false,
         isKnockout: !!row.is_knockout
       };
 
