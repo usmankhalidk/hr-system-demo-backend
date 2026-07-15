@@ -634,14 +634,6 @@ export async function createJob(
   const prefixRaw = cleanSlug.length >= 2 ? cleanSlug : company.slug;
   const slugPrefix = prefixRaw.slice(0, 2).toUpperCase().padEnd(2, 'X');
 
-  const countRow = await queryOne<{ count: number }>(
-    `SELECT COUNT(*)::int AS count FROM job_postings WHERE company_id = $1`,
-    [companyId]
-  );
-  const nextSeq = (countRow?.count ?? 0) + 1;
-  const seqStr = String(nextSeq).padStart(4, '0');
-  const referenceId = `VY-${slugPrefix}-${seqStr}`;
-
   const row = await queryOne<{ id: number }>(
     `INSERT INTO job_postings (
        company_id,
@@ -698,13 +690,21 @@ export async function createJob(
       data.salaryMax ?? null,
       data.salaryPeriod ?? null,
       data.targetRole ?? null,
-      referenceId,
+      null, // reference_id placeholder, will be set below using primary key id
     ],
   );
   const createdId = row?.id as number | undefined;
   if (!createdId) {
     throw new Error('Failed to create job posting');
   }
+
+  const seqStr = String(createdId).padStart(4, '0');
+  const referenceId = `VY-${slugPrefix}-${seqStr}`;
+  await query(
+    `UPDATE job_postings SET reference_id = $1 WHERE id = $2`,
+    [referenceId, createdId]
+  );
+
   const created = await getJob(createdId, companyId);
   if (!created) {
     throw new Error('Failed to load created job posting');

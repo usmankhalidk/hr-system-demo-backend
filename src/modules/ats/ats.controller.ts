@@ -255,6 +255,15 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
 
   if (!job) { notFound(res, 'Annuncio non trovato'); return; }
 
+  let isReferenceIdDuplicate = false;
+  if (job.reference_id) {
+    const dupRow = await queryOne<{ count: number }>(
+      `SELECT COUNT(*)::int AS count FROM job_postings WHERE reference_id = $1 AND id <> $2`,
+      [job.reference_id, job.id],
+    );
+    isReferenceIdDuplicate = (dupRow?.count ?? 0) > 0;
+  }
+
   const mappedJob = {
     id: job.id,
     companyId: job.company_id,
@@ -279,6 +288,10 @@ export const getJobComplianceHandler = asyncHandler(async (req: Request, res: Re
     publishedAt: job.published_at,
     createdAt: job.created_at,
     expirationDate: job.expiration_date || null,
+    salaryMin: job.salary_min !== null && job.salary_min !== undefined ? Number(job.salary_min) : null,
+    salaryMax: job.salary_max !== null && job.salary_max !== undefined ? Number(job.salary_max) : null,
+    salaryPeriod: job.salary_period || null,
+    isReferenceIdDuplicate,
     indeedApplyTokenConfigured: !!process.env.INDEED_APPLY_API_TOKEN,
     indeedApplyPostUrl: process.env.INDEED_APPLY_POST_URL || `${process.env.APP_BASE_URL || 'https://veylohr.com'}/api/public/indeed-apply/${job.company_slug}`,
   };
