@@ -62,6 +62,7 @@ beforeAll(async () => {
       expiration_date DATE,
       published_at TIMESTAMPTZ,
       closed_at TIMESTAMPTZ,
+      reference_id TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -86,6 +87,7 @@ beforeAll(async () => {
       consent_accepted_at TIMESTAMPTZ,
       applied_at TIMESTAMPTZ,
       unread BOOLEAN NOT NULL DEFAULT TRUE,
+      indeed_apply_id TEXT,
       last_stage_change TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -130,6 +132,7 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS experience TEXT,
       ADD COLUMN IF NOT EXISTS education TEXT,
       ADD COLUMN IF NOT EXISTS category TEXT,
+      ADD COLUMN IF NOT EXISTS reference_id TEXT,
       ADD COLUMN IF NOT EXISTS expiration_date DATE;
 
     ALTER TABLE candidates
@@ -139,6 +142,7 @@ beforeAll(async () => {
       ADD COLUMN IF NOT EXISTS gdpr_consent BOOLEAN NOT NULL DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS applicant_locale VARCHAR(10),
       ADD COLUMN IF NOT EXISTS consent_accepted_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS indeed_apply_id TEXT,
       ADD COLUMN IF NOT EXISTS applied_at TIMESTAMPTZ;
 
     UPDATE candidates
@@ -315,10 +319,20 @@ describe('ATS — Interviews', () => {
   let interviewId: number;
 
   beforeAll(async () => {
+    const jobRes = await request
+      .post('/api/ats/jobs')
+      .set('Authorization', `Bearer ${adminToken}`)
+      .send({ title: 'Lucia Job', description: 'Lucia Job Description', tags: ['lucia'] });
+    const localJobId = jobRes.body.data.job.id;
+
+    await request
+      .post(`/api/ats/jobs/${localJobId}/publish`)
+      .set('Authorization', `Bearer ${adminToken}`);
+
     const res = await request
       .post('/api/ats/candidates')
       .set('Authorization', `Bearer ${adminToken}`)
-      .send({ full_name: 'Lucia Bianchi' });
+      .send({ full_name: 'Lucia Bianchi', job_posting_id: localJobId });
     candidateId = res.body.data.candidate.id;
   });
 
