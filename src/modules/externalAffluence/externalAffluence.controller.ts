@@ -2135,13 +2135,13 @@ export const getAffluenceForecast = asyncHandler(async (req: Request, res: Respo
   try {
     const settings = await loadCompanyLiveAffluenceSettings(companyId);
 
-    // Fetch rolling weekday averages (last 8 weeks)
+    // Fetch rolling weekday averages (last 4 weeks)
     const historicalToDate = new Date(now);
     historicalToDate.setUTCDate(historicalToDate.getUTCDate() - 1);
     const historicalTo = formatDateOnly(historicalToDate);
 
     const historicalFromDate = new Date(now);
-    historicalFromDate.setUTCDate(historicalFromDate.getUTCDate() - 56);
+    historicalFromDate.setUTCDate(historicalFromDate.getUTCDate() - 28);
     const historicalFrom = formatDateOnly(historicalFromDate);
 
     const histRows = await fetchIngressiDaily(
@@ -2151,10 +2151,14 @@ export const getAffluenceForecast = asyncHandler(async (req: Request, res: Respo
       1200,
     );
 
-    const trafficSummary = buildTrafficSummary(histRows);
     const weekdayAvgMap = new Map<number, number>();
-    for (const r of trafficSummary.weekdayAverages) {
-      weekdayAvgMap.set(r.dayOfWeek, r.days > 0 ? r.avgVisitors : 0);
+    for (let dayOfWeek = 1; dayOfWeek <= 7; dayOfWeek++) {
+      const weekdayRows = histRows.filter((row) => toIsoDayOfWeek(row.date) === dayOfWeek);
+      weekdayRows.sort((a, b) => b.date.localeCompare(a.date));
+      const top4 = weekdayRows.slice(0, 4);
+      const sum = top4.reduce((acc, row) => acc + row.visitors, 0);
+      const avg = sum / 4;
+      weekdayAvgMap.set(dayOfWeek, Number(avg.toFixed(2)));
     }
 
     // Fetch overrides
