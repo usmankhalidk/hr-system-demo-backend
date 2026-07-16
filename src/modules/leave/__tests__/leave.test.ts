@@ -25,6 +25,16 @@ beforeAll(async () => {
   seeds = await seedTestData();
   await testPool.query('DELETE FROM login_attempts');
   await testPool.query('DELETE FROM audit_logs');
+
+  // Seed approval config for acme company to have store_manager -> area_manager -> hr chain
+  await testPool.query('DELETE FROM leave_approval_config WHERE company_id = $1', [seeds.acmeId]);
+  await testPool.query(
+    `INSERT INTO leave_approval_config (company_id, role, enabled, sort_order)
+     VALUES ($1, 'store_manager', true, 1),
+            ($1, 'area_manager', true, 2),
+            ($1, 'hr', true, 3)`,
+    [seeds.acmeId]
+  );
 });
 
 afterAll(async () => {
@@ -58,8 +68,8 @@ describe('POST /api/leave', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         leave_type: 'vacation',
-        start_date: '2026-07-01',
-        end_date: '2026-07-05',
+        start_date: '2026-12-01',
+        end_date: '2026-12-05',
         notes: 'Ferie estive',
       });
     expect(res.status).toBe(201);
@@ -79,8 +89,8 @@ describe('POST /api/leave', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         leave_type: 'sick',
-        start_date: '2026-06-10',
-        end_date: '2026-06-10',
+        start_date: '2026-12-10',
+        end_date: '2026-12-10',
       });
     expect(res.status).toBe(201);
     expect(res.body.data.leave_type).toBe('sick');
@@ -93,8 +103,8 @@ describe('POST /api/leave', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         leave_type: 'vacation',
-        start_date: '2026-07-10',
-        end_date: '2026-07-01',
+        start_date: '2026-12-10',
+        end_date: '2026-12-01',
       });
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
@@ -107,8 +117,8 @@ describe('POST /api/leave', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         leave_type: 'personal_day',
-        start_date: '2026-07-01',
-        end_date: '2026-07-01',
+        start_date: '2026-12-01',
+        end_date: '2026-12-01',
       });
     expect(res.status).toBe(400);
   });
@@ -120,7 +130,7 @@ describe('POST /api/leave', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({
         leave_type: 'vacation',
-        end_date: '2026-07-05',
+        end_date: '2026-12-05',
       });
     expect(res.status).toBe(400);
   });
@@ -130,8 +140,8 @@ describe('POST /api/leave', () => {
       .post('/api/leave')
       .send({
         leave_type: 'vacation',
-        start_date: '2026-07-01',
-        end_date: '2026-07-05',
+        start_date: '2026-12-01',
+        end_date: '2026-12-05',
       });
     expect(res.status).toBe(401);
   });
@@ -279,14 +289,14 @@ describe('PUT /api/leave/:id/approve', () => {
     await cleanLeave();
   });
 
-  it('store_manager can approve a pending request — status advances to supervisor_approved', async () => {
+  it('store_manager can approve a pending request — status advances to store manager approved', async () => {
     const token = await login('manager.roma@acme-test.com');
     const res = await request
       .put(`/api/leave/${leaveId}/approve`)
       .set('Authorization', `Bearer ${token}`)
       .send({ notes: 'Approvato' });
     expect(res.status).toBe(200);
-    expect(res.body.data.status).toBe('supervisor_approved');
+    expect(res.body.data.status).toBe('store manager approved');
     expect(res.body.data.current_approver_role).toBe('area_manager');
   });
 
@@ -317,7 +327,7 @@ describe('PUT /api/leave/:id/approve', () => {
       .set('Authorization', `Bearer ${smToken}`)
       .send({});
     expect(step1.status).toBe(200);
-    expect(step1.body.data.status).toBe('supervisor_approved');
+    expect(step1.body.data.status).toBe('store manager approved');
     expect(step1.body.data.current_approver_role).toBe('area_manager');
 
     // Step 2: area_manager approves
@@ -327,7 +337,7 @@ describe('PUT /api/leave/:id/approve', () => {
       .set('Authorization', `Bearer ${amToken}`)
       .send({});
     expect(step2.status).toBe(200);
-    expect(step2.body.data.status).toBe('area_manager_approved');
+    expect(step2.body.data.status).toBe('area manager approved');
     expect(step2.body.data.current_approver_role).toBe('hr');
 
     // Step 3: hr approves (final — triggers balance update)
@@ -337,7 +347,7 @@ describe('PUT /api/leave/:id/approve', () => {
       .set('Authorization', `Bearer ${hrToken}`)
       .send({});
     expect(step3.status).toBe(200);
-    expect(step3.body.data.status).toBe('hr_approved');
+    expect(step3.body.data.status).toBe('HR approved');
     expect(step3.body.data.current_approver_role).toBeNull();
 
     // Verify balance was decremented
@@ -439,6 +449,13 @@ describe('GET /api/leave/balance', () => {
        ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE SET used_days=10`,
       [seeds.acmeId, seeds.employee1Id]
     );
+    // Seed approved leave request representing 10 days of vacation
+    // 2026-05-01 (Fri) to 2026-05-14 (Tue) = 10 working days
+    await testPool.query(
+      `INSERT INTO leave_requests (company_id, user_id, store_id, leave_type, start_date, end_date, status, current_approver_role, notes)
+       VALUES ($1, $2, $3, 'vacation', '2026-05-01', '2026-05-14', 'approved', null, 'Ferie pregresse')`,
+      [seeds.acmeId, seeds.employee1Id, seeds.romaStoreId]
+    );
   });
 
   afterAll(async () => {
@@ -471,16 +488,14 @@ describe('GET /api/leave/balance', () => {
     expect(balances.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('employee cannot query another user balance — gets own balance', async () => {
+  it('employee cannot query another user balance — gets 403', async () => {
     const token = await login('employee1@acme-test.com');
-    // Passing someone else's user_id — controller should ignore it and return own balance
+    // Passing someone else's user_id should be rejected with 403
     const res = await request
       .get('/api/leave/balance')
       .query({ user_id: seeds.adminId, year: 2026 })
       .set('Authorization', `Bearer ${token}`);
-    expect(res.status).toBe(200);
-    // All returned balances should belong to the authenticated user
-    res.body.data.balances.forEach((b: any) => expect(b.user_id).toBe(seeds.employee1Id));
+    expect(res.status).toBe(403);
   });
 
   it('hr approval of a request that exceeds balance returns 422', async () => {

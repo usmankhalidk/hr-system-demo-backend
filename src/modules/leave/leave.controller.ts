@@ -1077,7 +1077,7 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
   const leaveId = parseInt(req.params.id, 10);
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
-  const { notes, emergency_override } = req.body as { notes?: string, emergency_override?: boolean };
+  const { notes, emergency_override, cancel_shifts } = req.body as { notes?: string, emergency_override?: boolean, cancel_shifts?: boolean };
 
   const leaveRequest = await queryOne<{
     id: number;
@@ -1236,6 +1236,19 @@ export const approveLeave = asyncHandler(async (req: Request, res: Response) => 
            ON CONFLICT (company_id, user_id, year, leave_type) DO UPDATE
            SET used_days = leave_balances.used_days + EXCLUDED.used_days, updated_at = NOW()`,
           [leaveRequest.company_id, leaveRequest.user_id, year, leaveRequest.leave_type, defaultTotal, requestedDays],
+        );
+      }
+
+      // Cancel shifts if requested
+      if (cancel_shifts) {
+        await client.query(
+          `UPDATE shifts
+           SET status = 'cancelled', updated_at = NOW()
+           WHERE user_id = $1
+             AND date >= $2::DATE
+             AND date <= $3::DATE
+             AND status IN ('scheduled', 'confirmed')`,
+          [leaveRequest.user_id, leaveRequest.start_date, leaveRequest.end_date],
         );
       }
 

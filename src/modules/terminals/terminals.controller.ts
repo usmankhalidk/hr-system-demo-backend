@@ -16,12 +16,16 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
 
   // Company filtering based on role and query
   if (company_id) {
-    const requestedId = parseInt(company_id, 10);
-    if (allowedCompanyIds.includes(requestedId)) {
-      params.push(requestedId);
-      where += ` AND u.company_id = $${params.length}`;
+    const ids = company_id.split(',').map(id => parseInt(id, 10)).filter(Number.isInteger);
+    if (ids.length > 0) {
+      const filteredIds = ids.filter(id => allowedCompanyIds.includes(id));
+      if (filteredIds.length > 0) {
+        params.push(filteredIds);
+        where += ` AND u.company_id = ANY($${params.length})`;
+      } else {
+        where += " AND 1=0";
+      }
     } else {
-      // If requested company is not allowed, force empty result
       where += " AND 1=0";
     }
   } else {
@@ -31,8 +35,11 @@ export const listTerminals = asyncHandler(async (req: Request, res: Response) =>
 
   // Store filtering
   if (store_id) {
-    params.push(parseInt(store_id, 10));
-    where += ` AND u.store_id = $${params.length}`;
+    const ids = store_id.split(',').map(id => parseInt(id, 10)).filter(Number.isInteger);
+    if (ids.length > 0) {
+      params.push(ids);
+      where += ` AND u.store_id = ANY($${params.length})`;
+    }
   }
 
   // Status filtering

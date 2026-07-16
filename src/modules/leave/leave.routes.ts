@@ -68,6 +68,7 @@ const submitSchema = z.object({
 
 const approveSchema = z.object({
   notes: z.string().max(500).optional(),
+  cancel_shifts: z.boolean().optional(),
 });
 
 const rejectSchema = z.object({
