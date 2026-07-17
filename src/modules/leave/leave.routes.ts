@@ -7,6 +7,7 @@ import {
   submitLeave,
   createLeaveAdmin,
   deleteLeaveRequest,
+  archiveLeave,
   listLeaveRequests,
   getPendingApprovals,
   approveLeave,
@@ -225,6 +226,16 @@ router.delete(
   requireRole(...allRoles),
   requireModulePermission('permessi', 'write'),
   deleteLeaveRequest,
+);
+
+// PUT /api/leave/:id/archive — archive request (admin/hr only)
+router.put(
+  '/:id/archive',
+  authenticate,
+  enforceCompany,
+  requireRole('admin', 'hr'),
+  requireModulePermission('permessi', 'write'),
+  archiveLeave,
 );
 
 // PUT /api/leave/:id/approve
