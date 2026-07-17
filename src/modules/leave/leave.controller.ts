@@ -764,7 +764,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     return;
   }
 
-  const { status, leave_type, date_from, date_to, user_id, store_id, page: pageStr, limit: limitStr } =
+  const { status, leave_type, date_from, date_to, user_id, store_id, archived, page: pageStr, limit: limitStr } =
     req.query as Record<string, string>;
 
   const page = Math.max(1, parseInt(pageStr ?? '1', 10) || 1);
@@ -868,6 +868,12 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
   const extraParams: any[] = [];
   let paramIdx = scopeParams.length + 1;
 
+  // Filter archived requests
+  const showArchived = archived === 'true';
+  extraWhere += ` AND lr.is_archived = $${paramIdx}`;
+  extraParams.push(showArchived);
+  paramIdx++;
+
   if (status) {
     extraWhere += ` AND lr.status = $${paramIdx}`; extraParams.push(status); paramIdx++;
   } else if (role !== 'employee') {
@@ -902,6 +908,7 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
     `SELECT
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
        lr.start_date, lr.end_date,
+       lr.is_archived,
        lr.leave_duration_type,
        TO_CHAR(lr.short_start_time, 'HH24:MI') AS short_start_time,
        TO_CHAR(lr.short_end_time, 'HH24:MI') AS short_end_time,
@@ -915,6 +922,32 @@ export const listLeaveRequests = asyncHandler(async (req: Request, res: Response
          FROM leave_approvals
          WHERE leave_request_id = lr.id AND action = 'approved'
        ) AS approved_by_roles,
+        (
+          SELECT json_agg(json_build_object(
+            'role', la_inner.approver_role,
+            'action', la_inner.action,
+            'createdAt', la_inner.created_at,
+            'notes', la_inner.notes,
+            'approverName', u_inner.name,
+            'approverSurname', u_inner.surname
+          ) ORDER BY la_inner.created_at ASC)
+          FROM leave_approvals la_inner
+          LEFT JOIN users u_inner ON u_inner.id = la_inner.approver_id
+          WHERE la_inner.leave_request_id = lr.id
+        ) AS approvals_history,
+       (
+         SELECT json_agg(json_build_object(
+           'role', la_inner.approver_role,
+           'action', la_inner.action,
+           'createdAt', la_inner.created_at,
+           'notes', la_inner.notes,
+           'approverName', u_inner.name,
+           'approverSurname', u_inner.surname
+         ) ORDER BY la_inner.created_at ASC)
+         FROM leave_approvals la_inner
+         LEFT JOIN users u_inner ON u_inner.id = la_inner.approver_id
+         WHERE la_inner.leave_request_id = lr.id
+       ) AS approvals_history,
        la.action AS latest_action,
        la.created_at AS latest_action_at,
        la.approver_name AS latest_action_by_name,
@@ -1003,6 +1036,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
     `SELECT
        lr.id, lr.company_id, lr.user_id, lr.store_id, lr.leave_type,
        lr.start_date, lr.end_date,
+       lr.is_archived,
        lr.leave_duration_type,
        TO_CHAR(lr.short_start_time, 'HH24:MI') AS short_start_time,
        TO_CHAR(lr.short_end_time, 'HH24:MI') AS short_end_time,
@@ -1016,6 +1050,19 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
          FROM leave_approvals
          WHERE leave_request_id = lr.id AND action = 'approved'
        ) AS approved_by_roles,
+        (
+          SELECT json_agg(json_build_object(
+            'role', la_inner.approver_role,
+            'action', la_inner.action,
+            'createdAt', la_inner.created_at,
+            'notes', la_inner.notes,
+            'approverName', u_inner.name,
+            'approverSurname', u_inner.surname
+          ) ORDER BY la_inner.created_at ASC)
+          FROM leave_approvals la_inner
+          LEFT JOIN users u_inner ON u_inner.id = la_inner.approver_id
+          WHERE la_inner.leave_request_id = lr.id
+        ) AS approvals_history,
        la.action AS latest_action,
        la.created_at AS latest_action_at,
        la.approver_name AS latest_action_by_name,
@@ -1040,7 +1087,7 @@ export const getPendingApprovals = asyncHandler(async (req: Request, res: Respon
        ORDER BY la0.created_at DESC
        LIMIT 1
      ) la ON TRUE
-     WHERE ${scopeWhere}
+     WHERE ${scopeWhere} AND lr.is_archived = false
      ORDER BY lr.created_at ASC`,
     scopeParams,
   );
@@ -1897,7 +1944,60 @@ export const setBalance = asyncHandler(async (req: Request, res: Response) => {
 });
 
 // ---------------------------------------------------------------------------
-// DELETE /api/leave/:id — hard delete (admin only)
+// PUT /api/leave/:id/archive — archive leave request (admin/hr only)
+// ---------------------------------------------------------------------------
+
+export const archiveLeave = asyncHandler(async (req: Request, res: Response) => {
+  const { id } = req.params;
+  const { role } = req.user!;
+  const allowedCompanyIds = await resolveAllowedCompanyIds(req.user!);
+
+  const leaveId = parseInt(id, 10);
+  if (isNaN(leaveId) || leaveId < 1) {
+    badRequest(res, 'ID richiesta non valido', 'VALIDATION_ERROR');
+    return;
+  }
+
+  // Only Admin or HR can archive
+  if (role !== 'admin' && role !== 'hr') {
+    forbidden(res, 'Solo Admin o HR possono archiviare le richieste');
+    return;
+  }
+
+  // Load the request to verify company and status
+  const leaveRequest = await queryOne<{ company_id: number; status: string; is_archived: boolean }>(
+    `SELECT company_id, status, is_archived FROM leave_requests WHERE id = $1`,
+    [leaveId]
+  );
+
+  if (!leaveRequest) {
+    notFound(res, 'Richiesta non trovata');
+    return;
+  }
+
+  if (!allowedCompanyIds.includes(leaveRequest.company_id)) {
+    forbidden(res, 'Accesso non consentito a questa azienda');
+    return;
+  }
+
+  // Cannot archive pending requests in the workflow
+  const statusNorm = (leaveRequest.status ?? '').toLowerCase().replace(/ /g, '_');
+  const isPending = statusNorm === 'pending' || statusNorm === 'store_manager_approved' || statusNorm === 'area_manager_approved' || statusNorm === 'hr_approved';
+  if (isPending) {
+    badRequest(res, 'Impossibile archiviare una richiesta in attesa di approvazione o in-corso', 'VALIDATION_ERROR');
+    return;
+  }
+
+  await query(
+    `UPDATE leave_requests SET is_archived = true, updated_at = NOW() WHERE id = $1`,
+    [leaveId]
+  );
+
+  ok(res, { message: 'Richiesta archiviata con successo' });
+});
+
+// ---------------------------------------------------------------------------
+// DELETE /api/leave/:id — hard delete (admin only, must be archived first)
 // ---------------------------------------------------------------------------
 
 export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Response) => {
@@ -1907,13 +2007,13 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
   if (isNaN(leaveId)) { notFound(res, 'Richiesta non trovata'); return; }
 
   const existing = await queryOne<{
-    id: number; company_id: number; status: string;
+    id: number; company_id: number; status: string; is_archived: boolean;
     user_id: number; leave_type: string; start_date: string; end_date: string;
     leave_duration_type: LeaveDurationType | null;
     short_start_time: string | null;
     short_end_time: string | null;
   }>(
-    `SELECT id, company_id, status, user_id, leave_type, start_date, end_date,
+    `SELECT id, company_id, status, is_archived, user_id, leave_type, start_date, end_date,
             leave_duration_type,
             TO_CHAR(short_start_time, 'HH24:MI') AS short_start_time,
             TO_CHAR(short_end_time, 'HH24:MI') AS short_end_time
@@ -1924,7 +2024,12 @@ export const deleteLeaveRequest = asyncHandler(async (req: Request, res: Respons
 
   const isAdminOrSuper = role === 'admin' || req.user!.is_super_admin === true;
 
-  if (!isAdminOrSuper) {
+  if (isAdminOrSuper) {
+    if (!existing.is_archived) {
+      forbidden(res, 'È possibile eliminare solo richieste precedentemente archiviate');
+      return;
+    }
+  } else {
     if (existing.user_id !== userId) {
       forbidden(res, 'Non sei autorizzato a eliminare questa richiesta');
       return;
