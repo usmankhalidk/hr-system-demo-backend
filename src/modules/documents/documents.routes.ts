@@ -158,8 +158,17 @@ const uploadUnifiedMulter = multer({
   storage: genericStorage,
   limits: { fileSize: 100 * 1024 * 1024 }, // 100 MB
   fileFilter: (_req, file, cb) => {
-    const allowed = [...allowedDocMime, 'application/zip', 'application/x-zip-compressed', 'application/octet-stream'];
-    if (allowed.includes(file.mimetype) || file.originalname.toLowerCase().endsWith('.zip')) {
+    const allowed = [
+      ...allowedDocMime,
+      'application/zip',
+      'application/x-zip-compressed',
+      'application/rar',
+      'application/x-rar-compressed',
+      'application/x-7z-compressed',
+      'application/octet-stream'
+    ];
+    const ext = path.extname(file.originalname).toLowerCase();
+    if (allowed.includes(file.mimetype) || ['.zip', '.rar', '.7z'].includes(ext)) {
       cb(null, true);
     } else {
       cb(new Error('INVALID_FILE_TYPE'));
@@ -175,12 +184,66 @@ const uploadUnifiedMiddleware = (req: Request, res: Response, next: NextFunction
       return;
     }
     if (err.message === 'INVALID_FILE_TYPE') {
-      badRequest(res, 'Unsupported file type. Use PDF, JPG, PNG or ZIP', 'INVALID_FILE_TYPE');
+      badRequest(res, 'Unsupported file type. Use PDF, JPG, PNG, ZIP, RAR or 7Z', 'INVALID_FILE_TYPE');
       return;
     }
     next(err);
   });
 };
+
+// Helper for fuzzy string matching (Levenshtein distance)
+function getLevenshteinDistance(a: string, b: string): number {
+  const matrix = Array.from({ length: a.length + 1 }, () => Array(b.length + 1).fill(0));
+  for (let i = 0; i <= a.length; i++) matrix[i][0] = i;
+  for (let j = 0; j <= b.length; j++) matrix[0][j] = j;
+
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        matrix[i][j] = matrix[i - 1][j - 1];
+      } else {
+        matrix[i][j] = Math.min(
+          matrix[i - 1][j] + 1, // deletion
+          matrix[i][j - 1] + 1, // insertion
+          matrix[i - 1][j - 1] + 1 // substitution
+        );
+      }
+    }
+  }
+  return matrix[a.length][b.length];
+}
+
+// Sliding window similarity check to find fuzzy substrings of any order
+function getFuzzySubstringSimilarity(filename: string, pattern: string): number {
+  if (!filename || !pattern) return 0;
+  if (filename.includes(pattern)) return 1.0;
+
+  let maxSim = 0;
+  const windowSize = pattern.length;
+
+  for (let i = 0; i <= filename.length - windowSize; i++) {
+    const sub = filename.substring(i, i + windowSize);
+    const dist = getLevenshteinDistance(sub, pattern);
+    const sim = 1 - dist / windowSize;
+    if (sim > maxSim) {
+      maxSim = sim;
+    }
+  }
+
+  for (let w = Math.max(3, windowSize - 2); w <= Math.min(filename.length, windowSize + 2); w++) {
+    for (let i = 0; i <= filename.length - w; i++) {
+      const sub = filename.substring(i, i + w);
+      const dist = getLevenshteinDistance(sub, pattern);
+      const maxLen = Math.max(sub.length, pattern.length);
+      const sim = 1 - dist / maxLen;
+      if (sim > maxSim) {
+        maxSim = sim;
+      }
+    }
+  }
+
+  return maxSim;
+}
 
 // --- Step 2 Auto-assignment Logic ---
 
@@ -195,9 +258,22 @@ export async function performAutoAssign(
     uploadedBy?: number;
     employeeId?: number | null;
     isSuperAdmin?: boolean;
+    companyId?: number | null;
+    simulate?: boolean;
   },
-): Promise<boolean> {
+): Promise<any> {
   const isGlobalSearch = options?.isSuperAdmin || !allowedCompanyIds || allowedCompanyIds.length === 0;
+
+  let companyFilterSql = '';
+  let params: any[] = [];
+
+  if (options?.companyId) {
+    companyFilterSql = 'AND company_id = $1';
+    params = [options.companyId];
+  } else if (!isGlobalSearch) {
+    companyFilterSql = 'AND company_id = ANY($1)';
+    params = [allowedCompanyIds];
+  }
 
   // Fetch active employees (filtered by allowed company IDs unless global search for super admin)
   const employees = await query<{
@@ -207,53 +283,71 @@ export async function performAutoAssign(
     unique_id: string | null;
     company_id: number;
   }>(
-    `SELECT id, name, surname, unique_id, company_id FROM users WHERE status = 'active' ${!isGlobalSearch ? 'AND company_id = ANY($1)' : ''}`,
-    !isGlobalSearch ? [allowedCompanyIds] : [],
+    `SELECT id, name, surname, unique_id, company_id FROM users WHERE status = 'active' ${companyFilterSql}`,
+    params,
   );
 
   // Normalize filename for matching: remove extension and trim
   const cleanBaseName = filename.replace(/\.(pdf|zip|jpg|jpeg|png|webp|bin|docx|xlsx)$/i, '').trim();
   const normalizedFile = cleanBaseName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
   const tokens = normalizedFile.split(/[_\s.-]+/).filter(Boolean);
-  const rawJoined = tokens.join('');
+  const filenameAlphaOnly = normalizedFile.replace(/[^a-z0-9]/g, '');
 
-  const matchesLevel1: typeof employees = []; // ID Match
-  const matchesLevel2: typeof employees = []; // Full Name variations Match (mario rossi, rossi mario, mariorossi, rossimario)
-  const matchesLevel3: typeof employees = []; // Last Name match (surname)
-  const matchesLevel4: typeof employees = []; // First Name match (name)
+  let bestScore = 0;
+  let matches: typeof employees = [];
 
   for (const emp of employees) {
     const name = emp.name.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
     const surname = emp.surname.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+    const cleanName = name.replace(/[^a-z0-9]/g, '');
+    const cleanSurname = surname.replace(/[^a-z0-9]/g, '');
     const uid = emp.unique_id?.toLowerCase().trim();
 
+    let score = 0;
+
+    // Level 1: Unique ID match (highest priority)
     if (uid && tokens.includes(uid)) {
-      matchesLevel1.push(emp);
-      continue;
+      score = 200;
     }
-
-    // Level 2: Full name / Last name + Full name variations
-    if (
-      normalizedFile.includes(`${name} ${surname}`) ||
-      normalizedFile.includes(`${surname} ${name}`) ||
-      normalizedFile.includes(`${name}_${surname}`) ||
-      normalizedFile.includes(`${surname}_${name}`) ||
-      rawJoined.includes(`${name}${surname}`) ||
-      rawJoined.includes(`${surname}${name}`)
+    // Level 2: Exact Full Name match (both name and surname are found in filenameAlphaOnly, adjacent or in any order)
+    else if (
+      (cleanName && cleanSurname && filenameAlphaOnly.includes(cleanName + cleanSurname)) ||
+      (cleanName && cleanSurname && filenameAlphaOnly.includes(cleanSurname + cleanName))
     ) {
-      matchesLevel2.push(emp);
-      continue;
+      score = 100;
     }
+    // Level 2.5: Fuzzy Full Name match (checks Levenshtein sliding window similarity)
+    else if (cleanName && cleanSurname) {
+      const fullname1 = cleanName + cleanSurname;
+      const fullname2 = cleanSurname + cleanName;
+      const sim1 = getFuzzySubstringSimilarity(filenameAlphaOnly, fullname1);
+      const sim2 = getFuzzySubstringSimilarity(filenameAlphaOnly, fullname2);
+      const maxSim = Math.max(sim1, sim2);
 
-    // Level 3: Last name match (surname)
-    if (tokens.includes(surname)) {
-      matchesLevel3.push(emp);
-      continue;
+      if (maxSim >= 0.70) {
+        score = Math.round(maxSim * 100) - 10; // score between 60 and 90, lower than exact match (100)
+      } else if (cleanSurname && filenameAlphaOnly.includes(cleanSurname)) {
+        score = 50;
+      } else if (cleanName && filenameAlphaOnly.includes(cleanName)) {
+        score = 40;
+      }
     }
-
+    // Level 3: Surname match
+    else if (cleanSurname && filenameAlphaOnly.includes(cleanSurname)) {
+      score = 50;
+    }
     // Level 4: First name match
-    if (tokens.includes(name)) {
-      matchesLevel4.push(emp);
+    else if (cleanName && filenameAlphaOnly.includes(cleanName)) {
+      score = 40;
+    }
+
+    if (score > 0) {
+      if (score > bestScore) {
+        bestScore = score;
+        matches = [emp];
+      } else if (score === bestScore) {
+        matches.push(emp);
+      }
     }
   }
 
@@ -269,14 +363,8 @@ export async function performAutoAssign(
   let matchedEmp: typeof employees[0] | null = null;
 
   if (providedEmpId === null) {
-    if (matchesLevel1.length === 1) {
-      matchedEmp = matchesLevel1[0];
-    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 1) {
-      matchedEmp = matchesLevel2[0];
-    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 1) {
-      matchedEmp = matchesLevel3[0];
-    } else if (matchesLevel1.length === 0 && matchesLevel2.length === 0 && matchesLevel3.length === 0 && matchesLevel4.length === 1) {
-      matchedEmp = matchesLevel4[0];
+    if (matches.length === 1) {
+      matchedEmp = matches[0];
     }
   }
 
@@ -293,6 +381,35 @@ export async function performAutoAssign(
       [providedEmpId]
     );
     finalCompanyId = empInfo?.company_id || (allowedCompanyIds.length > 0 ? allowedCompanyIds[0] : 0);
+  }
+
+  if (options?.simulate) {
+    let returnEmp = null;
+    if (matchedEmp) {
+      returnEmp = {
+        id: matchedEmp.id,
+        name: matchedEmp.name,
+        surname: matchedEmp.surname,
+        companyId: matchedEmp.company_id
+      };
+    } else if (finalEmpId) {
+      const emp = await queryOne<{ id: number; name: string; surname: string; company_id: number }>(
+        `SELECT id, name, surname, company_id FROM users WHERE id = $1`,
+        [finalEmpId]
+      );
+      if (emp) {
+        returnEmp = {
+          id: emp.id,
+          name: emp.name,
+          surname: emp.surname,
+          companyId: emp.company_id
+        };
+      }
+    }
+    return {
+      matched: !!finalEmpId,
+      employee: returnEmp
+    };
   }
 
   if (finalEmpId && finalCompanyId) {
@@ -713,12 +830,12 @@ router.post(
     }
 
     const { originalname, mimetype, path: tempPath } = req.file;
+    const { requires_signature, expires_at, visible_to_roles, employee_id, company_id, extract_zip } = req.body;
 
-    // Detect ZIP by extension or mimetype
-    const isZip = originalname.toLowerCase().endsWith('.zip') ||
-      ['application/zip', 'application/x-zip-compressed'].includes(mimetype);
-
-    const { requires_signature, expires_at, visible_to_roles, employee_id } = req.body;
+    // Detect ZIP by extension or mimetype, and check if we should extract it
+    const isZip = (originalname.toLowerCase().endsWith('.zip') ||
+      ['application/zip', 'application/x-zip-compressed'].includes(mimetype)) &&
+      extract_zip !== 'false';
 
     // Requirement: Admin or HR must set Expiration Date
     if (['admin', 'hr'].includes(req.user!.role) && (!expires_at || String(expires_at).trim() === '')) {
@@ -738,17 +855,22 @@ router.post(
       }
     }
 
+    // Determine target company: Super Admin might have null companyId, so we resolve it from target employee if possible
+    let baseCompanyId = req.user!.companyId;
+    if (company_id && String(company_id) !== 'null' && String(company_id) !== 'undefined') {
+      baseCompanyId = parseInt(String(company_id), 10);
+    }
+
     const options = {
       requiresSignature,
       expiresAt: expires_at || null,
       visibleToRoles: visibleToRolesArr,
       uploadedBy: req.user!.userId,
       employeeId: employee_id && String(employee_id) !== 'null' && String(employee_id) !== 'undefined' ? parseInt(String(employee_id), 10) : undefined,
-      isSuperAdmin: req.user!.is_super_admin
+      isSuperAdmin: req.user!.is_super_admin,
+      companyId: baseCompanyId ? parseInt(String(baseCompanyId), 10) : undefined
     };
 
-    // Determine target company: Super Admin might have null companyId, so we resolve it from target employee if possible
-    let baseCompanyId = req.user!.companyId;
     if (!baseCompanyId && options.employeeId) {
       const emp = await queryOne<{ company_id: number }>(
         `SELECT company_id FROM users WHERE id = $1`,
@@ -810,13 +932,17 @@ router.post(
         isVisibleToRoles: options.visibleToRoles,
       });
 
-      // Rule based auto-assignment
-      const matched = await performAutoAssign(doc.id, originalname, allowedCompanyIds, options);
+      // Rule based auto-assignment (simulated, no DB write)
+      const autoAssignResult = await performAutoAssign(doc.id, originalname, allowedCompanyIds, {
+        ...options,
+        simulate: true
+      });
 
       ok(res, {
-        matched,
+        matched: autoAssignResult.matched,
         documentId: doc.id,
-        fileName: originalname
+        fileName: originalname,
+        employee: autoAssignResult.employee
       });
     }
 
