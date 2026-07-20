@@ -1313,6 +1313,47 @@ export interface AnomalyScopeOptions {
   search?: string;
 }
 
+function parseShiftPointUtc(dateStr: string, timeStr: string, timeZone: string = DEFAULT_SHIFT_TIMEZONE): Date {
+  const cleanTime = timeStr.length === 5 ? `${timeStr}:00` : timeStr;
+  const isoString = `${dateStr}T${cleanTime}`;
+  const naive = new Date(`${isoString}Z`);
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+      hour12: false,
+    });
+    const parts = formatter.formatToParts(naive);
+    const getPart = (type: string) => parts.find((p) => p.type === type)?.value || '00';
+    const tzYear = getPart('year');
+    const tzMonth = getPart('month');
+    const tzDay = getPart('day');
+    const tzHour = getPart('hour') === '24' ? '00' : getPart('hour');
+    const tzMinute = getPart('minute');
+    const tzSecond = getPart('second');
+
+    const naiveInTzAsUtc = new Date(Date.UTC(+tzYear, +tzMonth - 1, +tzDay, +tzHour, +tzMinute, +tzSecond)).getTime();
+    const diff = naiveInTzAsUtc - naive.getTime();
+    return new Date(naive.getTime() - diff);
+  } catch {
+    return new Date(isoString);
+  }
+}
+
+function formatInTimezone(date: Date, timeZone: string = DEFAULT_SHIFT_TIMEZONE): string {
+  try {
+    return date.toLocaleTimeString('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    });
+  } catch {
+    return date.toTimeString().slice(0, 5);
+  }
+}
+
 export async function calculateAnomaliesForRange(
   allowedCompanyIds: number[],
   from: string,
@@ -1359,11 +1400,12 @@ export async function calculateAnomaliesForRange(
     break_start: string | null; break_end: string | null;
     user_name: string; user_surname: string; store_name: string;
     user_avatar_filename: string | null;
+    store_timezone: string | null;
   }>(
     `SELECT s.id, s.company_id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
             s.start_time, s.end_time, s.break_start, s.break_end,
             u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename,
-            st.name AS store_name
+            st.name AS store_name, COALESCE(NULLIF(BTRIM(st.timezone), ''), '${DEFAULT_SHIFT_TIMEZONE_SQL}') AS store_timezone
      FROM shifts s
      LEFT JOIN users u  ON u.id  = s.user_id
      LEFT JOIN stores st ON st.id = s.store_id
@@ -1429,10 +1471,11 @@ export async function calculateAnomaliesForRange(
   const nowTs = new Date().getTime();
 
   for (const shift of shifts) {
+    const storeTz = normalizeShiftTimezone(shift.store_timezone, DEFAULT_SHIFT_TIMEZONE);
     const key = `${shift.user_id}:${shift.date}`;
     const evGroup = eventMap.get(key);
-    const shiftStart = new Date(`${shift.date}T${shift.start_time}`);
-    const shiftEnd   = new Date(`${shift.date}T${shift.end_time}`);
+    const shiftStart = parseShiftPointUtc(shift.date, shift.start_time, storeTz);
+    const shiftEnd   = parseShiftPointUtc(shift.date, shift.end_time, storeTz);
     
     // Only process shifts that have actually started (avoid future shifts loaded from today)
     if (shiftStart.getTime() > nowTs) continue;
@@ -1445,7 +1488,7 @@ export async function calculateAnomaliesForRange(
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'no_show', severity: 'high',
-          details: `Nessun arrivo registrato. Turno: ${shift.start_time}–${shift.end_time}`,
+          details: `Nessun arrivo registrato. Turno: ${shift.start_time.slice(0, 5)}–${shift.end_time.slice(0, 5)}`,
           details_key: 'attendance.detail_no_show',
           details_params: { start: shift.start_time.slice(0, 5), end: shift.end_time.slice(0, 5) },
           checkin_source: null,
@@ -1460,15 +1503,16 @@ export async function calculateAnomaliesForRange(
     const lateMs = checkin.getTime() - shiftStart.getTime();
     if (lateMs > LATE_MS) {
       const lateMin = Math.round(lateMs / 60000);
+      const entryStr = formatInTimezone(checkin, storeTz);
       anomalies.push({
         shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
         user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'late_arrival', severity: lateMin > 30 ? 'high' : 'medium',
-        details: `Ritardo di ${lateMin} min. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Turno: ${shift.start_time}`,
+        details: `Ritardo di ${lateMin} min. Entrata: ${entryStr}, Turno: ${shift.start_time.slice(0, 5)}`,
         details_key: 'attendance.detail_late_arrival',
-        details_params: { minutes: lateMin, entry: checkin.toTimeString().slice(0, 5), shift: shift.start_time.slice(0, 5) },
+        details_params: { minutes: lateMin, entry: entryStr, shift: shift.start_time.slice(0, 5) },
         checkin_source: evGroup.checkin_source ?? null,
       });
     }
@@ -1478,15 +1522,16 @@ export async function calculateAnomaliesForRange(
       const earlyMs = shiftEnd.getTime() - checkout.getTime();
       if (earlyMs >= EARLY_EXIT_MS) {
         const earlyMin = Math.round(earlyMs / 60000);
+        const exitStr = formatInTimezone(checkout, storeTz);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'early_exit', severity: earlyMin > 30 ? 'high' : 'medium',
-          details: `Uscita anticipata di ${earlyMin} min. Uscita: ${checkout.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
+          details: `Uscita anticipata di ${earlyMin} min. Uscita: ${exitStr}, Fine turno: ${shift.end_time.slice(0, 5)}`,
           details_key: 'attendance.detail_early_exit',
-          details_params: { minutes: earlyMin, exit: checkout.toTimeString().slice(0, 5), shift: shift.end_time.slice(0, 5) },
+          details_params: { minutes: earlyMin, exit: exitStr, shift: shift.end_time.slice(0, 5) },
           checkin_source: evGroup.checkin_source ?? null,
         });
       }
@@ -1494,7 +1539,7 @@ export async function calculateAnomaliesForRange(
 
     // Long break
     if (bEnd && shift.break_end) {
-      const scheduledBreakEnd = new Date(`${shift.date}T${shift.break_end}`);
+      const scheduledBreakEnd = parseShiftPointUtc(shift.date, shift.break_end, storeTz);
       const breakLateMs = bEnd.getTime() - scheduledBreakEnd.getTime();
       if (breakLateMs > LONG_BREAK_MS) {
         const breakMin = Math.round(breakLateMs / 60000);
@@ -1504,7 +1549,7 @@ export async function calculateAnomaliesForRange(
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'long_break', severity: breakMin > 30 ? 'high' : 'medium',
-          details: `Pausa terminata in ritardo di ${breakMin} min. Fine prevista: ${shift.break_end}`,
+          details: `Pausa terminata in ritardo di ${breakMin} min. Fine prevista: ${shift.break_end.slice(0, 5)}`,
           details_key: 'attendance.detail_long_break',
           details_params: { minutes: breakMin },
           checkin_source: evGroup.checkin_source ?? null,
@@ -1514,16 +1559,17 @@ export async function calculateAnomaliesForRange(
 
     // Missing checkout
     if (checkin && !checkout && shiftEnd.getTime() + MISSING_CHECKOUT_MS < nowTs) {
+      const checkinStr = formatInTimezone(checkin, storeTz);
       anomalies.push({
         shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
         user_name: shift.user_name, user_surname: shift.user_surname,
         user_avatar_filename: shift.user_avatar_filename,
         store_name: shift.store_name, date: shift.date,
         anomaly_type: 'missing_checkout', severity: 'high',
-        details: `Mancata uscita. Entrata: ${checkin.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}, Fine turno: ${shift.end_time}`,
+        details: `Mancata uscita. Entrata: ${checkinStr}, Fine turno: ${shift.end_time.slice(0, 5)}`,
         details_key: 'attendance.detail_missing_checkout',
         details_params: { 
-          checkin: checkin.toTimeString().slice(0, 5), 
+          checkin: checkinStr, 
           shift_end: shift.end_time.slice(0, 5) 
         },
         checkin_source: evGroup.checkin_source ?? null,
@@ -1535,17 +1581,18 @@ export async function calculateAnomaliesForRange(
       const overtimeMs = checkout.getTime() - shiftEnd.getTime();
       if (overtimeMs > OVERTIME_MS) {
         const overtimeMin = Math.round(overtimeMs / 60000);
+        const exitStr = formatInTimezone(checkout, storeTz);
         anomalies.push({
           shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
           user_name: shift.user_name, user_surname: shift.user_surname,
           user_avatar_filename: shift.user_avatar_filename,
           store_name: shift.store_name, date: shift.date,
           anomaly_type: 'overtime', severity: overtimeMin > 30 ? 'high' : 'medium',
-          details: `Straordinario di ${overtimeMin} min. Fine turno prevista: ${shift.end_time}`,
+          details: `Straordinario di ${overtimeMin} min. Fine turno prevista: ${shift.end_time.slice(0, 5)}`,
           details_key: 'attendance.detail_overtime',
           details_params: {
             minutes: overtimeMin,
-            actual: checkout.toTimeString().slice(0, 5),
+            actual: exitStr,
             scheduled: shift.end_time.slice(0, 5),
           },
           checkin_source: evGroup.checkin_source ?? null,
