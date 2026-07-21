@@ -499,6 +499,52 @@ export const updateCompanySettings = asyncHandler(async (req: Request, res: Resp
   ok(res, company, 'Impostazioni aggiornate');
 });
 
+// GET /api/companies/break-settings — admin/hr: get company break & payroll settings
+export const getBreakSettings = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  try {
+    const row = await queryOne<{ break_enforcement_enabled: boolean; break_tolerance_minutes: number }>(
+      `SELECT break_enforcement_enabled, break_tolerance_minutes FROM company_break_settings WHERE company_id = $1`,
+      [companyId]
+    );
+    ok(res, {
+      breakEnforcementEnabled: row?.break_enforcement_enabled ?? false,
+      breakToleranceMinutes: row?.break_tolerance_minutes ?? 10,
+    });
+  } catch (e) {
+    // If table doesn't exist yet in local dev environment
+    ok(res, { breakEnforcementEnabled: false, breakToleranceMinutes: 10 });
+  }
+});
+
+// PATCH /api/companies/break-settings — admin only, update company break & payroll settings
+export const updateBreakSettings = asyncHandler(async (req: Request, res: Response) => {
+  const { companyId } = req.user!;
+  const { break_enforcement_enabled, break_tolerance_minutes } = req.body as {
+    break_enforcement_enabled?: boolean;
+    break_tolerance_minutes?: number;
+  };
+
+  const enforcement = break_enforcement_enabled ?? false;
+  const tolerance = Math.max(0, Math.min(120, break_tolerance_minutes ?? 10));
+
+  const row = await queryOne<{ break_enforcement_enabled: boolean; break_tolerance_minutes: number }>(
+    `INSERT INTO company_break_settings (company_id, break_enforcement_enabled, break_tolerance_minutes, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (company_id) DO UPDATE SET
+       break_enforcement_enabled = EXCLUDED.break_enforcement_enabled,
+       break_tolerance_minutes = EXCLUDED.break_tolerance_minutes,
+       updated_at = NOW()
+     RETURNING break_enforcement_enabled, break_tolerance_minutes`,
+    [companyId, enforcement, tolerance]
+  );
+
+  ok(res, {
+    breakEnforcementEnabled: row?.break_enforcement_enabled ?? enforcement,
+    breakToleranceMinutes: row?.break_tolerance_minutes ?? tolerance,
+  }, 'Impostazioni pause aggiornate');
+});
+
 // PATCH /api/companies/:id/deactivate — Super Admin only
 export const deactivateCompany = asyncHandler(async (req: Request, res: Response) => {
   const { id } = req.params;

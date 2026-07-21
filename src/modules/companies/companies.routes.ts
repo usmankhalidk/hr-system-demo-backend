@@ -6,6 +6,8 @@ import {
   updateCompany,
   getCompanySettings,
   updateCompanySettings,
+  getBreakSettings,
+  updateBreakSettings,
   createCompany,
   deactivateCompany,
   activateCompany,
@@ -82,8 +84,15 @@ const updateCompanySettingsSchema = z.object({
   show_leave_balance_to_employee: z.boolean(),
 });
 
+const updateBreakSettingsSchema = z.object({
+  break_enforcement_enabled: z.boolean().optional(),
+  break_tolerance_minutes: z.number().int().min(0).max(120).optional(),
+});
+
 router.get('/', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, listCompanies);
 router.get('/settings', authenticate, requireRole('admin', 'hr'), enforceCompany, requireModulePermission('impostazioni', 'read'), getCompanySettings);
+router.get('/break-settings', authenticate, requireRole('admin', 'hr'), enforceCompany, getBreakSettings);
+router.patch('/break-settings', authenticate, requireRole('admin'), enforceCompany, validate(updateBreakSettingsSchema), updateBreakSettings);
 router.get('/:id', authenticate, requireRole('admin', 'hr', 'area_manager'), enforceCompany, getCompanyById);
 router.patch('/settings', authenticate, requireRole('admin'), enforceCompany, requireModulePermission('impostazioni', 'write'), validate(updateCompanySettingsSchema), updateCompanySettings);
 router.put('/:id', authenticate, requireRole('admin', 'hr'), enforceCompany, validate(updateCompanySchema), auditLog('company'), updateCompany);

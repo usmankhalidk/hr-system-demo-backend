@@ -1296,7 +1296,7 @@ export interface AnomalyResult {
   user_avatar_filename: string | null;
   store_name: string;
   date: string;
-  anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime' | 'missing_checkout';
+  anomaly_type: 'late_arrival' | 'no_show' | 'long_break' | 'early_exit' | 'overtime' | 'missing_checkout' | 'missing_break';
   severity: 'low' | 'medium' | 'high';
   details: string;
   details_key: string;
@@ -1397,13 +1397,13 @@ export async function calculateAnomaliesForRange(
   const shifts = await query<{
     id: number; company_id: number; user_id: number; store_id: number; date: string;
     start_time: string; end_time: string;
-    break_start: string | null; break_end: string | null;
+    break_start: string | null; break_end: string | null; break_minutes: number | null;
     user_name: string; user_surname: string; store_name: string;
     user_avatar_filename: string | null;
     store_timezone: string | null;
   }>(
     `SELECT s.id, s.company_id, s.user_id, s.store_id, TO_CHAR(s.date, 'YYYY-MM-DD') AS date,
-            s.start_time, s.end_time, s.break_start, s.break_end,
+            s.start_time, s.end_time, s.break_start, s.break_end, s.break_minutes,
             u.name AS user_name, u.surname AS user_surname, u.avatar_filename AS user_avatar_filename,
             st.name AS store_name, COALESCE(NULLIF(BTRIM(st.timezone), ''), '${DEFAULT_SHIFT_TIMEZONE_SQL}') AS store_timezone
      FROM shifts s
@@ -1555,6 +1555,31 @@ export async function calculateAnomaliesForRange(
           checkin_source: evGroup.checkin_source ?? null,
         });
       }
+    }
+
+    // Missing break (mandatory break scheduled, employee clocked in and out/shift passed, but no break recorded)
+    const hasSchBreak = (shift.break_start && shift.break_end) || (shift.break_minutes && shift.break_minutes > 0);
+    if (hasSchBreak && checkin && (checkout || shiftEnd.getTime() <= nowTs) && !bStart && !bEnd) {
+      let schMins = 60;
+      if (shift.break_minutes) {
+        schMins = shift.break_minutes;
+      } else if (shift.break_start && shift.break_end) {
+        const [bsh, bsm] = shift.break_start.split(':').map(Number);
+        const [beh, bem] = shift.break_end.split(':').map(Number);
+        schMins = (beh * 60 + bem) - (bsh * 60 + bsm);
+        if (schMins < 0) schMins += 24 * 60;
+      }
+      anomalies.push({
+        shift_id: shift.id, company_id: shift.company_id, user_id: shift.user_id,
+        user_name: shift.user_name, user_surname: shift.user_surname,
+        user_avatar_filename: shift.user_avatar_filename,
+        store_name: shift.store_name, date: shift.date,
+        anomaly_type: 'missing_break', severity: 'medium',
+        details: `Pausa obbligatoria di ${schMins} min programmata ma non registrata`,
+        details_key: 'attendance.detail_missing_break',
+        details_params: { minutes: schMins },
+        checkin_source: evGroup.checkin_source ?? null,
+      });
     }
 
     // Missing checkout
