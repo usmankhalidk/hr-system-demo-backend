@@ -447,7 +447,7 @@ export async function getEmployeeDocumentById(
     updated_at: string;
   }>(
     `${DOC_SELECT}
-      WHERE d.id = $1 AND d.company_id = ANY($2) AND d.is_deleted = false`,
+      WHERE d.id = $1 AND d.company_id = ANY($2)`,
     [id, companyIds],
   );
 
@@ -492,7 +492,7 @@ export async function getGenericDocumentById(
        FROM documents d
        LEFT JOIN users e ON e.id = d.employee_id
        LEFT JOIN users u_up ON u_up.id = d.uploaded_by
-      WHERE d.id = $1 AND d.is_deleted = false`,
+      WHERE d.id = $1`,
     [id]
   );
 
