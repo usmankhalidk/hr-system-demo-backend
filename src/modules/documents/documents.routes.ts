@@ -309,36 +309,30 @@ export async function performAutoAssign(
     if (uid && tokens.includes(uid)) {
       score = 200;
     }
-    // Level 2: Exact Full Name match (both name and surname are found in filenameAlphaOnly, adjacent or in any order)
-    else if (
-      (cleanName && cleanSurname && filenameAlphaOnly.includes(cleanName + cleanSurname)) ||
-      (cleanName && cleanSurname && filenameAlphaOnly.includes(cleanSurname + cleanName))
-    ) {
-      score = 100;
-    }
-    // Level 2.5: Fuzzy Full Name match (checks Levenshtein sliding window similarity)
     else if (cleanName && cleanSurname) {
-      const fullname1 = cleanName + cleanSurname;
-      const fullname2 = cleanSurname + cleanName;
-      const sim1 = getFuzzySubstringSimilarity(filenameAlphaOnly, fullname1);
-      const sim2 = getFuzzySubstringSimilarity(filenameAlphaOnly, fullname2);
-      const maxSim = Math.max(sim1, sim2);
+      const nameSim = getFuzzySubstringSimilarity(filenameAlphaOnly, cleanName);
+      const surnameSim = getFuzzySubstringSimilarity(filenameAlphaOnly, cleanSurname);
 
-      if (maxSim >= 0.70) {
-        score = Math.round(maxSim * 100) - 10; // score between 60 and 90, lower than exact match (100)
-      } else if (cleanSurname && filenameAlphaOnly.includes(cleanSurname)) {
-        score = 50;
-      } else if (cleanName && filenameAlphaOnly.includes(cleanName)) {
-        score = 40;
+      if (nameSim >= 0.75 && surnameSim >= 0.75) {
+        // Level 2: Exact adjacent match
+        if (filenameAlphaOnly.includes(cleanName + cleanSurname) || filenameAlphaOnly.includes(cleanSurname + cleanName)) {
+          score = 100;
+        } else {
+          // Level 2.5: Both match but not adjacent or fuzzy
+          const averageSim = (nameSim + surnameSim) / 2;
+          score = Math.round(averageSim * 100) - 10; // score between 65 and 90
+        }
       }
     }
-    // Level 3: Surname match
-    else if (cleanSurname && filenameAlphaOnly.includes(cleanSurname)) {
-      score = 50;
-    }
-    // Level 4: First name match
-    else if (cleanName && filenameAlphaOnly.includes(cleanName)) {
-      score = 40;
+    else {
+      // Fallback for single-name records in DB
+      const nameSim = cleanName ? getFuzzySubstringSimilarity(filenameAlphaOnly, cleanName) : 0;
+      const surnameSim = cleanSurname ? getFuzzySubstringSimilarity(filenameAlphaOnly, cleanSurname) : 0;
+      const maxSim = Math.max(nameSim, surnameSim);
+
+      if (maxSim >= 0.75) {
+        score = Math.round(maxSim * 100) - 50; // lower score for single-field match
+      }
     }
 
     if (score > 0) {
@@ -837,12 +831,7 @@ router.post(
       ['application/zip', 'application/x-zip-compressed'].includes(mimetype)) &&
       extract_zip !== 'false';
 
-    // Requirement: Admin or HR must set Expiration Date
-    if (['admin', 'hr'].includes(req.user!.role) && (!expires_at || String(expires_at).trim() === '')) {
-      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
-      badRequest(res, 'La data di scadenza è obbligatoria per Admin e HR', 'EXPIRY_DATE_REQUIRED');
-      return;
-    }
+
 
     const requiresSignature = requires_signature === 'true' || requires_signature === true;
     let visibleToRolesArr: string[] | undefined;
@@ -1572,12 +1561,7 @@ router.post(
     const { requires_signature, expires_at, visible_to_roles } = req.body;
     const requiresSignature = requires_signature === 'true' || requires_signature === true;
 
-    // Requirement: Admin or HR must set Expiration Date
-    if (['admin', 'hr'].includes(user.role) && (!expires_at || String(expires_at).trim() === '')) {
-      if (req.file?.path) { try { fs.unlinkSync(req.file.path); } catch { /* ignore */ } }
-      badRequest(res, 'La data di scadenza è obbligatoria per Admin e HR', 'EXPIRY_DATE_REQUIRED');
-      return;
-    }
+
 
     const expiresAt: string | null = expires_at ? String(expires_at) : null;
 
